@@ -4,7 +4,7 @@
 // UPLOAD THIS TO: GitHub → verityn-backend → api/news.js
 // ============================================================
 
-export default async function handler(request, response) {
+module.exports = async function handler(request, response) {
 
   // Allow your app to talk to this server (CORS)
   response.setHeader('Access-Control-Allow-Origin', '*');
