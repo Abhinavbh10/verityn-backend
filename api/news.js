@@ -1,32 +1,58 @@
 // ============================================================
-// FILE: api/news.js
-// PURPOSE: Fetches real news from GNews and sends it to the app
-// UPLOAD THIS TO: GitHub → verityn-backend → api/news.js
+// FILE: api/news.js  (UPDATED — with Supabase caching)
+// Replace your existing api/news.js in GitHub with this
 // ============================================================
+
+const { createClient } = require('@supabase/supabase-js');
 
 module.exports = async function handler(request, response) {
 
-  // Allow your app to talk to this server (CORS)
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
 
-  // Read what the app is asking for
-  const { country = 'us', category = 'general', lang = 'en', max = 10 } = request.query;
+  if (request.method === 'OPTIONS') return response.status(200).end();
 
-  // Your GNews API key — stored safely in Vercel, never in the code
-  const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
+  const { country = 'us', category = 'general', max = 10 } = request.query;
+
+  const GNEWS_API_KEY    = process.env.GNEWS_API_KEY;
+  const SUPABASE_URL     = process.env.SUPABASE_URL;
+  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
   if (!GNEWS_API_KEY) {
-    return response.status(500).json({ 
-      error: 'API key not configured. Add GNEWS_API_KEY in Vercel environment variables.' 
-    });
+    return response.status(500).json({ error: 'GNEWS_API_KEY not configured in Vercel.' });
   }
 
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const cacheKey = `${country}-${category}`;
+
+  // ── Step 1: Check Supabase cache ──────────────────────────
   try {
-    // Build the GNews URL
-    const gnewsUrl = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=${lang}&country=${country}&max=${max}&apikey=${GNEWS_API_KEY}`;
-    
-    // Fetch the news
+    const { data: cached } = await supabase
+      .from('news_cache')
+      .select('articles, fetched_at')
+      .eq('cache_key', cacheKey)
+      .gt('expires_at', new Date().toISOString())  // only if not expired
+      .single();
+
+    if (cached) {
+      // Cache hit — serve instantly, no GNews call needed
+      return response.status(200).json({
+        success: true,
+        fromCache: true,
+        cachedAt: cached.fetched_at,
+        country: country.toUpperCase(),
+        category,
+        totalArticles: cached.articles.length,
+        articles: cached.articles,
+      });
+    }
+  } catch (e) {
+    // Cache miss or Supabase error — continue to fetch fresh news
+  }
+
+  // ── Step 2: Fetch fresh news from GNews ───────────────────
+  try {
+    const gnewsUrl = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=${max}&apikey=${GNEWS_API_KEY}`;
     const gnewsResponse = await fetch(gnewsUrl);
     const gnewsData = await gnewsResponse.json();
 
@@ -34,7 +60,7 @@ module.exports = async function handler(request, response) {
       throw new Error(gnewsData.errors?.[0] || 'GNews API error');
     }
 
-    // Transform the articles into Verityn's format
+    // Transform articles to Verityn format
     const articles = gnewsData.articles.map((article, index) => ({
       id: `${country}-${category}-${index}-${Date.now()}`,
       headline: article.title,
@@ -48,14 +74,23 @@ module.exports = async function handler(request, response) {
       topicLabel: capitalise(category === 'general' ? 'World' : category),
       breaking: isBreaking(article.publishedAt),
       country: country.toUpperCase(),
-      // These will be enhanced by AI in the next step
       velocity: estimateVelocity(index),
       bookmarked: false,
     }));
 
-    // Return the articles to the app
+    // ── Step 3: Save to Supabase cache ────────────────────
+    await supabase
+      .from('news_cache')
+      .upsert({
+        cache_key: cacheKey,
+        articles: articles,
+        fetched_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(), // 15 mins
+      }, { onConflict: 'cache_key' });
+
     return response.status(200).json({
       success: true,
+      fromCache: false,
       country: country.toUpperCase(),
       category,
       totalArticles: articles.length,
@@ -64,61 +99,45 @@ module.exports = async function handler(request, response) {
 
   } catch (error) {
     console.error('News fetch error:', error.message);
-    return response.status(500).json({ 
-      error: 'Failed to fetch news. Please try again.',
-      details: error.message 
+    return response.status(500).json({
+      error: 'Failed to fetch news.',
+      details: error.message,
     });
   }
-}
+};
 
-// ── Helper functions ─────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 
-// Turns a published date into "8m ago", "2h ago" etc.
 function getRelativeTime(dateString) {
-  const now = new Date();
-  const published = new Date(dateString);
-  const diffMs = now - published;
+  const diffMs   = Date.now() - new Date(dateString);
   const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffMins < 1) return 'Just now';
+  const diffHrs  = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHrs / 24);
+  if (diffMins < 1)  return 'Just now';
   if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHrs < 24)  return `${diffHrs}h ago`;
   return `${diffDays}d ago`;
 }
 
-// Maps GNews categories to Verityn's topic IDs
 function mapCategoryToTopic(category) {
   const map = {
-    general: 'world',
-    technology: 'tech',
-    business: 'business',
-    sports: 'sports',
-    science: 'science',
-    health: 'science',
-    politics: 'politics',
+    general: 'world', technology: 'tech', business: 'business',
+    sports: 'sports', science: 'science', health: 'science',
     entertainment: 'world',
   };
   return map[category] || 'world';
 }
 
-// Capitalises first letter
 function capitalise(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-// Articles published in last 30 minutes get the "Breaking" badge
 function isBreaking(dateString) {
-  const now = new Date();
-  const published = new Date(dateString);
-  const diffMins = (now - published) / 60000;
-  return diffMins < 30;
+  return (Date.now() - new Date(dateString)) / 60000 < 30;
 }
 
-// Top articles get higher velocity (simplified — real logic uses view counts)
 function estimateVelocity(index) {
   if (index < 2) return { label: 'Top story', level: 'high' };
-  if (index < 5) return { label: 'Trending', level: 'med' };
-  return { label: 'In the news', level: 'low' };
+  if (index < 5) return { label: 'Trending',  level: 'med'  };
+  return           { label: 'In the news', level: 'low'  };
 }
