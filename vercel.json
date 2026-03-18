@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "name": "verityn-backend",
+  "functions": {
+    "api/news.js": {
+      "maxDuration": 15
+    },
+    "api/digest.js": {
+      "maxDuration": 30
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Cache-Control", "value": "s-maxage=300, stale-while-revalidate" }
+      ]
+    }
+  ]
+}
