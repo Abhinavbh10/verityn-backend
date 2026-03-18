@@ -1,0 +1,8 @@
+{
+  "name": "verityn-backend",
+  "version": "1.0.0",
+  "description": "Verityn news app backend — Vercel serverless functions",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
