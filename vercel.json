@@ -1,14 +1,5 @@
 {
   "version": 2,
-  "name": "verityn-backend",
-  "functions": {
-    "api/news.js": {
-      "maxDuration": 15
-    },
-    "api/digest.js": {
-      "maxDuration": 30
-    }
-  },
   "headers": [
     {
       "source": "/api/(.*)",
