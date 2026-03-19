@@ -1,8 +1,11 @@
 {
   "name": "verityn-backend",
-  "version": "1.0.0",
-  "description": "Verityn news app backend — Vercel serverless functions",
+  "version": "2.0.0",
+  "description": "Verityn news app backend — production grade",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0"
+  },
+  "engines": {
+    "node": ">=18.x"
   }
 }
