@@ -1,9 +1,46 @@
 // ============================================================
-// FILE: api/news.js  (UPGRADED — Fix 1, 3, 4)
-// SOURCES: GNews + MediaStack (server-friendly, all countries)
+// FILE: api/news.js  (UPGRADED — with quality filtering)
+// SOURCES: GNews + MediaStack
+// FIXES: Filters garbage headlines, blocks low-quality sources
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+
+// ── Blocked sources — not real news publishers ────────────────
+const BLOCKED_SOURCES = [
+  'dvidshub', 'dvids', 'defense visual', 'army.mil', 'navy.mil',
+  'af.mil', 'marines.mil', 'globenewswire', 'businesswire',
+  'prnewswire', 'accesswire', 'einpresswire', 'prweb',
+  'send2press', 'newswire',
+];
+
+// ── Headline quality filters ──────────────────────────────────
+function isGarbageHeadline(title) {
+  if (!title) return true;
+  if (title.length < 15) return true;           // too short
+  if (title === '[Removed]') return true;
+
+  // Matches military image codes like "260313-A-ZN169-1002"
+  if (/^\d{6}-[A-Z]-[A-Z0-9]+-\d+/.test(title)) return true;
+
+  // Matches "[Image X of Y]" pattern
+  if (/\[image \d+ of \d+\]/i.test(title)) return true;
+
+  // Matches press release patterns
+  if (/^(FOR IMMEDIATE RELEASE|PRESS RELEASE)/i.test(title)) return true;
+
+  // Mostly numbers/codes — not a real headline
+  const wordCount = title.split(' ').filter(w => /[a-zA-Z]{3,}/.test(w)).length;
+  if (wordCount < 3) return true;
+
+  return false;
+}
+
+function isBlockedSource(sourceName) {
+  if (!sourceName) return false;
+  const lower = sourceName.toLowerCase();
+  return BLOCKED_SOURCES.some(blocked => lower.includes(blocked));
+}
 
 module.exports = async function handler(request, response) {
 
@@ -60,7 +97,7 @@ module.exports = async function handler(request, response) {
       } catch (e) { console.error('GNews error:', e.message); }
     }
 
-    // Source 2: MediaStack (works server-side, great for UAE/SG/DE/JP)
+    // Source 2: MediaStack
     if (MEDIASTACK_KEY) {
       try {
         const msCountry = { in:'in',us:'us',gb:'gb',au:'au',sg:'sg',ae:'ae',de:'de',jp:'jp' }[country] || 'us';
@@ -85,17 +122,23 @@ module.exports = async function handler(request, response) {
       return response.status(503).json({ error: 'No news sources returned data.' });
     }
 
-    // Deduplicate same-event stories
-    const deduplicated = deduplicateStories(allRaw);
+    // ── Quality filter — remove garbage before deduplication ──
+    const filtered = allRaw.filter(a =>
+      !isGarbageHeadline(a.title) &&
+      !isBlockedSource(a.source?.name)
+    );
 
-    // Transform to Verityn format
-    const TOPIC_MAP  = { general:'world',technology:'tech',business:'business',sports:'sports',science:'science',health:'science',entertainment:'world' };
-    const LABEL_MAP  = { general:'World',technology:'Tech',business:'Business',sports:'Sports',science:'Science',health:'Science',entertainment:'World' };
+    // ── Deduplicate same-event stories ────────────────────────
+    const deduplicated = deduplicateStories(filtered.length > 0 ? filtered : allRaw);
+
+    // ── Transform to Verityn format ───────────────────────────
+    const TOPIC_MAP = { general:'world',technology:'tech',business:'business',sports:'sports',science:'science',health:'science',entertainment:'world' };
+    const LABEL_MAP = { general:'World',technology:'Tech',business:'Business',sports:'Sports',science:'Science',health:'Science',entertainment:'World' };
 
     const articles = deduplicated.slice(0, parseInt(max)).map((a, i) => ({
       id:          `${country}-${category}-${i}-${Date.now()}`,
       headline:    a.title,
-      summary:     a.description || 'Tap to read the full story.',
+      summary:     a.description || '',
       source:      a.source?.name || 'Unknown Source',
       sourceUrl:   a.url,
       image:       a.image,
@@ -117,7 +160,6 @@ module.exports = async function handler(request, response) {
     const ttlMinutes   = feedVelocity === 'high' ? 5 : feedVelocity === 'med' ? 10 : 15;
     const expiresAt    = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
 
-    // Save to cache
     await supabase.from('news_cache').upsert({
       cache_key: cacheKey, articles,
       fetched_at: new Date().toISOString(),
@@ -129,6 +171,7 @@ module.exports = async function handler(request, response) {
       velocityLevel: feedVelocity, ttlMinutes,
       country: country.toUpperCase(), category,
       totalArticles: articles.length,
+      filteredOut: allRaw.length - filtered.length,
       sourcesUsed: [...new Set(allRaw.map(a => a._src))],
       articles,
     });
@@ -139,7 +182,7 @@ module.exports = async function handler(request, response) {
   }
 };
 
-// Deduplication — clusters same-event stories across sources
+// ── Deduplication ─────────────────────────────────────────────
 function deduplicateStories(articles) {
   const clusters = [];
   const used     = new Set();
@@ -154,7 +197,7 @@ function deduplicateStories(articles) {
       if (used.has(j)) continue;
       const wB = words(articles[j].title);
       const overlap = wA.filter(w => wB.includes(w)).length;
-      if (overlap / Math.min(wA.length, wB.length) > 0.5) {
+      if (wA.length > 0 && wB.length > 0 && overlap / Math.min(wA.length, wB.length) > 0.5) {
         cluster.push(articles[j]);
         used.add(j);
       }
