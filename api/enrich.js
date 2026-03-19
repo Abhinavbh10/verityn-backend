@@ -147,16 +147,18 @@ ${coverageSummary}
 
 Number of sources covering this: ${uniqueSources.length || 1}
 
-Return a JSON object with exactly 3 keys:
+Return a JSON object with exactly 4 keys:
 
-1. "whyItMatters": 3-4 sentences personalised for this country. Be specific — mention actual local institutions, markets, or implications. Do NOT be generic.
+1. "summary": 2-3 clear sentences summarising what happened and the key facts. Write this for a general reader — informative, direct, no jargon. This is shown as the story summary on the card.
 
-2. "bias": Based on the actual coverage above, return exactly one of:
+2. "whyItMatters": 3-4 sentences personalised for this country. Be specific — mention actual local institutions, markets, or implications. Do NOT be generic.
+
+3. "bias": Based on the actual coverage above, return exactly one of:
    - "Balanced"  — all outlets frame it similarly
    - "Mixed"     — some variation in framing or emphasis
    - "Divided"   — outlets are framing this very differently
 
-3. "biasNote": One sentence (max 12 words) explaining the bias rating based on what you actually see in the coverage above.
+4. "biasNote": One sentence (max 12 words) explaining the bias rating based on what you actually see in the coverage above.
 
 Return ONLY the JSON object.`
         }]
@@ -171,6 +173,7 @@ Return ONLY the JSON object.`
       enriched = JSON.parse(rawText);
     } catch (e) {
       enriched = {
+        summary:      'This story is developing. Tap "Read full story" for the latest details.',
         whyItMatters: 'This story has significant implications that are still developing.',
         bias:         'Mixed',
         biasNote:     'Coverage varies across different news outlets.',
