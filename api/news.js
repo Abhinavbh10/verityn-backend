@@ -1,12 +1,10 @@
 // ============================================================
-// FILE: api/news.js  (UPGRADED — with quality filtering)
-// SOURCES: GNews + MediaStack
-// FIXES: Filters garbage headlines, blocks low-quality sources
+// FILE: api/news.js  (FIXED — strict country filtering)
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 
-// ── Blocked sources — not real news publishers ────────────────
+// ── Blocked sources ───────────────────────────────────────────
 const BLOCKED_SOURCES = [
   'dvidshub', 'dvids', 'defense visual', 'army.mil', 'navy.mil',
   'af.mil', 'marines.mil', 'globenewswire', 'businesswire',
@@ -14,32 +12,62 @@ const BLOCKED_SOURCES = [
   'send2press', 'newswire',
 ];
 
-// ── Headline quality filters ──────────────────────────────────
+// ── Country-specific trusted sources ─────────────────────────
+// Only articles from these sources appear in the Local feed
+// This prevents cross-country bleed
+const COUNTRY_SOURCES = {
+  us: ['reuters', 'ap news', 'associated press', 'cnn', 'nbc news', 'abc news',
+       'cbs news', 'fox news', 'the new york times', 'washington post', 'wall street journal',
+       'bloomberg', 'cnbc', 'usa today', 'npr', 'politico', 'the hill', 'axios',
+       'time', 'newsweek', 'business insider', 'the atlantic', 'vox', 'buzzfeed news',
+       'huffpost', 'los angeles times', 'new york post'],
+  gb: ['bbc', 'the guardian', 'the times', 'sky news', 'the telegraph', 'daily mail',
+       'the independent', 'financial times', 'the sun', 'daily mirror', 'evening standard',
+       'metro', 'city a.m.', 'the spectator'],
+  in: ['the hindu', 'times of india', 'hindustan times', 'ndtv', 'india today',
+       'the economic times', 'mint', 'business standard', 'the wire', 'scroll',
+       'firstpost', 'news18', 'zee news', 'republic world', 'the print',
+       'deccan herald', 'indian express', 'tribune india'],
+  au: ['abc news', 'sydney morning herald', 'the australian', 'the age',
+       'news.com.au', '9news', '7news', 'the guardian australia', 'afr',
+       'daily telegraph', 'herald sun', 'courier mail'],
+  de: ['der spiegel', 'die zeit', 'frankfurter allgemeine', 'suddeutsche zeitung',
+       'bild', 'dw', 'deutsche welle', 'handelsblatt', 'focus', 'stern',
+       'the local germany', 'germany news'],
+  sg: ['the straits times', 'channel news asia', 'cna', 'today online',
+       'the business times', 'zaobao', 'mothership', 'rice media'],
+  ae: ['gulf news', 'khaleej times', 'the national', 'arabian business',
+       'al jazeera', 'gulfnews', 'emirates news agency', 'wam'],
+  jp: ['japan times', 'nhk world', 'asahi shimbun', 'mainichi', 'yomiuri',
+       'nikkei', 'the japan news', 'kyodo news'],
+};
+
+// ── Headline quality filter ───────────────────────────────────
 function isGarbageHeadline(title) {
   if (!title) return true;
-  if (title.length < 15) return true;           // too short
+  if (title.length < 15) return true;
   if (title === '[Removed]') return true;
-
-  // Matches military image codes like "260313-A-ZN169-1002"
   if (/^\d{6}-[A-Z]-[A-Z0-9]+-\d+/.test(title)) return true;
-
-  // Matches "[Image X of Y]" pattern
   if (/\[image \d+ of \d+\]/i.test(title)) return true;
-
-  // Matches press release patterns
   if (/^(FOR IMMEDIATE RELEASE|PRESS RELEASE)/i.test(title)) return true;
-
-  // Mostly numbers/codes — not a real headline
   const wordCount = title.split(' ').filter(w => /[a-zA-Z]{3,}/.test(w)).length;
   if (wordCount < 3) return true;
-
   return false;
 }
 
 function isBlockedSource(sourceName) {
   if (!sourceName) return false;
   const lower = sourceName.toLowerCase();
-  return BLOCKED_SOURCES.some(blocked => lower.includes(blocked));
+  return BLOCKED_SOURCES.some(b => lower.includes(b));
+}
+
+// Check if article is from a trusted source for this country
+function isLocalSource(sourceName, country) {
+  if (!sourceName) return false;
+  const trusted = COUNTRY_SOURCES[country];
+  if (!trusted) return true; // no list = allow all
+  const lower = sourceName.toLowerCase();
+  return trusted.some(s => lower.includes(s));
 }
 
 module.exports = async function handler(request, response) {
@@ -48,15 +76,22 @@ module.exports = async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (request.method === 'OPTIONS') return response.status(200).end();
 
-  const { country = 'us', category = 'general', max = 10, bypass = 'false' } = request.query;
+  const {
+    country  = 'us',
+    category = 'general',
+    max      = 10,
+    bypass   = 'false',
+    local    = 'false', // local=true enforces strict country source filtering
+  } = request.query;
 
   const GNEWS_API_KEY     = process.env.GNEWS_API_KEY;
   const MEDIASTACK_KEY    = process.env.MEDIASTACK_KEY;
   const SUPABASE_URL      = process.env.SUPABASE_URL;
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  const cacheKey = `${country}-${category}`;
+  const supabase  = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // Separate cache keys for local vs global
+  const cacheKey  = `${country}-${category}${local === 'true' ? '-local' : ''}`;
 
   // Check cache
   if (bypass !== 'true') {
@@ -69,10 +104,12 @@ module.exports = async function handler(request, response) {
         .single();
       if (cached) {
         return response.status(200).json({
-          success: true, fromCache: true, cachedAt: cached.fetched_at,
+          success: true, fromCache: true,
+          cachedAt: cached.fetched_at,
           velocityLevel: cached.velocity_level || 'low',
           country: country.toUpperCase(), category,
-          totalArticles: cached.articles.length, articles: cached.articles,
+          totalArticles: cached.articles.length,
+          articles: cached.articles,
         });
       }
     } catch (e) {}
@@ -81,11 +118,11 @@ module.exports = async function handler(request, response) {
   try {
     const allRaw = [];
 
-    // Source 1: GNews
+    // Source 1: GNews — most reliable country filtering
     if (GNEWS_API_KEY) {
       try {
-        const url = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=10&apikey=${GNEWS_API_KEY}`;
-        const res = await fetch(url);
+        const url  = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=10&apikey=${GNEWS_API_KEY}`;
+        const res  = await fetch(url);
         const data = await res.json();
         if (data.articles) {
           allRaw.push(...data.articles.map(a => ({
@@ -97,13 +134,13 @@ module.exports = async function handler(request, response) {
       } catch (e) { console.error('GNews error:', e.message); }
     }
 
-    // Source 2: MediaStack
+    // Source 2: MediaStack — supplement only
     if (MEDIASTACK_KEY) {
       try {
         const msCountry = { in:'in',us:'us',gb:'gb',au:'au',sg:'sg',ae:'ae',de:'de',jp:'jp' }[country] || 'us';
-        const msCat = { general:'general',technology:'technology',business:'business',sports:'sports',science:'science',health:'health',entertainment:'entertainment' }[category] || 'general';
-        const url = `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK_KEY}&countries=${msCountry}&categories=${msCat}&languages=en&limit=10&sort=published_desc`;
-        const res = await fetch(url);
+        const msCat     = { general:'general',technology:'technology',business:'business',sports:'sports',science:'science',health:'health',entertainment:'entertainment' }[category] || 'general';
+        const url  = `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK_KEY}&countries=${msCountry}&categories=${msCat}&languages=en&limit=10&sort=published_desc`;
+        const res  = await fetch(url);
         const data = await res.json();
         if (data.data) {
           allRaw.push(...data.data
@@ -122,16 +159,29 @@ module.exports = async function handler(request, response) {
       return response.status(503).json({ error: 'No news sources returned data.' });
     }
 
-    // ── Quality filter — remove garbage before deduplication ──
-    const filtered = allRaw.filter(a =>
+    // ── Layer 1: Quality filter ───────────────────────────
+    let filtered = allRaw.filter(a =>
       !isGarbageHeadline(a.title) &&
       !isBlockedSource(a.source?.name)
     );
 
-    // ── Deduplicate same-event stories ────────────────────────
-    const deduplicated = deduplicateStories(filtered.length > 0 ? filtered : allRaw);
+    // ── Layer 2: Country source filter (Local feed only) ──
+    // When local=true, only show articles from trusted local sources
+    if (local === 'true' && COUNTRY_SOURCES[country]) {
+      const localFiltered = filtered.filter(a => isLocalSource(a.source?.name, country));
+      // Only apply if we have enough local articles — otherwise fall back
+      if (localFiltered.length >= 3) {
+        filtered = localFiltered;
+      }
+    }
 
-    // ── Transform to Verityn format ───────────────────────────
+    // Use unfiltered if nothing passes
+    if (filtered.length === 0) filtered = allRaw;
+
+    // ── Deduplicate ───────────────────────────────────────
+    const deduplicated = deduplicateStories(filtered);
+
+    // ── Transform ─────────────────────────────────────────
     const TOPIC_MAP = { general:'world',technology:'tech',business:'business',sports:'sports',science:'science',health:'science',entertainment:'world' };
     const LABEL_MAP = { general:'World',technology:'Tech',business:'Business',sports:'Sports',science:'Science',health:'Science',entertainment:'World' };
 
@@ -154,7 +204,6 @@ module.exports = async function handler(request, response) {
       bookmarked:  false,
     }));
 
-    // Feed velocity + TTL
     const bCount       = articles.filter(a => a.breaking).length;
     const feedVelocity = bCount >= 3 ? 'high' : bCount >= 1 ? 'med' : 'low';
     const ttlMinutes   = feedVelocity === 'high' ? 5 : feedVelocity === 'med' ? 10 : 15;
@@ -177,7 +226,6 @@ module.exports = async function handler(request, response) {
     });
 
   } catch (error) {
-    console.error('News error:', error.message);
     return response.status(500).json({ error: 'Failed to fetch news.', details: error.message });
   }
 };
