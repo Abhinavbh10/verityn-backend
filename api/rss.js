@@ -84,6 +84,44 @@ const CATEGORY_FEEDS = {
   ],
 };
 
+// ── Country keywords for relevance filtering ─────────────────
+// Articles must mention these terms to appear in local feed
+const COUNTRY_KEYWORDS = {
+  in: ['india', 'indian', 'delhi', 'mumbai', 'bangalore', 'bengaluru', 'chennai',
+       'hyderabad', 'kolkata', 'rupee', 'modi', 'bjp', 'congress', 'rbi',
+       'sensex', 'nifty', 'bollywood', 'ipl', 'bcci'],
+  us: ['america', 'american', 'united states', 'washington', 'congress',
+       'white house', 'trump', 'federal reserve', 'dollar', 'wall street',
+       'nasdaq', 'fbi', 'cia', 'pentagon', 'senate'],
+  gb: ['britain', 'british', 'uk', 'england', 'scotland', 'wales', 'london',
+       'parliament', 'downing street', 'pound sterling', 'nhs', 'ftse',
+       'premier league', 'bank of england'],
+  au: ['australia', 'australian', 'sydney', 'melbourne', 'brisbane', 'perth',
+       'canberra', 'asx', 'aud', 'rba', 'afl', 'nrl'],
+  de: ['germany', 'german', 'berlin', 'munich', 'hamburg', 'frankfurt',
+       'bundesbank', 'dax', 'bundestag', 'bundesliga', 'merkel', 'scholz',
+       'euros', 'european', 'eu summit', 'angela', 'volkswagen', 'bmw',
+       'siemens', 'bayer', 'lufthansa'],
+  sg: ['singapore', 'singaporean', 'straits times', 'mas', 'sti', 'hawker',
+       'pap', 'lee hsien', 'jurong', 'changi', 'asean'],
+  ae: ['uae', 'dubai', 'abu dhabi', 'emirates', 'dirhams', 'opec',
+       'gulf', 'sharjah', 'aramco', 'expo'],
+  jp: ['japan', 'japanese', 'tokyo', 'osaka', 'kyoto', 'yen', 'nikkei',
+       'bank of japan', 'boj', 'sony', 'toyota', 'softbank', 'nintendo'],
+};
+
+// Check if article is actually about this country
+function isLocallyRelevant(item, country) {
+  const keywords = COUNTRY_KEYWORDS[country];
+  if (!keywords) return true; // no filter for unknown countries
+
+  const text = (
+    (item.title || '') + ' ' + (item.description || '')
+  ).toLowerCase();
+
+  return keywords.some(kw => text.includes(kw));
+}
+
 // ── Simple RSS XML parser ─────────────────────────────────────
 function parseRSS(xml) {
   const items      = [];
@@ -336,7 +374,10 @@ module.exports = async function handler(request, response) {
     // This ensures Germany, Singapore, UAE always have content
     if (allItems.length < 5 && GNEWS_API_KEY) {
       try {
-        const gnewsUrl  = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=10&apikey=${GNEWS_API_KEY}`;
+        // Use keyword search so we get news ABOUT the country, not just from it
+        const countryKeywords = COUNTRY_KEYWORDS[country];
+        const searchTerm = countryKeywords ? countryKeywords[0] : country;
+        const gnewsUrl  = `https://gnews.io/api/v4/search?q=${encodeURIComponent(searchTerm)}&lang=en&max=10&apikey=${GNEWS_API_KEY}`;
         const gnewsRes  = await fetch(gnewsUrl);
         const gnewsData = await gnewsRes.json();
         if (gnewsData.articles) {
@@ -354,8 +395,11 @@ module.exports = async function handler(request, response) {
       } catch (e) {}
     }
 
-    // Filter + deduplicate
-    const filtered = allItems.filter(isGoodArticle);
+    // Filter quality + local relevance
+    // isLocallyRelevant ensures articles are ABOUT the country, not just FROM its publishers
+    const filtered = allItems.filter(item =>
+      isGoodArticle(item) && isLocallyRelevant(item, country)
+    );
     const seen     = new Set();
     const deduped  = filtered.filter(item => {
       const key = item.title.slice(0, 50).toLowerCase().replace(/[^a-z]/g, '');
