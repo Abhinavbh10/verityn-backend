@@ -1,5 +1,6 @@
 // ============================================================
-// FILE: api/digest.js  (FIXED — better Claude response parsing)
+// FILE: api/digest.js  (PERSONALISED)
+// Accepts city, interests, country for personalised digest
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
@@ -7,7 +8,8 @@ const { createClient } = require('@supabase/supabase-js');
 module.exports = async function handler(request, response) {
 
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (request.method === 'OPTIONS') return response.status(200).end();
 
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -15,11 +17,24 @@ module.exports = async function handler(request, response) {
   const SUPABASE_URL      = process.env.SUPABASE_URL;
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-  const { country = 'us' } = request.query;
-  const supabase  = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  const cacheKey  = `digest-${country}`;
+  // Accept both GET and POST
+  const params = request.method === 'POST'
+    ? request.body
+    : request.query;
 
-  // Check cache (1 hour TTL)
+  const {
+    country   = 'us',
+    city      = '',
+    interests = '',   // comma-separated: "tech,expat,finance"
+  } = params;
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // Cache key includes city + interests for personalisation
+  const interestStr = Array.isArray(interests) ? interests.join(',') : interests;
+  const cacheKey    = `digest-${country}-${city}-${interestStr}`.slice(0, 80);
+
+  // Check cache (1 hour)
   try {
     const { data: cached } = await supabase
       .from('digest_cache')
@@ -30,55 +45,72 @@ module.exports = async function handler(request, response) {
     if (cached && cached.digest && cached.digest.length > 0) {
       return response.status(200).json({
         success: true, fromCache: true,
-        cachedAt: cached.fetched_at,
-        country: country.toUpperCase(),
+        country: country.toUpperCase(), city, interests: interestStr,
         digest: cached.digest,
       });
     }
-  } catch (e) { /* cache miss */ }
+  } catch (e) {}
 
   try {
-    // Fetch top headlines
+    // Fetch headlines — general + city-specific if city provided
     const categories  = ['general', 'technology', 'business'];
     const allArticles = [];
 
     for (const cat of categories) {
       if (GNEWS_API_KEY) {
         try {
-          const url  = `https://gnews.io/api/v4/top-headlines?category=${cat}&lang=en&country=${country}&max=4&apikey=${GNEWS_API_KEY}`;
+          // General country news
+          const url  = `https://gnews.io/api/v4/top-headlines?category=${cat}&lang=en&country=${country}&max=3&apikey=${GNEWS_API_KEY}`;
           const res  = await fetch(url);
           const data = await res.json();
-          if (data.articles) allArticles.push(...data.articles.slice(0, 3));
+          if (data.articles) allArticles.push(...data.articles.slice(0, 2));
         } catch (e) {}
       }
     }
 
+    // City-specific search if city provided
+    if (city && GNEWS_API_KEY) {
+      try {
+        const cityUrl  = `https://gnews.io/api/v4/search?q=${encodeURIComponent(city)}&lang=en&max=5&apikey=${GNEWS_API_KEY}`;
+        const cityRes  = await fetch(cityUrl);
+        const cityData = await cityRes.json();
+        if (cityData.articles) allArticles.push(...cityData.articles.slice(0, 3));
+      } catch (e) {}
+    }
+
     if (allArticles.length === 0) {
-      return response.status(500).json({ error: 'No articles fetched from news API.' });
+      return response.status(500).json({ error: 'No articles fetched.' });
     }
 
     // Deduplicate
-    const seen           = new Set();
-    const uniqueArticles = allArticles.filter(a => {
+    const seen    = new Set();
+    const unique  = allArticles.filter(a => {
       const key = a.title?.slice(0, 60);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    // Build headlines list for Claude
-    const headlinesList = uniqueArticles
-      .slice(0, 8)
-      .map((a, i) => `${i + 1}. [${a.source?.name || 'Unknown'}] ${a.title} — ${a.description || ''}`)
+    const headlinesList = unique.slice(0, 10)
+      .map((a, i) => `${i + 1}. [${a.source?.name}] ${a.title} — ${a.description || ''}`)
       .join('\n');
 
+    // Build personalisation context
     const countryNames = {
       in: 'India', us: 'United States', gb: 'United Kingdom',
       au: 'Australia', sg: 'Singapore', ae: 'UAE', de: 'Germany', jp: 'Japan'
     };
-    const countryName = countryNames[country] || 'the world';
+    const countryName = countryNames[country] || country;
 
-    // Call Claude
+    const interestList = interestStr
+      ? interestStr.split(',').map(i => i.trim()).join(', ')
+      : 'general news';
+
+    const personaContext = city
+      ? `The reader is based in ${city}, ${countryName} and is interested in: ${interestList}.`
+      : `The reader is based in ${countryName} and is interested in: ${interestList}.`;
+
+    // Call Claude with personalised context
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -89,79 +121,58 @@ module.exports = async function handler(request, response) {
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
         max_tokens: 2000,
-        system:     `You are Verityn's AI editor for ${countryName}. Respond ONLY with a valid JSON array. No markdown, no backticks, no explanation. Just the raw JSON array starting with [ and ending with ].`,
+        system:     `You are Verityn's AI editor. ${personaContext} Tailor every story's "whyItMatters" to this specific person — mention local impact, city-specific implications, and their stated interests. Respond ONLY with a valid JSON array. No markdown, no backticks. Start with [ and end with ].`,
         messages: [{
           role:    'user',
-          content: `Today's headlines for ${countryName}:
+          content: `Today's headlines:
 
 ${headlinesList}
 
-Create a digest of the 5 most important stories. Return a JSON array of 5 objects, each with:
+Create a personalised digest of the 5 most relevant stories for this reader. For each return a JSON object with:
 - headline: sharp rewritten headline
-- topic: one of Politics, Economy, Tech, Climate, Business, World, Science, Sports
-- narrative: 2-3 sentences on what happened and why it matters
-- trend: 6-8 word phrase on current direction
-- whyItMatters: 1-2 sentences on impact for ${countryName} readers
+- topic: one of Politics, Economy, Tech, Climate, Finance, World, Science, Sports, Local
+- narrative: 2-3 sentences on what happened
+- trend: 6-8 word trend phrase
+- whyItMatters: 2 sentences specifically relevant to someone in ${city || countryName} interested in ${interestList}
 - velocity: "high" or "med"
-- keyFact: one specific number, date, or statistic from the story
+- keyFact: one specific number, date, or statistic
 
-Return ONLY the JSON array. Start your response with [ and end with ].`
+Prioritise stories relevant to ${city || countryName} and the reader's interests (${interestList}).
+Return ONLY the JSON array starting with [.`
         }]
       })
     });
 
     const claudeData = await claudeResponse.json();
-
     if (claudeData.error) {
-      return response.status(500).json({
-        error:   'Claude API error',
-        details: claudeData.error,
-      });
+      return response.status(500).json({ error: 'Claude error', details: claudeData.error });
     }
 
     const rawText = claudeData.content?.[0]?.text || '';
 
-    // ── Robust JSON parsing ────────────────────────────────
+    // Robust parsing
     let digestItems = [];
-    try {
-      // Try 1: direct parse
-      digestItems = JSON.parse(rawText);
-    } catch (e1) {
+    try { digestItems = JSON.parse(rawText); }
+    catch (e1) {
       try {
-        // Try 2: strip markdown code blocks
-        const stripped = rawText
-          .replace(/```json\s*/gi, '')
-          .replace(/```\s*/gi, '')
-          .trim();
+        const stripped = rawText.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
         digestItems = JSON.parse(stripped);
       } catch (e2) {
         try {
-          // Try 3: extract array with regex
           const match = rawText.match(/\[[\s\S]*\]/);
           if (match) digestItems = JSON.parse(match[0]);
         } catch (e3) {
-          // All parsing failed — return debug info
           return response.status(200).json({
-            success: false,
-            error:   'Failed to parse Claude response',
-            rawText: rawText.slice(0, 500),
-            digest:  [],
+            success: false, error: 'Parse failed',
+            rawText: rawText.slice(0, 300), digest: [],
           });
         }
       }
     }
 
-    // Validate digestItems is an array
-    if (!Array.isArray(digestItems)) {
-      return response.status(200).json({
-        success: false,
-        error:   'Claude returned non-array response',
-        rawText: rawText.slice(0, 500),
-        digest:  [],
-      });
-    }
+    if (!Array.isArray(digestItems)) digestItems = [];
 
-    // Cache for 1 hour
+    // Cache 1 hour
     await supabase.from('digest_cache').upsert({
       cache_key:  cacheKey,
       digest:     digestItems,
@@ -173,15 +184,14 @@ Return ONLY the JSON array. Start your response with [ and end with ].`
       success:     true,
       fromCache:   false,
       country:     country.toUpperCase(),
-      generatedAt: new Date().toISOString(),
+      city,
+      interests:   interestStr,
+      personalised: !!(city || interestStr),
       itemCount:   digestItems.length,
       digest:      digestItems,
     });
 
   } catch (error) {
-    return response.status(500).json({
-      error:   'Failed to generate digest.',
-      details: error.message,
-    });
+    return response.status(500).json({ error: 'Digest failed.', details: error.message });
   }
 };
