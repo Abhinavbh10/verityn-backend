@@ -87,12 +87,14 @@ module.exports = async function handler(request, response) {
       credit: { name: data.user?.name, username: data.user?.username, link: data.links?.html },
     };
 
-    await supabase.from('digest_cache').upsert({
-      cache_key:  cacheKey,
-      digest:     result,
-      fetched_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
-    }, { onConflict: 'cache_key' }).catch(() => {});
+    try {
+      await supabase.from('digest_cache').upsert({
+        cache_key:  cacheKey,
+        digest:     result,
+        fetched_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+      }, { onConflict: 'cache_key' });
+    } catch (cacheErr) { /* cache write failed, continue */ }
 
     return response.status(200).json({
       success: true, fromCache: false,
