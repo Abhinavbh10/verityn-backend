@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Verityn</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    background: #0D1117;
+    color: #8B949E;
+    line-height: 1.8;
+    padding: 40px 24px 80px;
+    max-width: 680px;
+    margin: 0 auto;
+  }
+  .masthead {
+    border-bottom: 2px solid #C0392B;
+    padding-bottom: 24px;
+    margin-bottom: 40px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .v-mark {
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .brand-name {
+    font-size: 28px; font-weight: 700;
+    color: #F0F6FC; letter-spacing: -0.5px;
+  }
+  .doc-title { font-size: 13px; color: #6E7681; letter-spacing: 2px; text-transform: uppercase; }
+  .effective { font-size: 12px; color: #454A60; margin-top: 6px; }
+  h1 { font-size: 32px; font-weight: 700; color: #F0F6FC; margin-bottom: 8px; }
+  h2 { font-size: 18px; font-weight: 700; color: #F0F6FC; margin: 36px 0 12px; }
+  p { margin-bottom: 16px; }
+  ul { margin: 0 0 16px 20px; }
+  li { margin-bottom: 8px; }
+  a { color: #C0392B; text-decoration: none; }
+  .highlight { background: rgba(192,57,43,0.08); border-left: 3px solid #C0392B; padding: 16px 20px; border-radius: 0 8px 8px 0; margin: 24px 0; }
+  .footer { margin-top: 60px; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.07); font-size: 12px; color: #454A60; }
+</style>
+</head>
+<body>
+
+<div class="masthead">
+  <div class="brand">
+    <div class="v-mark">
+      <svg width="36" height="36" viewBox="0 0 36 36">
+        <rect x="3" y="3" width="6" height="28" rx="3" fill="#C0392B" transform="rotate(28 6 31)"/>
+        <rect x="27" y="3" width="6" height="28" rx="3" fill="#C0392B" transform="rotate(-28 30 31)"/>
+      </svg>
+    </div>
+    <span class="brand-name">Verityn</span>
+  </div>
+  <div class="doc-title">Privacy Policy</div>
+  <div class="effective">Effective date: 20 March 2026 · Last updated: 20 March 2026</div>
+</div>
+
+<div class="highlight">
+  <strong style="color:#F0F6FC">The short version:</strong> Verityn collects minimal data to personalise your news feed. We do not sell your data. We do not serve targeted advertising based on your personal profile. We use anonymous session identifiers — not your name or email — unless you choose to create an account.
+</div>
+
+<h2>1. Who we are</h2>
+<p>Verityn is a news intelligence application that delivers personalised, AI-curated news to users worldwide. References to "we", "us", or "Verityn" in this policy refer to the Verityn app and its operators.</p>
+
+<h2>2. What data we collect</h2>
+<p>We collect only what is necessary to provide and improve the service:</p>
+<ul>
+  <li><strong style="color:#F0F6FC">Session identifier</strong> — a randomly generated anonymous ID created when you first open the app. This is not linked to your name, email, or device identity.</li>
+  <li><strong style="color:#F0F6FC">Location preference</strong> — the country and city you select in the app. This is stored locally on your device and sent to our servers only to fetch relevant news.</li>
+  <li><strong style="color:#F0F6FC">Reading streak</strong> — the dates on which you opened the app, used to calculate your reading streak. No article-level reading history is tracked.</li>
+  <li><strong style="color:#F0F6FC">Followed stories</strong> — the headlines of stories you choose to follow, stored to send you update notifications.</li>
+  <li><strong style="color:#F0F6FC">Bookmarks</strong> — articles you bookmark, stored locally on your device. If you create an account, these sync to our servers.</li>
+  <li><strong style="color:#F0F6FC">Interest preferences</strong> — the topics and interest tags you select during onboarding, stored locally and used to personalise your digest.</li>
+</ul>
+
+<h2>3. What we do not collect</h2>
+<ul>
+  <li>We do not collect your name, email address, or phone number unless you explicitly create an account.</li>
+  <li>We do not track which specific articles you read.</li>
+  <li>We do not collect device identifiers (IDFA, GAID) or fingerprint your device.</li>
+  <li>We do not collect your precise GPS location — only the country and city you manually select.</li>
+  <li>We do not share or sell your data to third parties for advertising purposes.</li>
+</ul>
+
+<h2>4. How we use your data</h2>
+<ul>
+  <li>To fetch news relevant to your selected country and city</li>
+  <li>To generate your personalised AI digest using Claude (Anthropic)</li>
+  <li>To track your reading streak and show you milestones</li>
+  <li>To send you push notifications about followed story updates (only if you grant permission)</li>
+  <li>To improve the quality and relevance of our news curation</li>
+</ul>
+
+<h2>5. Third-party services</h2>
+<p>Verityn uses the following third-party services to operate:</p>
+<ul>
+  <li><strong style="color:#F0F6FC">Anthropic Claude</strong> — AI analysis and digest generation. Headlines and summaries are sent to Claude's API. No personal data is included. Anthropic's privacy policy applies.</li>
+  <li><strong style="color:#F0F6FC">GNews / MediaStack</strong> — news article APIs. Your country preference is sent as a query parameter. No personal data is transmitted.</li>
+  <li><strong style="color:#F0F6FC">Unsplash</strong> — article images. Topic keywords are sent as query parameters. No personal data is transmitted.</li>
+  <li><strong style="color:#F0F6FC">Supabase</strong> — database and backend infrastructure hosted in the EU. Your session ID and preferences are stored here.</li>
+  <li><strong style="color:#F0F6FC">Vercel</strong> — serverless hosting for our backend API. Vercel may log request metadata including IP addresses for up to 24 hours.</li>
+</ul>
+
+<h2>6. Data retention</h2>
+<ul>
+  <li>Session data and preferences are retained for as long as you use the app.</li>
+  <li>Followed story data is automatically deleted after 30 days of inactivity.</li>
+  <li>News cache data is deleted automatically every 15–60 minutes.</li>
+  <li>If you delete the app, locally stored data is removed immediately. Server-side session data is deleted within 30 days.</li>
+</ul>
+
+<h2>7. Your rights (GDPR)</h2>
+<p>If you are located in the European Union or United Kingdom, you have the following rights:</p>
+<ul>
+  <li><strong style="color:#F0F6FC">Right of access</strong> — you may request a copy of all data we hold about your session.</li>
+  <li><strong style="color:#F0F6FC">Right to erasure</strong> — you may request deletion of all data associated with your session ID at any time.</li>
+  <li><strong style="color:#F0F6FC">Right to portability</strong> — you may request your data in a machine-readable format.</li>
+  <li><strong style="color:#F0F6FC">Right to object</strong> — you may object to processing of your data at any time.</li>
+</ul>
+<p>To exercise any of these rights, contact us at <a href="mailto:privacy@verityn.app">privacy@verityn.app</a>.</p>
+
+<h2>8. Children's privacy</h2>
+<p>Verityn is not directed at children under the age of 13. We do not knowingly collect data from children. If you believe a child has provided us with personal information, please contact us and we will delete it promptly.</p>
+
+<h2>9. Changes to this policy</h2>
+<p>We may update this policy from time to time. We will notify you of significant changes through the app. Continued use of Verityn after changes are posted constitutes your acceptance of the updated policy.</p>
+
+<h2>10. Contact</h2>
+<p>For privacy-related questions or data requests:<br>
+Email: <a href="mailto:privacy@verityn.app">privacy@verityn.app</a></p>
+
+<div class="footer">
+  © 2026 Verityn · <a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a>
+</div>
+
+</body>
+</html>
