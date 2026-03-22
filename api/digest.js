@@ -1,9 +1,33 @@
 // ============================================================
-// FILE: api/digest.js  (PERSONALISED)
-// Accepts city, interests, country for personalised digest
+// FILE: api/digest.js  (REBUILT)
+// PURPOSE: Multi-country AI digest — 10 stories
+//          Fetches from ALL user countries, Claude picks best 10
+//          Each story: narrative, why it matters, key fact, bias
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+
+// Same content-based topic inference as rss.js and news.js
+function inferTopic(headline, description) {
+  const text = ((headline || '') + ' ' + (description || '')).toLowerCase();
+  if (/\btech\b|\bai\b|\bsoftware\b|\bdigital\b|\bcyber\b|\bstartup\b|\binternet\b|\bsilicon\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bmeta\b|\bopenai\b/.test(text))
+    return { topic: 'tech',     label: 'Tech'     };
+  if (/\beconomy\b|\bmarket\b|\bbank\b|\binflation\b|\bfinance\b|\btrade\b|\bstock\b|\bgdp\b|\brupee\b|\beuro\b|\bdollar\b|\bsensex\b|\bnifty\b|\bdax\b|\binvestment\b|\bfed\b|\brbi\b/.test(text))
+    return { topic: 'finance',  label: 'Finance'  };
+  if (/\belection\b|\bparliament\b|\bminister\b|\bgovernment\b|\bvote\b|\bpolicy\b|\bparty\b|\bpolitical\b|\bpresident\b|\bcongress\b|\bsenate\b/.test(text))
+    return { topic: 'politics', label: 'Politics' };
+  if (/\bfootball\b|\bcricket\b|\bmatch\b|\bleague\b|\btournament\b|\bplayer\b|\bteam\b|\bgoal\b|\bsport\b|\bolympic\b|\bipl\b|\bnba\b|\bnfl\b|\bfifa\b/.test(text))
+    return { topic: 'sports',   label: 'Sports'   };
+  if (/\bclimate\b|\benergy\b|\brenewable\b|\bemission\b|\benvironment\b|\bsolar\b|\bgreen\b|\bcarbon\b|\bweather\b/.test(text))
+    return { topic: 'climate',  label: 'Climate'  };
+  return { topic: 'world', label: 'World' };
+}
+
+const COUNTRY_NAMES = {
+  in: 'India', us: 'United States', gb: 'United Kingdom',
+  au: 'Australia', de: 'Germany', sg: 'Singapore',
+  ae: 'UAE', jp: 'Japan',
+};
 
 module.exports = async function handler(request, response) {
 
@@ -12,29 +36,33 @@ module.exports = async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (request.method === 'OPTIONS') return response.status(200).end();
 
-  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  const GNEWS_API_KEY     = process.env.GNEWS_API_KEY;
+  const ANTHROPIC_KEY     = process.env.ANTHROPIC_API_KEY;
+  const GNEWS_KEY         = process.env.GNEWS_API_KEY;
   const SUPABASE_URL      = process.env.SUPABASE_URL;
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+  const supabase          = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   // Accept both GET and POST
-  const params = request.method === 'POST'
-    ? request.body
-    : request.query;
+  const params = request.method === 'POST' ? request.body : request.query;
 
   const {
-    country   = 'us',
-    city      = '',
-    interests = '',   // comma-separated: "tech,expat,finance"
+    countries  = 'us',      // comma-separated: "in,de,us"
+    interests  = '',        // comma-separated: "finance,tech"
   } = params;
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const countriesList = Array.isArray(countries)
+    ? countries
+    : countries.split(',').map(c => c.trim()).filter(Boolean);
 
-  // Cache key includes city + interests for personalisation
-  const interestStr = Array.isArray(interests) ? interests.join(',') : interests;
-  const cacheKey    = `digest-${country}-${city}-${interestStr}`.slice(0, 80);
+  const interestsList = interests
+    ? interests.split(',').map(i => i.trim()).filter(Boolean)
+    : [];
 
-  // Check cache (1 hour)
+  // Cache key — daily, unique per country+interest combination
+  const today    = new Date().toISOString().slice(0, 10);
+  const cacheKey = `digest-${countriesList.sort().join('-')}-${interestsList.sort().join('-')}-${today}`.slice(0, 100);
+
+  // Check cache
   try {
     const { data: cached } = await supabase
       .from('digest_cache')
@@ -42,154 +70,177 @@ module.exports = async function handler(request, response) {
       .eq('cache_key', cacheKey)
       .gt('expires_at', new Date().toISOString())
       .single();
-    if (cached && cached.digest && cached.digest.length > 0) {
+    if (cached?.digest?.stories?.length > 0) {
       return response.status(200).json({
         success: true, fromCache: true,
-        country: country.toUpperCase(), city, interests: interestStr,
-        digest: cached.digest,
+        ...cached.digest,
       });
     }
   } catch (e) {}
 
   try {
-    // Fetch headlines — general + city-specific if city provided
-    const categories  = ['general', 'technology', 'business'];
-    const allArticles = [];
+    // ── Fetch headlines from ALL selected countries ───────────
+    const allRaw = [];
 
-    for (const cat of categories) {
-      if (GNEWS_API_KEY) {
-        try {
-          // General country news
-          const url  = `https://gnews.io/api/v4/top-headlines?category=${cat}&lang=en&country=${country}&max=3&apikey=${GNEWS_API_KEY}`;
-          const res  = await fetch(url);
-          const data = await res.json();
-          if (data.articles) allArticles.push(...data.articles.slice(0, 2));
-        } catch (e) {}
-      }
-    }
-
-    // City-specific search if city provided
-    if (city && GNEWS_API_KEY) {
-      try {
-        const cityUrl  = `https://gnews.io/api/v4/search?q=${encodeURIComponent(city)}&lang=en&max=5&apikey=${GNEWS_API_KEY}`;
-        const cityRes  = await fetch(cityUrl);
-        const cityData = await cityRes.json();
-        if (cityData.articles) allArticles.push(...cityData.articles.slice(0, 3));
-      } catch (e) {}
-    }
-
-    if (allArticles.length === 0) {
-      return response.status(500).json({ error: 'No articles fetched.' });
-    }
-
-    // Deduplicate
-    const seen    = new Set();
-    const unique  = allArticles.filter(a => {
-      const key = a.title?.slice(0, 60);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    const headlinesList = unique.slice(0, 10)
-      .map((a, i) => `${i + 1}. [${a.source?.name}] ${a.title} — ${a.description || ''}`)
-      .join('\n');
-
-    // Build personalisation context
-    const countryNames = {
-      in: 'India', us: 'United States', gb: 'United Kingdom',
-      au: 'Australia', sg: 'Singapore', ae: 'UAE', de: 'Germany', jp: 'Japan'
-    };
-    const countryName = countryNames[country] || country;
-
-    const interestList = interestStr
-      ? interestStr.split(',').map(i => i.trim()).join(', ')
-      : 'general news';
-
-    const personaContext = city
-      ? `The reader is based in ${city}, ${countryName} and is interested in: ${interestList}.`
-      : `The reader is based in ${countryName} and is interested in: ${interestList}.`;
-
-    // Call Claude with personalised context
-    const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model:      'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        system:     `You are Verityn's AI editor. ${personaContext} Tailor every story's "whyItMatters" to this specific person — mention local impact, city-specific implications, and their stated interests. Respond ONLY with a valid JSON array. No markdown, no backticks. Start with [ and end with ].`,
-        messages: [{
-          role:    'user',
-          content: `Today's headlines:
-
-${headlinesList}
-
-Create a personalised digest of the 5 most relevant stories for this reader. For each return a JSON object with:
-- headline: sharp rewritten headline
-- topic: one of Politics, Economy, Tech, Climate, Finance, World, Science, Sports, Local
-- narrative: 2-3 sentences on what happened
-- trend: 6-8 word trend phrase
-- whyItMatters: 2 sentences specifically relevant to someone in ${city || countryName} interested in ${interestList}
-- velocity: "high" or "med"
-- keyFact: one specific number, date, or statistic
-
-Prioritise stories relevant to ${city || countryName} and the reader's interests (${interestList}).
-Return ONLY the JSON array starting with [.`
-        }]
-      })
-    });
-
-    const claudeData = await claudeResponse.json();
-    if (claudeData.error) {
-      return response.status(500).json({ error: 'Claude error', details: claudeData.error });
-    }
-
-    const rawText = claudeData.content?.[0]?.text || '';
-
-    // Robust parsing
-    let digestItems = [];
-    try { digestItems = JSON.parse(rawText); }
-    catch (e1) {
-      try {
-        const stripped = rawText.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-        digestItems = JSON.parse(stripped);
-      } catch (e2) {
-        try {
-          const match = rawText.match(/\[[\s\S]*\]/);
-          if (match) digestItems = JSON.parse(match[0]);
-        } catch (e3) {
-          return response.status(200).json({
-            success: false, error: 'Parse failed',
-            rawText: rawText.slice(0, 300), digest: [],
-          });
+    const fetchPromises = [];
+    for (const country of countriesList) {
+      // General headlines per country
+      fetchPromises.push(
+        fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${country}&max=8&apikey=${GNEWS_KEY}`)
+          .then(r => r.json())
+          .then(d => (d.articles || []).map(a => ({ ...a, _country: country })))
+          .catch(() => [])
+      );
+      // Interest-specific per country
+      const interestCatMap = {
+        finance: 'business', tech: 'technology', sports: 'sports',
+        climate: 'science', politics: 'general',
+      };
+      for (const interest of interestsList.slice(0, 2)) {
+        const cat = interestCatMap[interest];
+        if (cat && cat !== 'general') {
+          fetchPromises.push(
+            fetch(`https://gnews.io/api/v4/top-headlines?category=${cat}&lang=en&country=${country}&max=5&apikey=${GNEWS_KEY}`)
+              .then(r => r.json())
+              .then(d => (d.articles || []).map(a => ({ ...a, _country: country })))
+              .catch(() => [])
+          );
         }
       }
     }
 
-    if (!Array.isArray(digestItems)) digestItems = [];
+    const results = await Promise.all(fetchPromises);
+    allRaw.push(...results.flat());
 
-    // Cache 1 hour
-    await supabase.from('digest_cache').upsert({
-      cache_key:  cacheKey,
-      digest:     digestItems,
-      fetched_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }, { onConflict: 'cache_key' });
+    if (allRaw.length === 0) {
+      return response.status(500).json({ error: 'No articles fetched.' });
+    }
 
-    return response.status(200).json({
-      success:     true,
-      fromCache:   false,
-      country:     country.toUpperCase(),
-      city,
-      interests:   interestStr,
-      personalised: !!(city || interestStr),
-      itemCount:   digestItems.length,
-      digest:      digestItems,
+    // Deduplicate
+    const seen   = new Set();
+    const unique = allRaw.filter(a => {
+      const k = a.title?.slice(0, 50).toLowerCase().replace(/[^a-z]/g, '');
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
     });
+
+    // Build numbered list for Claude — include country context
+    const headlinesList = unique.slice(0, 30).map((a, i) =>
+      `${i + 1}. [${COUNTRY_NAMES[a._country] || a._country}] [${a.source?.name || 'Unknown'}] ${a.title}${a.description ? ` — ${a.description.slice(0, 100)}` : ''}`
+    ).join('\n');
+
+    // Build location + interest context for Claude
+    const countryLabels  = countriesList.map(c => COUNTRY_NAMES[c] || c).join(', ');
+    const interestLabels = interestsList.length ? interestsList.join(', ') : 'general news';
+
+    // ── Single Claude call — picks 10, writes full analysis ──
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: `You are Verityn's intelligence editor. The reader follows news from ${countryLabels} and is interested in ${interestLabels}.
+
+Your job: pick the 10 most significant stories from the headlines provided and write sharp, intelligent analysis for each.
+
+Rules:
+- Prioritise stories relevant to ${countryLabels} and ${interestLabels}
+- "whyItMatters" must be specific to someone following ${countryLabels} — mention cross-country implications where relevant
+- "bias" is one word: Left / Centre-Left / Centre / Centre-Right / Right / Unknown
+- "keyFact" is one specific number, date, name, or statistic from the story
+- "narrative" is 2-3 sentences max — what happened and immediate context
+- Never pad, never waffle, never use "importantly" or "notably"
+- Respond ONLY with valid JSON array. No markdown. No backticks. Start with [`,
+
+        messages: [{
+          role:    'user',
+          content: `Today's headlines from ${countryLabels}:\n\n${headlinesList}\n\nPick the 10 most significant. Return a JSON array where each item has:\n- headline: sharp rewritten headline (not a copy of original)\n- topic: one of world/tech/finance/politics/sports/climate\n- topicLabel: one of World/Tech/Finance/Politics/Sports/Climate\n- source: publication name\n- country: country code (in/us/gb/de/au/sg/ae/jp)\n- narrative: 2-3 sentences on what happened\n- whyItMatters: 2 sentences specific to someone following ${countryLabels} interested in ${interestLabels}\n- keyFact: one specific number, date, or name\n- bias: Left/Centre-Left/Centre/Centre-Right/Right/Unknown\n- velocity: high/med/low\n\nStart with [`,
+        }],
+      }),
+    });
+
+    const claudeData = await claudeRes.json();
+    if (claudeData.error) throw new Error(claudeData.error.message);
+
+    const rawText = claudeData.content?.[0]?.text || '[]';
+
+    // Robust JSON parsing
+    let stories = [];
+    try { stories = JSON.parse(rawText); }
+    catch {
+      try {
+        const stripped = rawText.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+        stories = JSON.parse(stripped);
+      } catch {
+        try {
+          const match = rawText.match(/\[[\s\S]*\]/);
+          if (match) stories = JSON.parse(match[0]);
+        } catch {
+          return response.status(200).json({ success: false, error: 'Parse failed', stories: [] });
+        }
+      }
+    }
+
+    if (!Array.isArray(stories)) stories = [];
+
+    // Ensure max 10 and apply content-based topic as safety check
+    stories = stories.slice(0, 10).map(s => {
+      const inferred = inferTopic(s.headline, s.narrative);
+      return {
+        ...s,
+        topic:      s.topic      || inferred.topic,
+        topicLabel: s.topicLabel || inferred.label,
+      };
+    });
+
+    // Build morning brief sentence from the stories
+    const topHeadlines = stories.slice(0, 5).map(s => s.headline).join('; ');
+    const briefRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: 80,
+        system:     `One sentence. Editorial voice. Captures the mood of today's news for someone following ${countryLabels}. No clichés. Under 25 words. No quotes.`,
+        messages:   [{ role: 'user', content: `Top stories today: ${topHeadlines}\n\nWrite the one sentence morning brief.` }],
+      }),
+    });
+
+    const briefData  = await briefRes.json();
+    const briefLine  = briefData.content?.[0]?.text?.trim() || '';
+
+    const digestData = {
+      briefLine,
+      stories,
+      countries:  countriesList,
+      interests:  interestsList,
+      countryLabels,
+      generatedAt: new Date().toISOString(),
+    };
+
+    // Cache until end of day
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    try {
+      await supabase.from('digest_cache').upsert({
+        cache_key:  cacheKey,
+        digest:     digestData,
+        fetched_at: new Date().toISOString(),
+        expires_at: endOfDay.toISOString(),
+      }, { onConflict: 'cache_key' });
+    } catch (e) {}
+
+    return response.status(200).json({ success: true, fromCache: false, ...digestData });
 
   } catch (error) {
     return response.status(500).json({ error: 'Digest failed.', details: error.message });
