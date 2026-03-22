@@ -1,340 +1,78 @@
 // ============================================================
-// FILE: api/rss.js
-// PURPOSE: Fetches RSS feeds per country
-//          Falls back to GNews search when RSS returns nothing
+// FILE: api/news.js  (FIXED — strict country filtering)
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 
-// ── RSS feeds per country ─────────────────────────────────────
-const COUNTRY_FEEDS = {
-  in: [
-    'https://www.thehindu.com/news/feeder/default.rss',
-    'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
-    'https://indianexpress.com/feed/',
-    'https://www.hindustantimes.com/feeds/rss/topnews/rssfeed.xml',
-    'https://www.livemint.com/rss/news',
-    'https://economictimes.indiatimes.com/rssfeedsdefault.cms',
-    'https://feeds.feedburner.com/ndtvnews-top-stories',
-  ],
-  us: [
-    'https://feeds.npr.org/1001/rss.xml',
-    'https://rss.cnn.com/rss/edition.rss',
-    'https://feeds.nbcnews.com/nbcnews/public/news',
-    'https://abcnews.go.com/abcnews/topstories',
-    'https://feeds.washingtonpost.com/rss/politics',
-    'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
-    'https://feeds.reuters.com/reuters/topNews',
-  ],
-  gb: [
-    'https://feeds.bbci.co.uk/news/rss.xml',
-    'https://feeds.bbci.co.uk/news/uk/rss.xml',
-    'https://www.theguardian.com/uk/rss',
-    'https://feeds.skynews.com/feeds/rss/home.xml',
-    'https://www.independent.co.uk/news/uk/rss',
-  ],
-  au: [
-    'https://www.abc.net.au/news/feed/51120/rss.xml',
-    'https://www.smh.com.au/rss/feed.xml',
-    'https://www.theaustralian.com.au/feed/',
-    'https://www.news.com.au/content-feeds/latest-news-national/',
-  ],
-  // For countries with limited English RSS — use DW + Reuters + BBC World
-  // These cover the country in English reliably
-  de: [
-    'https://rss.dw.com/xml/rss-en-ger',
-    'https://rss.dw.com/xml/rss-en-all',
-    'https://www.thelocal.de/feed/',
-    'https://feeds.bbci.co.uk/news/world/europe/rss.xml',
-  ],
-  sg: [
-    'https://www.straitstimes.com/news/singapore/rss.xml',
-    'https://www.channelnewsasia.com/rssfeeds/8395884',
-    'https://feeds.bbci.co.uk/news/world/asia/rss.xml',
-  ],
-  ae: [
-    'https://www.thenationalnews.com/rss',
-    'https://gulfnews.com/rss',
-    'https://feeds.bbci.co.uk/news/world/middle_east/rss.xml',
-  ],
-  jp: [
-    'https://www.japantimes.co.jp/feed/',
-    'https://www3.nhk.or.jp/rss/news/cat0.xml',
-    'https://feeds.bbci.co.uk/news/world/asia/rss.xml',
-  ],
-};
-
-const CATEGORY_FEEDS = {
-  technology: [
-    'https://techcrunch.com/feed/',
-    'https://www.theverge.com/rss/index.xml',
-    'https://feeds.arstechnica.com/arstechnica/index',
-    'https://feeds.bbci.co.uk/news/technology/rss.xml',
-  ],
-  business: [
-    'https://feeds.reuters.com/reuters/businessNews',
-    'https://feeds.bbci.co.uk/news/business/rss.xml',
-  ],
-  sports: [
-    'https://feeds.bbci.co.uk/sport/rss.xml',
-  ],
-  science: [
-    'https://feeds.bbci.co.uk/news/science_and_environment/rss.xml',
-    'https://www.sciencedaily.com/rss/top/science.xml',
-  ],
-};
-
-// ── Country keywords for relevance filtering ─────────────────
-// Articles must mention these terms to appear in local feed
-const COUNTRY_KEYWORDS = {
-  in: ['india', 'indian', 'delhi', 'mumbai', 'bangalore', 'bengaluru', 'chennai',
-       'hyderabad', 'kolkata', 'rupee', 'modi', 'bjp', 'congress', 'rbi',
-       'sensex', 'nifty', 'bollywood', 'ipl', 'bcci'],
-  us: ['america', 'american', 'united states', 'washington', 'congress',
-       'white house', 'trump', 'federal reserve', 'dollar', 'wall street',
-       'nasdaq', 'fbi', 'cia', 'pentagon', 'senate'],
-  gb: ['britain', 'british', 'uk', 'england', 'scotland', 'wales', 'london',
-       'parliament', 'downing street', 'pound sterling', 'nhs', 'ftse',
-       'premier league', 'bank of england'],
-  au: ['australia', 'australian', 'sydney', 'melbourne', 'brisbane', 'perth',
-       'canberra', 'asx', 'aud', 'rba', 'afl', 'nrl'],
-  de: ['germany', 'german', 'berlin', 'munich', 'hamburg', 'frankfurt',
-       'bundesbank', 'dax', 'bundestag', 'bundesliga', 'merkel', 'scholz',
-       'euros', 'european', 'eu summit', 'angela', 'volkswagen', 'bmw',
-       'siemens', 'bayer', 'lufthansa'],
-  sg: ['singapore', 'singaporean', 'straits times', 'mas', 'sti', 'hawker',
-       'pap', 'lee hsien', 'jurong', 'changi', 'asean'],
-  ae: ['uae', 'dubai', 'abu dhabi', 'emirates', 'dirhams', 'opec',
-       'gulf', 'sharjah', 'aramco', 'expo'],
-  jp: ['japan', 'japanese', 'tokyo', 'osaka', 'kyoto', 'yen', 'nikkei',
-       'bank of japan', 'boj', 'sony', 'toyota', 'softbank', 'nintendo'],
-};
-
-// Check if article is actually about this country
-function isLocallyRelevant(item, country) {
-  const keywords = COUNTRY_KEYWORDS[country];
-  if (!keywords) return true; // no filter for unknown countries
-
-  const text = (
-    (item.title || '') + ' ' + (item.description || '')
-  ).toLowerCase();
-
-  return keywords.some(kw => text.includes(kw));
-}
-
-// ── Simple RSS XML parser ─────────────────────────────────────
-function parseRSS(xml) {
-  const items      = [];
-  const itemRegex  = /<item[^>]*>([\s\S]*?)<\/item>/gi;
-  const entryRegex = /<entry[^>]*>([\s\S]*?)<\/entry>/gi;
-  let match;
-
-  // Try <item> (RSS 2.0)
-  while ((match = itemRegex.exec(xml)) !== null) {
-    const item = parseItem(match[1]);
-    if (item) items.push(item);
-  }
-
-  // Try <entry> (Atom)
-  if (items.length === 0) {
-    while ((match = entryRegex.exec(xml)) !== null) {
-      const item = parseItem(match[1]);
-      if (item) items.push(item);
-    }
-  }
-
-  return items;
-}
-
-function parseItem(item) {
-  const title = extractTag(item, 'title');
-  if (!title || title.length < 10) return null;
-
-  // Try multiple link formats
-  let link = extractTag(item, 'link');
-  if (!link || link.trim() === '') {
-    link = extractAttr(item, 'link', 'href');
-  }
-  if (!link || link.includes('<') || link.trim() === '') return null;
-
-  const desc    = extractTag(item, 'description') ||
-                  extractTag(item, 'summary')      ||
-                  extractTag(item, 'content');
-  const pubDate = extractTag(item, 'pubDate')   ||
-                  extractTag(item, 'published')  ||
-                  extractTag(item, 'updated')    ||
-                  extractTag(item, 'dc:date');
-
-  // Image: try enclosure, media:content, media:thumbnail, og:image
-  const image   = extractAttr(item, 'enclosure', 'url')        ||
-                  extractAttr(item, 'media:content', 'url')     ||
-                  extractAttr(item, 'media:thumbnail', 'url')   ||
-                  extractTagAttr(item, 'media:content', 'url');
-
-  return {
-    title:       cleanText(title),
-    url:         link.trim(),
-    description: cleanText(desc),
-    publishedAt: pubDate ? safeDate(pubDate) : new Date().toISOString(),
-    image:       image || null,
-  };
-}
-
-function extractTag(xml, tag) {
-  // Handle CDATA and regular content
-  const patterns = [
-    new RegExp(`<${tag}[^>]*><!\\[CDATA\\[[\\s\\S]*?\\]\\]><\\/${tag}>`, 'i'),
-    new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'),
-  ];
-  for (const re of patterns) {
-    const m = xml.match(re);
-    if (m) {
-      return m[0]
-        .replace(new RegExp(`^<${tag}[^>]*>`, 'i'), '')
-        .replace(new RegExp(`<\\/${tag}>$`, 'i'), '')
-        .replace(/^<!\[CDATA\[/, '')
-        .replace(/\]\]>$/, '')
-        .trim();
-    }
-  }
-  return null;
-}
-
-function extractAttr(xml, tag, attr) {
-  const re = new RegExp(`<${tag}[^>]*\\s${attr}=["']([^"']+)["']`, 'i');
-  const m  = xml.match(re);
-  return m ? m[1] : null;
-}
-
-function extractTagAttr(xml, tag, attr) {
-  const re = new RegExp(`<${tag}\\s[^>]*${attr}=["']([^"']+)["']`, 'i');
-  const m  = xml.match(re);
-  return m ? m[1] : null;
-}
-
-function cleanText(text) {
-  if (!text) return '';
-  return text
-    // Strip all HTML tags first
-    .replace(/<[^>]+>/g, ' ')
-    // Decode named entities
-    .replace(/&apos;/g,  "'")
-    .replace(/&#x27;/g,  "'")
-    .replace(/&amp;/g,   '&')
-    .replace(/&lt;/g,    '<')
-    .replace(/&gt;/g,    '>')
-    .replace(/&quot;/g,  '"')
-    .replace(/&#39;/g,   "'")
-    .replace(/&nbsp;/g,  ' ')
-    .replace(/&hellip;/g,'…')
-    .replace(/&mdash;/g, '—')
-    .replace(/&ndash;/g, '–')
-    // Decode numeric entities
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-      try { return String.fromCharCode(parseInt(hex, 16)); } catch { return ''; }
-    })
-    .replace(/&#(\d+);/g, (_, dec) => {
-      try { return String.fromCharCode(parseInt(dec)); } catch { return ''; }
-    })
-    // Clean up whitespace
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function safeDate(str) {
-  try {
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
-  } catch { return new Date().toISOString(); }
-}
-
-// Low quality sources to block entirely
+// ── Blocked sources ───────────────────────────────────────────
 const BLOCKED_SOURCES = [
-  'feedburner', 'blogspot', 'wordpress.com', 'medium.com/feed',
-  'tumblr', 'substack', 'beehiiv',
+  'dvidshub', 'dvids', 'defense visual', 'army.mil', 'navy.mil',
+  'af.mil', 'marines.mil', 'globenewswire', 'businesswire',
+  'prnewswire', 'accesswire', 'einpresswire', 'prweb',
+  'send2press', 'newswire',
 ];
 
-function isGoodArticle(item) {
-  if (!item.title || item.title.length < 15) return false;
-  if (/^\d{6}-[A-Z]/.test(item.title)) return false;
-  if (/\[image \d+/i.test(item.title)) return false;
-  if (item.title === '[Removed]') return false;
-  if (/<[a-z]/i.test(item.title)) return false; // raw HTML in title
-  // Block low quality sources
-  const src = (item.sourceName || item.url || '').toLowerCase();
-  if (BLOCKED_SOURCES.some(b => src.includes(b))) return false;
-  // Block articles older than 3 days
-  if (item.publishedAt) {
-    const ageHours = (Date.now() - new Date(item.publishedAt)) / 3600000;
-    if (ageHours > 72) return false;
-  }
-  const words = item.title.split(' ').filter(w => /[a-zA-Z]{3,}/.test(w));
-  return words.length >= 3;
+// ── Country-specific trusted sources ─────────────────────────
+// Only articles from these sources appear in the Local feed
+// This prevents cross-country bleed
+const COUNTRY_SOURCES = {
+  us: ['reuters', 'ap news', 'associated press', 'cnn', 'nbc news', 'abc news',
+       'cbs news', 'fox news', 'the new york times', 'washington post', 'wall street journal',
+       'bloomberg', 'cnbc', 'usa today', 'npr', 'politico', 'the hill', 'axios',
+       'time', 'newsweek', 'business insider', 'the atlantic', 'vox', 'buzzfeed news',
+       'huffpost', 'los angeles times', 'new york post'],
+  gb: ['bbc', 'the guardian', 'the times', 'sky news', 'the telegraph', 'daily mail',
+       'the independent', 'financial times', 'the sun', 'daily mirror', 'evening standard',
+       'metro', 'city a.m.', 'the spectator'],
+  in: ['the hindu', 'times of india', 'hindustan times', 'ndtv', 'india today',
+       'the economic times', 'mint', 'business standard', 'the wire', 'scroll',
+       'firstpost', 'news18', 'zee news', 'republic world', 'the print',
+       'deccan herald', 'indian express', 'tribune india'],
+  au: ['abc news', 'sydney morning herald', 'the australian', 'the age',
+       'news.com.au', '9news', '7news', 'the guardian australia', 'afr',
+       'daily telegraph', 'herald sun', 'courier mail'],
+  de: ['der spiegel', 'die zeit', 'frankfurter allgemeine', 'suddeutsche zeitung',
+       'bild', 'dw', 'deutsche welle', 'handelsblatt', 'focus', 'stern',
+       'the local germany', 'germany news'],
+  sg: ['the straits times', 'channel news asia', 'cna', 'today online',
+       'the business times', 'zaobao', 'mothership', 'rice media'],
+  ae: ['gulf news', 'khaleej times', 'the national', 'arabian business',
+       'al jazeera', 'gulfnews', 'emirates news agency', 'wam'],
+  jp: ['japan times', 'nhk world', 'asahi shimbun', 'mainichi', 'yomiuri',
+       'nikkei', 'the japan news', 'kyodo news'],
+};
+
+// ── Headline quality filter ───────────────────────────────────
+function isGarbageHeadline(title) {
+  if (!title) return true;
+  if (title.length < 15) return true;
+  if (title === '[Removed]') return true;
+  if (/^\d{6}-[A-Z]-[A-Z0-9]+-\d+/.test(title)) return true;
+  if (/\[image \d+ of \d+\]/i.test(title)) return true;
+  if (/^(FOR IMMEDIATE RELEASE|PRESS RELEASE)/i.test(title)) return true;
+  const wordCount = title.split(' ').filter(w => /[a-zA-Z]{3,}/.test(w)).length;
+  if (wordCount < 3) return true;
+  return false;
 }
 
-function getSourceName(url) {
-  try {
-    const host = new URL(url).hostname.replace('www.', '').replace('feeds.', '').replace('rss.', '');
-    const map  = {
-      'thehindu.com':            'The Hindu',
-      'timesofindia.indiatimes': 'Times of India',
-      'indianexpress.com':       'Indian Express',
-      'hindustantimes.com':      'Hindustan Times',
-      'livemint.com':            'Mint',
-      'economictimes':           'Economic Times',
-      'ndtvnews':                'NDTV',
-      'npr.org':                 'NPR',
-      'cnn.com':                 'CNN',
-      'nbcnews.com':             'NBC News',
-      'abcnews.go.com':          'ABC News',
-      'washingtonpost.com':      'Washington Post',
-      'nytimes.com':             'New York Times',
-      'reuters.com':             'Reuters',
-      'bbci.co.uk':              'BBC',
-      'bbc.co.uk':               'BBC',
-      'theguardian.com':         'The Guardian',
-      'skynews.com':             'Sky News',
-      'independent.co.uk':       'The Independent',
-      'abc.net.au':              'ABC Australia',
-      'smh.com.au':              'Sydney Morning Herald',
-      'theaustralian.com.au':    'The Australian',
-      'dw.com':                  'Deutsche Welle',
-      'thelocal.de':             'The Local Germany',
-      'straitstimes.com':        'The Straits Times',
-      'channelnewsasia.com':     'Channel News Asia',
-      'thenationalnews.com':     'The National',
-      'gulfnews.com':            'Gulf News',
-      'japantimes.co.jp':        'Japan Times',
-      'nhk.or.jp':               'NHK World',
-      'techcrunch.com':          'TechCrunch',
-      'theverge.com':            'The Verge',
-      'arstechnica.com':         'Ars Technica',
-      'sciencedaily.com':        'Science Daily',
-    };
-    for (const [key, name] of Object.entries(map)) {
-      if (host.includes(key)) return name;
-    }
-    const parts = host.split('.');
-    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-  } catch { return 'News'; }
+function isBlockedSource(sourceName) {
+  if (!sourceName) return false;
+  const lower = sourceName.toLowerCase();
+  return BLOCKED_SOURCES.some(b => lower.includes(b));
 }
 
-function getRelativeTime(d) {
-  const m = Math.floor((Date.now() - new Date(d)) / 60000);
-  const h = Math.floor(m / 60);
-  if (m < 1)  return 'Just now';
-  if (m < 60) return `${m}m ago`;
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+// Check if article is from a trusted source for this country
+function isLocalSource(sourceName, country) {
+  if (!sourceName) return false;
+  const trusted = COUNTRY_SOURCES[country];
+  if (!trusted) return true; // no list = allow all
+  const lower = sourceName.toLowerCase();
+  return trusted.some(s => lower.includes(s));
 }
 
-function isBreaking(d) {
-  return (Date.now() - new Date(d)) / 60000 < 30;
-}
-
-// ── Content-based topic inference (same logic as frontend) ──
-function inferTopic(headline, summary) {
-  const text = ((headline || '') + ' ' + (summary || '')).toLowerCase();
+// ── Content-based topic inference ────────────────────────────
+function inferTopic(headline, description) {
+  const text = ((headline || '') + ' ' + (description || '')).toLowerCase();
   if (/\btech\b|\bai\b|\bsoftware\b|\bdigital\b|\bcyber\b|\bstartup\b|\binternet\b|\bsilicon\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bmeta\b|\bopenai\b/.test(text))
     return { topic: 'tech',     label: 'Tech'     };
   if (/\beconomy\b|\bmarket\b|\bbank\b|\binflation\b|\bfinance\b|\btrade\b|\bstock\b|\bgdp\b|\brupee\b|\beuro\b|\bdollar\b|\bsensex\b|\bnifty\b|\bdax\b|\binvestment\b|\bfed\b|\brbi\b/.test(text))
@@ -354,151 +92,205 @@ module.exports = async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (request.method === 'OPTIONS') return response.status(200).end();
 
-  const { country = 'us', category = 'general', max = 20 } = request.query;
+  const {
+    country  = 'us',
+    category = 'general',
+    max      = 10,
+    bypass   = 'false',
+    local    = 'false', // local=true enforces strict country source filtering
+  } = request.query;
 
+  const GNEWS_API_KEY     = process.env.GNEWS_API_KEY;
+  const MEDIASTACK_KEY    = process.env.MEDIASTACK_KEY;
   const SUPABASE_URL      = process.env.SUPABASE_URL;
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-  const GNEWS_API_KEY     = process.env.GNEWS_API_KEY;
-  const supabase          = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  const cacheKey          = `rss-${country}-${category}`;
 
-  // Check cache (20 min TTL)
-  try {
-    const { data: cached } = await supabase
-      .from('news_cache')
-      .select('articles, fetched_at')
-      .eq('cache_key', cacheKey)
-      .gt('expires_at', new Date().toISOString())
-      .single();
-    if (cached && cached.articles?.length > 0) {
-      return response.status(200).json({
-        success: true, fromCache: true,
-        totalArticles: cached.articles.length,
-        articles: cached.articles,
-      });
-    }
-  } catch (e) {}
+  const supabase  = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // Separate cache keys for local vs global
+  const cacheKey  = `${country}-${category}${local === 'true' ? '-local' : ''}`;
 
-  try {
-    const countryFeeds  = COUNTRY_FEEDS[country]   || COUNTRY_FEEDS.us;
-    const categoryFeeds = CATEGORY_FEEDS[category] || [];
-    const feedUrls      = category !== 'general'
-      ? [...categoryFeeds, ...countryFeeds.slice(0, 2)]
-      : countryFeeds;
-
-    // Fetch all feeds in parallel with 5s timeout
-    const feedResults = await Promise.allSettled(
-      feedUrls.slice(0, 6).map(async url => {
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'Verityn/1.0 (news aggregator)' },
-          signal:  AbortSignal.timeout(5000),
+  // Check cache
+  if (bypass !== 'true') {
+    try {
+      const { data: cached } = await supabase
+        .from('news_cache')
+        .select('articles, fetched_at, velocity_level')
+        .eq('cache_key', cacheKey)
+        .gt('expires_at', new Date().toISOString())
+        .single();
+      if (cached) {
+        return response.status(200).json({
+          success: true, fromCache: true,
+          cachedAt: cached.fetched_at,
+          velocityLevel: cached.velocity_level || 'low',
+          country: country.toUpperCase(), category,
+          totalArticles: cached.articles.length,
+          articles: cached.articles,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const xml = await res.text();
-        const items = parseRSS(xml);
-        return { url, items };
-      })
+      }
+    } catch (e) {}
+  }
+
+  try {
+    const allRaw = [];
+
+    // Source 1: GNews — most reliable country filtering
+    if (GNEWS_API_KEY) {
+      try {
+        const url  = `https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=10&apikey=${GNEWS_API_KEY}`;
+        const res  = await fetch(url);
+        const data = await res.json();
+        if (data.articles) {
+          allRaw.push(...data.articles.map(a => ({
+            title: a.title, description: a.description, url: a.url,
+            image: a.image, publishedAt: a.publishedAt,
+            source: { name: a.source?.name }, _src: 'gnews',
+          })));
+        }
+      } catch (e) { console.error('GNews error:', e.message); }
+    }
+
+    // Source 2: MediaStack — supplement only
+    if (MEDIASTACK_KEY) {
+      try {
+        const msCountry = { in:'in',us:'us',gb:'gb',au:'au',sg:'sg',ae:'ae',de:'de',jp:'jp' }[country] || 'us';
+        const msCat     = { general:'general',technology:'technology',business:'business',sports:'sports',science:'science',health:'health',entertainment:'entertainment' }[category] || 'general';
+        const url  = `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK_KEY}&countries=${msCountry}&categories=${msCat}&languages=en&limit=10&sort=published_desc`;
+        const res  = await fetch(url);
+        const data = await res.json();
+        if (data.data) {
+          allRaw.push(...data.data
+            .filter(a => a.title && a.url)
+            .map(a => ({
+              title: a.title, description: a.description, url: a.url,
+              image: a.image, publishedAt: a.published_at,
+              source: { name: a.source }, _src: 'mediastack',
+            }))
+          );
+        }
+      } catch (e) { console.error('MediaStack error:', e.message); }
+    }
+
+    if (allRaw.length === 0) {
+      return response.status(503).json({ error: 'No news sources returned data.' });
+    }
+
+    // ── Layer 1: Quality filter ───────────────────────────
+    let filtered = allRaw.filter(a =>
+      !isGarbageHeadline(a.title) &&
+      !isBlockedSource(a.source?.name)
     );
 
-    const allItems = [];
-    let feedsFetched = 0;
-
-    for (const result of feedResults) {
-      if (result.status === 'fulfilled' && result.value.items?.length > 0) {
-        feedsFetched++;
-        const sourceName = getSourceName(result.value.url);
-        result.value.items.forEach(item => {
-          allItems.push({ ...item, sourceName });
-        });
+    // ── Layer 2: Country source filter (Local feed only) ──
+    // When local=true, only show articles from trusted local sources
+    if (local === 'true' && COUNTRY_SOURCES[country]) {
+      const localFiltered = filtered.filter(a => isLocalSource(a.source?.name, country));
+      // Only apply if we have enough local articles — otherwise fall back
+      if (localFiltered.length >= 3) {
+        filtered = localFiltered;
       }
     }
 
-    // ── GNews fallback if RSS returns nothing ─────────────
-    // This ensures Germany, Singapore, UAE always have content
-    if (allItems.length < 5 && GNEWS_API_KEY) {
-      try {
-        // Use keyword search so we get news ABOUT the country, not just from it
-        const countryKeywords = COUNTRY_KEYWORDS[country];
-        const searchTerm = countryKeywords ? countryKeywords[0] : country;
-        const gnewsUrl  = `https://gnews.io/api/v4/search?q=${encodeURIComponent(searchTerm)}&lang=en&max=10&apikey=${GNEWS_API_KEY}`;
-        const gnewsRes  = await fetch(gnewsUrl);
-        const gnewsData = await gnewsRes.json();
-        if (gnewsData.articles) {
-          gnewsData.articles.forEach(a => {
-            allItems.push({
-              title:       a.title,
-              url:         a.url,
-              description: a.description,
-              publishedAt: a.publishedAt,
-              image:       a.image,
-              sourceName:  a.source?.name || 'News',
-            });
-          });
-        }
-      } catch (e) {}
-    }
+    // Use unfiltered if nothing passes
+    if (filtered.length === 0) filtered = allRaw;
 
-    // Filter quality + local relevance
-    // isLocallyRelevant ensures articles are ABOUT the country, not just FROM its publishers
-    const filtered = allItems.filter(item =>
-      isGoodArticle(item) && isLocallyRelevant(item, country)
-    );
-    const seen     = new Set();
-    const deduped  = filtered.filter(item => {
-      // Use first 60 chars normalised — catches near-duplicate headlines
-      const key = item.title.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    // ── Deduplicate ───────────────────────────────────────
+    const deduplicated = deduplicateStories(filtered);
 
-    deduped.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    // ── Transform ─────────────────────────────────────────
+    // topic now inferred from content — see inferTopic() above
 
-    const articles = deduped.slice(0, parseInt(max)).map((item, i) => {
-      // Content-based topic inference — not API category
-      const topicResult = inferTopic(item.title, item.description);
-      return {
-      id:          `rss-${country}-${category}-${i}-${Date.now()}`,
-      headline:    item.title,
-      summary:     item.description || '',
-      source:      item.sourceName,
-      sourceUrl:   item.url,
-      image:       item.image,
-      publishedAt: item.publishedAt,
-      time:        getRelativeTime(item.publishedAt),
-      topic:       topicResult.topic,
-      topicLabel:  topicResult.label,
-      breaking:    isBreaking(item.publishedAt),
+    const articles = deduplicated.slice(0, parseInt(max)).map((a, i) => ({
+      id:          `${country}-${category}-${i}-${Date.now()}`,
+      headline:    a.title,
+      summary:     a.description || '',
+      source:      a.source?.name || 'Unknown Source',
+      sourceUrl:   a.url,
+      image:       a.image,
+      publishedAt: a.publishedAt,
+      time:        getRelativeTime(a.publishedAt),
+      ...inferTopic(a.title, a.description),
+      breaking:    isBreaking(a.publishedAt),
       country:     country.toUpperCase(),
-      velocity:    i < 3
-        ? { label: '🔥 Top story', level: 'high' }
-        : { label: '↑ Trending',   level: 'med'  },
-      sourceCount: 1,
+      velocity:    estimateVelocity(i, a._sourceCount || 1),
+      sourceCount: a._sourceCount || 1,
+      allSources:  a._allSources  || [a.source?.name],
       bookmarked:  false,
-    }});
+    }));
 
-    // Cache 20 minutes
-    try {
-      await supabase.from('news_cache').upsert({
-        cache_key:      cacheKey,
-        articles,
-        fetched_at:     new Date().toISOString(),
-        expires_at:     new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-        velocity_level: 'med',
-      }, { onConflict: 'cache_key' });
-    } catch (e) {}
+    const bCount       = articles.filter(a => a.breaking).length;
+    const feedVelocity = bCount >= 3 ? 'high' : bCount >= 1 ? 'med' : 'low';
+    const ttlMinutes   = feedVelocity === 'high' ? 5 : feedVelocity === 'med' ? 10 : 15;
+    const expiresAt    = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+
+    await supabase.from('news_cache').upsert({
+      cache_key: cacheKey, articles,
+      fetched_at: new Date().toISOString(),
+      expires_at: expiresAt, velocity_level: feedVelocity,
+    }, { onConflict: 'cache_key' });
 
     return response.status(200).json({
-      success:      true,
-      fromCache:    false,
-      country:      country.toUpperCase(),
-      category,
-      feedsFetched,
+      success: true, fromCache: false,
+      velocityLevel: feedVelocity, ttlMinutes,
+      country: country.toUpperCase(), category,
       totalArticles: articles.length,
+      filteredOut: allRaw.length - filtered.length,
+      sourcesUsed: [...new Set(allRaw.map(a => a._src))],
       articles,
     });
 
   } catch (error) {
-    return response.status(500).json({ error: 'RSS fetch failed.', details: error.message });
+    return response.status(500).json({ error: 'Failed to fetch news.', details: error.message });
   }
 };
+
+// ── Deduplication ─────────────────────────────────────────────
+function deduplicateStories(articles) {
+  const clusters = [];
+  const used     = new Set();
+  const STOP     = new Set(['the','a','an','in','on','at','to','for','of','and','or','but','is','are','was','were','be','been','has','have','had','will','would','could','should','may','might','this','that','with','from','by','as','it','its','not','no','new','says','said','after','before','over','into','about','up','out','than','more','also','their','they','he','she','we','who','what','when','where','how','why','per','amid']);
+  const words    = t => !t ? [] : t.toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(w => w.length > 3 && !STOP.has(w));
+
+  for (let i = 0; i < articles.length; i++) {
+    if (used.has(i)) continue;
+    const cluster = [articles[i]];
+    const wA = words(articles[i].title);
+    for (let j = i + 1; j < articles.length; j++) {
+      if (used.has(j)) continue;
+      const wB = words(articles[j].title);
+      const overlap = wA.filter(w => wB.includes(w)).length;
+      if (wA.length > 0 && wB.length > 0 && overlap / Math.min(wA.length, wB.length) > 0.5) {
+        cluster.push(articles[j]);
+        used.add(j);
+      }
+    }
+    used.add(i);
+    const best = cluster.sort((a,b) => new Date(b.publishedAt||0) - new Date(a.publishedAt||0))[0];
+    best._sourceCount = cluster.length;
+    best._allSources  = [...new Set(cluster.map(a => a.source?.name).filter(Boolean))];
+    clusters.push(best);
+  }
+
+  return clusters.sort((a,b) => {
+    if (isBreaking(a.publishedAt) && !isBreaking(b.publishedAt)) return -1;
+    if (!isBreaking(a.publishedAt) && isBreaking(b.publishedAt)) return 1;
+    return new Date(b.publishedAt) - new Date(a.publishedAt);
+  });
+}
+
+function getRelativeTime(d) {
+  const m = Math.floor((Date.now() - new Date(d)) / 60000);
+  const h = Math.floor(m / 60);
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m}m ago`;
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h/24)}d ago`;
+}
+
+function isBreaking(d) { return (Date.now() - new Date(d)) / 60000 < 30; }
+
+function estimateVelocity(i, n) {
+  if (n >= 3 || i === 0) return { label:'🔥 Top story', level:'high' };
+  if (n >= 2 || i  <  4) return { label:'↑ Trending',  level:'med'  };
+  return { label:'In the news', level:'low' };
+}
