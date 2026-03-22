@@ -66,7 +66,7 @@ const COUNTRY_FEEDS = {
 
 const CATEGORY_FEEDS = {
   technology: [
-    'https://feeds.feedburner.com/TechCrunch',
+    'https://techcrunch.com/feed/',
     'https://www.theverge.com/rss/index.xml',
     'https://feeds.arstechnica.com/arstechnica/index',
     'https://feeds.bbci.co.uk/news/technology/rss.xml',
@@ -215,16 +215,28 @@ function extractTagAttr(xml, tag, attr) {
 function cleanText(text) {
   if (!text) return '';
   return text
-    .replace(/<[^>]+>/g, '')
+    // Strip all HTML tags first
+    .replace(/<[^>]+>/g, ' ')
+    // Decode named entities
+    .replace(/&apos;/g,  "'")
+    .replace(/&#x27;/g,  "'")
     .replace(/&amp;/g,   '&')
     .replace(/&lt;/g,    '<')
     .replace(/&gt;/g,    '>')
     .replace(/&quot;/g,  '"')
     .replace(/&#39;/g,   "'")
     .replace(/&nbsp;/g,  ' ')
-    .replace(/&#\d+;/g,  c => {
-      try { return String.fromCharCode(parseInt(c.match(/\d+/)[0])); } catch { return ''; }
+    .replace(/&hellip;/g,'…')
+    .replace(/&mdash;/g, '—')
+    .replace(/&ndash;/g, '–')
+    // Decode numeric entities
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      try { return String.fromCharCode(parseInt(hex, 16)); } catch { return ''; }
     })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try { return String.fromCharCode(parseInt(dec)); } catch { return ''; }
+    })
+    // Clean up whitespace
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -236,11 +248,26 @@ function safeDate(str) {
   } catch { return new Date().toISOString(); }
 }
 
+// Low quality sources to block entirely
+const BLOCKED_SOURCES = [
+  'feedburner', 'blogspot', 'wordpress.com', 'medium.com/feed',
+  'tumblr', 'substack', 'beehiiv',
+];
+
 function isGoodArticle(item) {
   if (!item.title || item.title.length < 15) return false;
   if (/^\d{6}-[A-Z]/.test(item.title)) return false;
   if (/\[image \d+/i.test(item.title)) return false;
   if (item.title === '[Removed]') return false;
+  if (/<[a-z]/i.test(item.title)) return false; // raw HTML in title
+  // Block low quality sources
+  const src = (item.sourceName || item.url || '').toLowerCase();
+  if (BLOCKED_SOURCES.some(b => src.includes(b))) return false;
+  // Block articles older than 3 days
+  if (item.publishedAt) {
+    const ageHours = (Date.now() - new Date(item.publishedAt)) / 3600000;
+    if (ageHours > 72) return false;
+  }
   const words = item.title.split(' ').filter(w => /[a-zA-Z]{3,}/.test(w));
   return words.length >= 3;
 }
@@ -402,7 +429,8 @@ module.exports = async function handler(request, response) {
     );
     const seen     = new Set();
     const deduped  = filtered.filter(item => {
-      const key = item.title.slice(0, 50).toLowerCase().replace(/[^a-z]/g, '');
+      // Use first 60 chars normalised — catches near-duplicate headlines
+      const key = item.title.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
