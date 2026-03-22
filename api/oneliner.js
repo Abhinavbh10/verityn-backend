@@ -30,7 +30,8 @@ module.exports = async function handler(request, response) {
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
   const supabase          = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  const { articles = [], country = 'us', city = '' } = request.body || {};
+  const { articles = [], countries = ['us'], interests = [] } = request.body || {};
+  const primaryCountry = Array.isArray(countries) ? countries[0] : 'us';
 
   if (!articles.length) {
     return response.status(400).json({ error: 'No articles provided.' });
@@ -42,7 +43,8 @@ module.exports = async function handler(request, response) {
   // Cache key based on content — not time
   // Only regenerates when the actual headlines change
   const headlineHash = hashHeadlines(top4);
-  const cacheKey     = `oneliner-${country}-${city}-${headlineHash}`.slice(0, 100);
+  const countryStr  = Array.isArray(countries) ? countries.join('-') : countries;
+  const cacheKey    = `oneliner-${countryStr}-${headlineHash}`.slice(0, 100);
 
   // Check cache
   try {
@@ -52,17 +54,20 @@ module.exports = async function handler(request, response) {
       .eq('cache_key', cacheKey)
       .gt('expires_at', new Date().toISOString())
       .single();
-    if (cached?.digest?.length > 0) {
+    if (cached?.digest && typeof cached.digest === 'object') {
       return response.status(200).json({
         success: true, fromCache: true,
-        oneliners: cached.digest,
+        onelinerMap: cached.digest,
       });
     }
   } catch (e) {}
 
   // Build location context
-  const locationStr = city ? `${city}, ${country.toUpperCase()}` : country.toUpperCase();
-  const countryNames = {
+  // countryNames already defined above
+  const _unused = { in:'India', us:'United States', gb:'UK', de:'Germany', au:'Australia', sg:'Singapore', ae:'UAE', jp:'Japan' };
+  const locationStr  = (Array.isArray(countries) ? countries : [countries]).map(c => countryNames[c] || c).join(', ');
+  // countryNames already defined above
+  const _unused = {
     in: 'India', us: 'United States', gb: 'United Kingdom',
     au: 'Australia', de: 'Germany', sg: 'Singapore',
     ae: 'UAE', jp: 'Japan',
@@ -119,27 +124,30 @@ Rules — follow every one strictly:
       } catch { oneliners = top4.map(() => ''); }
     }
 
-    // Ensure array of 4 strings
-    while (oneliners.length < 4) oneliners.push('');
-    oneliners = oneliners.slice(0, 4).map(s => String(s || ''));
+    // Build a map: normalised headline → oneliner
+    // This way the frontend matches by headline, not position
+    const onelinerMap = {};
+    top4.forEach((article, i) => {
+      const key = article.headline.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
+      onelinerMap[key] = String(oneliners[i] || '');
+    });
 
     // Cache until headlines change — 6 hour max TTL as safety net
     try {
       await supabase.from('digest_cache').upsert({
         cache_key:  cacheKey,
-        digest:     oneliners,
+        digest:     onelinerMap,
         fetched_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
       }, { onConflict: 'cache_key' });
     } catch (e) {}
 
     return response.status(200).json({
-      success:    true,
-      fromCache:  false,
-      country,
-      city,
+      success:     true,
+      fromCache:   false,
+      countries,
       headlineHash,
-      oneliners,
+      onelinerMap,
     });
 
   } catch (error) {
