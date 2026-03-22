@@ -332,6 +332,22 @@ function isBreaking(d) {
   return (Date.now() - new Date(d)) / 60000 < 30;
 }
 
+// ── Content-based topic inference (same logic as frontend) ──
+function inferTopic(headline, summary) {
+  const text = ((headline || '') + ' ' + (summary || '')).toLowerCase();
+  if (/\btech\b|\bai\b|\bsoftware\b|\bdigital\b|\bcyber\b|\bstartup\b|\binternet\b|\bsilicon\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bmeta\b|\bopenai\b/.test(text))
+    return { topic: 'tech',     label: 'Tech'     };
+  if (/\beconomy\b|\bmarket\b|\bbank\b|\binflation\b|\bfinance\b|\btrade\b|\bstock\b|\bgdp\b|\brupee\b|\beuro\b|\bdollar\b|\bsensex\b|\bnifty\b|\bdax\b|\binvestment\b|\bfed\b|\brbi\b/.test(text))
+    return { topic: 'finance',  label: 'Finance'  };
+  if (/\belection\b|\bparliament\b|\bminister\b|\bgovernment\b|\bvote\b|\bpolicy\b|\bparty\b|\bpolitical\b|\bpresident\b|\bcongress\b|\bsenate\b/.test(text))
+    return { topic: 'politics', label: 'Politics' };
+  if (/\bfootball\b|\bcricket\b|\bmatch\b|\bleague\b|\btournament\b|\bplayer\b|\bteam\b|\bgoal\b|\bsport\b|\bolympic\b|\bipl\b|\bnba\b|\bnfl\b|\bfifa\b/.test(text))
+    return { topic: 'sports',   label: 'Sports'   };
+  if (/\bclimate\b|\benergy\b|\brenewable\b|\bemission\b|\benvironment\b|\bsolar\b|\bgreen\b|\bcarbon\b|\bweather\b/.test(text))
+    return { topic: 'climate',  label: 'Climate'  };
+  return { topic: 'world', label: 'World' };
+}
+
 module.exports = async function handler(request, response) {
 
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -438,10 +454,10 @@ module.exports = async function handler(request, response) {
 
     deduped.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
 
-    const TOPIC_MAP = { general:'world', technology:'tech', business:'finance', sports:'sports', science:'climate' };
-    const LABEL_MAP = { general:'World', technology:'Tech', business:'Finance', sports:'Sports', science:'Climate' };
-
-    const articles = deduped.slice(0, parseInt(max)).map((item, i) => ({
+    const articles = deduped.slice(0, parseInt(max)).map((item, i) => {
+      // Content-based topic inference — not API category
+      const topicResult = inferTopic(item.title, item.description);
+      return {
       id:          `rss-${country}-${category}-${i}-${Date.now()}`,
       headline:    item.title,
       summary:     item.description || '',
@@ -450,8 +466,8 @@ module.exports = async function handler(request, response) {
       image:       item.image,
       publishedAt: item.publishedAt,
       time:        getRelativeTime(item.publishedAt),
-      topic:       TOPIC_MAP[category] || 'world',
-      topicLabel:  LABEL_MAP[category] || 'World',
+      topic:       topicResult.topic,
+      topicLabel:  topicResult.label,
       breaking:    isBreaking(item.publishedAt),
       country:     country.toUpperCase(),
       velocity:    i < 3
@@ -459,7 +475,7 @@ module.exports = async function handler(request, response) {
         : { label: '↑ Trending',   level: 'med'  },
       sourceCount: 1,
       bookmarked:  false,
-    }));
+    }});
 
     // Cache 20 minutes
     try {
