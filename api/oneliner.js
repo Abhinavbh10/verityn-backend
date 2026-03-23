@@ -92,16 +92,20 @@ module.exports = async function handler(request, response) {
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
         max_tokens: 300,
-        system: `You write one-line news context for busy professionals following ${locationStr}, interested in ${interestLabel}.
+        system: `You write one-line context for news-savvy professionals following ${locationStr}, interested in ${interestLabel}.
+
+Your one-liner must answer: "So what does this mean for me RIGHT NOW?"
+It must NOT summarise or reword the headline — the reader already sees it.
 
 Rules:
-- NEVER restate or paraphrase the headline
-- Write WHY it matters to someone following ${locationStr} RIGHT NOW
-- Be specific: a number, deadline, direct impact, or action to take
+- Start with a concrete consequence, number, or action — not the event itself
+- Examples of WRONG (restating): "Election seat sharing finalised in Tamil Nadu" ✗
+- Examples of RIGHT (consequence): "Ruling coalition locked in — markets open stable Monday" ✓
+- Examples of WRONG: "Iranians and Israelis connect through music" ✗  
+- Examples of RIGHT: "Cultural exchange defies political narrative — rare access story" ✓
 - Maximum 12 words
-- No fluff, no "this means", no "experts say"
-- Respond ONLY with a JSON array of exactly 4 strings
-- No markdown, no backticks, no explanation — just the array starting with [`,
+- Never use: "this means", "experts say", "according to", "the"
+- Respond ONLY with a JSON array of exactly 4 strings starting with [`,
         messages: [{
           role:    'user',
           content: `Headlines:\n${headlinesList}\n\nReturn a JSON array of exactly 4 one-liners. Start with [`,
