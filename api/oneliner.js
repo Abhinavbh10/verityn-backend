@@ -1,13 +1,19 @@
 // ============================================================
-// FILE: api/oneliner.js  (NEW)
+// FILE: api/oneliner.js
 // PURPOSE: Generates AI one-liners for top 4 leading stories
-//          Cache key = hash of headlines — only regenerates
-//          when the actual top stories change
+//          Returns a map keyed by normalised headline
+//          Cache is content-aware — only regenerates when
+//          top stories actually change
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 
-// Simple hash of concatenated headlines
+const COUNTRY_NAMES = {
+  in: 'India', us: 'United States', gb: 'United Kingdom',
+  de: 'Germany', au: 'Australia', sg: 'Singapore',
+  ae: 'UAE', jp: 'Japan',
+};
+
 function hashHeadlines(articles) {
   const str = articles.map(a => a.headline).join('|');
   let hash = 0;
@@ -17,6 +23,10 @@ function hashHeadlines(articles) {
     hash = hash & hash;
   }
   return Math.abs(hash).toString(36);
+}
+
+function normaliseKey(headline) {
+  return (headline || '').slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 module.exports = async function handler(request, response) {
@@ -31,20 +41,19 @@ module.exports = async function handler(request, response) {
   const supabase          = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   const { articles = [], countries = ['us'], interests = [] } = request.body || {};
-  const primaryCountry = Array.isArray(countries) ? countries[0] : 'us';
 
-  if (!articles.length) {
+  const countriesArr  = Array.isArray(countries) ? countries : [countries];
+  const interestsArr  = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
+  const top4          = articles.slice(0, 4);
+
+  if (!top4.length) {
     return response.status(400).json({ error: 'No articles provided.' });
   }
 
-  // Take top 4 only
-  const top4 = articles.slice(0, 4);
-
-  // Cache key based on content — not time
-  // Only regenerates when the actual headlines change
+  // Cache key based on headline content — not time
   const headlineHash = hashHeadlines(top4);
-  const countryStr  = Array.isArray(countries) ? countries.join('-') : countries;
-  const cacheKey    = `oneliner-${countryStr}-${headlineHash}`.slice(0, 100);
+  const countryStr   = countriesArr.sort().join('-');
+  const cacheKey     = `oneliner-${countryStr}-${headlineHash}`.slice(0, 100);
 
   // Check cache
   try {
@@ -54,7 +63,12 @@ module.exports = async function handler(request, response) {
       .eq('cache_key', cacheKey)
       .gt('expires_at', new Date().toISOString())
       .single();
-    if (cached?.digest && !Array.isArray(cached.digest) && typeof cached.digest === 'object' && Object.keys(cached.digest).length > 0) {
+    if (
+      cached?.digest &&
+      !Array.isArray(cached.digest) &&
+      typeof cached.digest === 'object' &&
+      Object.keys(cached.digest).length > 0
+    ) {
       return response.status(200).json({
         success: true, fromCache: true,
         onelinerMap: cached.digest,
@@ -63,22 +77,9 @@ module.exports = async function handler(request, response) {
   } catch (e) {}
 
   // Build location context
-  // countryNames already defined above
-  const _unused = { in:'India', us:'United States', gb:'UK', de:'Germany', au:'Australia', sg:'Singapore', ae:'UAE', jp:'Japan' };
-  const locationStr  = (Array.isArray(countries) ? countries : [countries]).map(c => countryNames[c] || c).join(', ');
-  // countryNames already defined above
-  const _unused = {
-    in: 'India', us: 'United States', gb: 'United Kingdom',
-    au: 'Australia', de: 'Germany', sg: 'Singapore',
-    ae: 'UAE', jp: 'Japan',
-  };
-  const countryName = countryNames[country] || country;
-  const locationFull = city ? `${city}, ${countryName}` : countryName;
-
-  // Numbered headlines for Claude
-  const headlinesList = top4
-    .map((a, i) => `${i + 1}. ${a.headline} (${a.source})`)
-    .join('\n');
+  const locationStr    = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
+  const interestLabel  = interestsArr.length ? interestsArr.join(', ') : 'general news';
+  const headlinesList  = top4.map((a, i) => `${i + 1}. ${a.headline} (${a.source || 'Unknown'})`).join('\n');
 
   try {
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -91,20 +92,19 @@ module.exports = async function handler(request, response) {
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
         max_tokens: 300,
-        system: `You write one-line news context for busy professionals in ${locationFull}.
+        system: `You write one-line news context for busy professionals following ${locationStr}, interested in ${interestLabel}.
 
-Rules — follow every one strictly:
+Rules:
 - NEVER restate or paraphrase the headline
-- Write WHY it matters to someone living in ${locationFull} RIGHT NOW
-- Be specific: name a number, a deadline, a direct impact, or an action to take
-- Maximum 12 words per one-liner
-- No fluff, no "this means that", no "experts say"
-- Personal and direct — write as if texting a smart friend
-- Respond ONLY with a JSON array of 4 strings, one per headline
-- No markdown, no backticks, no preamble — just the array`,
+- Write WHY it matters to someone following ${locationStr} RIGHT NOW
+- Be specific: a number, deadline, direct impact, or action to take
+- Maximum 12 words
+- No fluff, no "this means", no "experts say"
+- Respond ONLY with a JSON array of exactly 4 strings
+- No markdown, no backticks, no explanation — just the array starting with [`,
         messages: [{
           role:    'user',
-          content: `Headlines for someone in ${locationFull}:\n${headlinesList}\n\nReturn a JSON array of 4 one-liners, one per headline. Start with [`,
+          content: `Headlines:\n${headlinesList}\n\nReturn a JSON array of exactly 4 one-liners. Start with [`,
         }],
       }),
     });
@@ -114,7 +114,6 @@ Rules — follow every one strictly:
 
     const rawText = claudeData.content?.[0]?.text || '[]';
 
-    // Parse robustly
     let oneliners = [];
     try { oneliners = JSON.parse(rawText); }
     catch {
@@ -124,15 +123,17 @@ Rules — follow every one strictly:
       } catch { oneliners = top4.map(() => ''); }
     }
 
-    // Build a map: normalised headline → oneliner
-    // This way the frontend matches by headline, not position
+    while (oneliners.length < 4) oneliners.push('');
+    oneliners = oneliners.slice(0, 4).map(s => String(s || ''));
+
+    // Build map keyed by normalised headline
     const onelinerMap = {};
     top4.forEach((article, i) => {
-      const key = article.headline.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
-      onelinerMap[key] = String(oneliners[i] || '');
+      const key = normaliseKey(article.headline);
+      onelinerMap[key] = oneliners[i];
     });
 
-    // Cache until headlines change — 6 hour max TTL as safety net
+    // Cache for 6 hours max (or until headlines change via content-aware key)
     try {
       await supabase.from('digest_cache').upsert({
         cache_key:  cacheKey,
@@ -145,12 +146,14 @@ Rules — follow every one strictly:
     return response.status(200).json({
       success:     true,
       fromCache:   false,
-      countries,
       headlineHash,
       onelinerMap,
     });
 
   } catch (error) {
-    return response.status(500).json({ error: 'One-liner generation failed.', details: error.message });
+    return response.status(500).json({
+      error:   'One-liner generation failed.',
+      details: error.message,
+    });
   }
 };
