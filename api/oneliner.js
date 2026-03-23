@@ -54,7 +54,7 @@ module.exports = async function handler(request, response) {
       .eq('cache_key', cacheKey)
       .gt('expires_at', new Date().toISOString())
       .single();
-    if (cached?.digest && typeof cached.digest === 'object') {
+    if (cached?.digest && !Array.isArray(cached.digest) && typeof cached.digest === 'object' && Object.keys(cached.digest).length > 0) {
       return response.status(200).json({
         success: true, fromCache: true,
         onelinerMap: cached.digest,
