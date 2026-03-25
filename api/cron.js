@@ -66,7 +66,7 @@ module.exports = async function handler(request, response) {
     for (const combo of WARM_COMBINATIONS) {
       try {
         // Call our own news endpoint to warm the cache
-        const res = await fetch(`${VERCEL_URL}/api/content?action=news?country=${combo.country}&category=${combo.category}&max=10`, {
+        const res = await fetch(`${VERCEL_URL}/api/content?action=news&country=${combo.country}&category=${combo.category}&max=10`, {
           headers: { 'x-cron-secret': process.env.CRON_SECRET }
         });
         if (res.ok) {
@@ -83,7 +83,7 @@ module.exports = async function handler(request, response) {
     // Also pre-generate digests for top countries
     for (const country of DIGEST_COUNTRIES) {
       try {
-        const res = await fetch(`${VERCEL_URL}/api/ai?action=digest?country=${country}`);
+        const res = await fetch(`${VERCEL_URL}/api/ai?action=digest&country=${country}`);
         if (res.ok) {
           results.digestsGenerated++;
           console.log(`Digest generated: ${country}`);
@@ -97,7 +97,7 @@ module.exports = async function handler(request, response) {
     // Pre-generate morning briefings
     for (const country of DIGEST_COUNTRIES) {
       try {
-        const res = await fetch(`${VERCEL_URL}/api/ai?action=briefing?country=${country}`);
+        const res = await fetch(`${VERCEL_URL}/api/ai?action=briefing&country=${country}`);
         if (res.ok) {
           results.briefingsGenerated++;
           console.log(`Briefing generated: ${country}`);
