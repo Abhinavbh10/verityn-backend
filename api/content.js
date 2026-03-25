@@ -199,7 +199,9 @@ module.exports = async function handler(req, res) {
         for (const item of items) {
           const title       = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
           const link        = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
-          const description = cleanText((item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1]);
+          const rawDesc_    = (item.match(/<description[^>]*>(?:<![CDATA[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '';
+          const cleanedDesc_ = cleanText(rawDesc_);
+          const description  = /^<[a-z]/i.test(rawDesc_.trim()) ? '' : cleanedDesc_;
           const pubDate     = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
           const sourceName  = cleanText((item.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1] || feeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0]);
           const imgMatch    = item.match(/url="([^"]+\.(jpg|jpeg|png|webp)[^"]*)"/i) ||
