@@ -210,10 +210,11 @@ module.exports = async function handler(request, response) {
     // Clean up entries older than 7 days
     const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
       .toISOString().slice(0, 10);
-    await supabase.from('topic_threads')
-      .delete()
-      .lt('event_date', cutoff)
-      .catch(() => {});
+    try {
+      await supabase.from('topic_threads')
+        .delete()
+        .lt('event_date', cutoff);
+    } catch (e) {}
 
   } catch (e) {
     results.errors.push(`thread-generation: ${e.message}`);
