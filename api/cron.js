@@ -1,235 +1,227 @@
 // ============================================================
-// FILE: api/cron.js  (UPGRADED — Fix 2)
-// FIX: Cache warming — pre-fetches top country/category
-//      combinations at 5am so first users never wait
-//      Also runs story follow checks and cache cleanup
+// FILE: api/cron.js
+// PURPOSE: Cache warming + topic thread generation
+// Runs: 5am UTC and 5pm UTC daily
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 
-// Top country/category combinations to pre-warm
-// These cover ~80% of daily user requests
-const WARM_COMBINATIONS = [
-  { country: 'in', category: 'general'    },
-  { country: 'in', category: 'technology' },
-  { country: 'in', category: 'business'   },
-  { country: 'in', category: 'sports'     },
-  { country: 'us', category: 'general'    },
-  { country: 'us', category: 'technology' },
-  { country: 'us', category: 'business'   },
-  { country: 'gb', category: 'general'    },
-  { country: 'gb', category: 'business'   },
-  { country: 'ae', category: 'general'    },
-  { country: 'sg', category: 'general'    },
-  { country: 'au', category: 'general'    },
-];
+const COUNTRIES     = ['in', 'us', 'gb', 'de', 'au', 'sg', 'ae', 'jp'];
+const VERCEL_URL    = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : 'https://verityn-backend-ten.vercel.app';
 
-// Countries to generate morning digests for
-const DIGEST_COUNTRIES = ['in', 'us', 'gb', 'ae', 'sg', 'au'];
-
-module.exports = async function handler(request, response) {
-
-  // Security check
-  const cronSecret = request.headers['x-cron-secret'];
-  if (cronSecret !== process.env.CRON_SECRET) {
-    return response.status(401).json({ error: 'Unauthorized.' });
-  }
-
-  const SUPABASE_URL      = process.env.SUPABASE_URL;
-  const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-  const GNEWS_API_KEY     = process.env.GNEWS_API_KEY;
-  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-  const VERCEL_URL        = process.env.VERCEL_URL || 'https://verityn-backend-ten.vercel.app';
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  const now      = new Date();
-  const hour     = now.getUTCHours();
-
-  const results = {
-    task:               '',
-    cacheWarmed:        0,
-    digestsGenerated:   0,
-    briefingsGenerated: 0,
-    storiesChecked:     0,
-    updatesFound:       0,
-    cacheEntriesCleaned: 0,
-    errors:             [],
-  };
-
-  // ── Task 1: 5am cache warming (Fix 2) ─────────────────────
-  // Runs at 5am UTC (~10:30am IST, 1am EST)
-  // Pre-warms all top country/category combinations
-  if (hour === 5) {
-    results.task = 'cache-warming';
-    console.log('Starting cache warm at 5am UTC...');
-
-    for (const combo of WARM_COMBINATIONS) {
-      try {
-        // Call our own news endpoint to warm the cache
-        const res = await fetch(`${VERCEL_URL}/api/content?action=news&country=${combo.country}&category=${combo.category}&max=10`, {
-          headers: { 'x-cron-secret': process.env.CRON_SECRET }
-        });
-        if (res.ok) {
-          results.cacheWarmed++;
-          console.log(`Warmed: ${combo.country}-${combo.category}`);
-        }
-        // Small delay between calls to avoid rate limiting
-        await sleep(500);
-      } catch (e) {
-        results.errors.push(`Warm failed: ${combo.country}-${combo.category}: ${e.message}`);
-      }
-    }
-
-    // Also pre-generate digests for top countries
-    for (const country of DIGEST_COUNTRIES) {
-      try {
-        const res = await fetch(`${VERCEL_URL}/api/ai?action=digest&country=${country}`);
-        if (res.ok) {
-          results.digestsGenerated++;
-          console.log(`Digest generated: ${country}`);
-        }
-        await sleep(2000); // Longer delay — digest is expensive
-      } catch (e) {
-        results.errors.push(`Digest warm failed: ${country}: ${e.message}`);
-      }
-    }
-
-    // Pre-generate morning briefings
-    for (const country of DIGEST_COUNTRIES) {
-      try {
-        const res = await fetch(`${VERCEL_URL}/api/ai?action=briefing&country=${country}`);
-        if (res.ok) {
-          results.briefingsGenerated++;
-          console.log(`Briefing generated: ${country}`);
-        }
-        await sleep(2000);
-      } catch (e) {
-        results.errors.push(`Briefing warm failed: ${country}: ${e.message}`);
-      }
-    }
-  }
-
-  // ── Task 2: Every 30 min — story follow updates ────────────
-  else {
-    results.task = 'story-follow-check';
-
-    try {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-      const { data: allFollowed } = await supabase
-        .from('followed_stories')
-        .select('*')
-        .eq('is_active', true)
-        .gte('followed_at', sevenDaysAgo)
-        .order('last_checked', { ascending: true })
-        .limit(15);
-
-      if (allFollowed && allFollowed.length > 0) {
-        // Deduplicate same headlines
-        const uniqueStories = [];
-        const seenHeadlines = new Set();
-        for (const story of allFollowed) {
-          const key = story.headline.slice(0, 50);
-          if (!seenHeadlines.has(key)) {
-            seenHeadlines.add(key);
-            uniqueStories.push(story);
-          }
-        }
-
-        for (const story of uniqueStories.slice(0, 8)) {
-          results.storiesChecked++;
-          try {
-            const searchQuery = encodeURIComponent(
-              story.headline.split(' ').slice(0, 5).join(' ')
-            );
-            const gnewsUrl  = `https://gnews.io/api/v4/search?q=${searchQuery}&lang=en&max=3&apikey=${GNEWS_API_KEY}`;
-            const gnewsRes  = await fetch(gnewsUrl);
-            const gnewsData = await gnewsRes.json();
-            const newArticles = (gnewsData.articles || []).filter(a =>
-              new Date(a.publishedAt) > new Date(story.followed_at)
-            );
-
-            if (newArticles.length === 0) continue;
-
-            const articlesList = newArticles.map((a, i) => `${i + 1}. [${a.source?.name}] ${a.title}`).join('\n');
-
-            const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
-              method:  'POST',
-              headers: {
-                'Content-Type':      'application/json',
-                'x-api-key':         ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-              },
-              body: JSON.stringify({
-                model:      'claude-sonnet-4-20250514',
-                max_tokens: 200,
-                system:     'You assess news updates. Respond only with valid JSON.',
-                messages: [{
-                  role:    'user',
-                  content: `Original story: "${story.headline}"\nNew articles:\n${articlesList}\nIs there a significant new development? Return: {"hasUpdate": bool, "headline": "new headline or null", "significance": "high/med/low", "updateType": "development/resolution/escalation", "notificationText": "max 20 words or null"}`
-                }]
-              })
-            });
-
-            const claudeData = await claudeRes.json();
-            let assessment = {};
-            try { assessment = JSON.parse(claudeData.content?.[0]?.text || '{}'); } catch (e) { continue; }
-
-            if (assessment.hasUpdate && assessment.headline) {
-              results.updatesFound++;
-
-              await supabase.from('story_updates').insert({
-                article_id:   story.article_id,
-                headline:     assessment.headline,
-                summary:      assessment.notificationText,
-                source:       newArticles[0]?.source?.name,
-                source_url:   newArticles[0]?.url,
-                update_type:  assessment.updateType  || 'development',
-                significance: assessment.significance || 'med',
-              });
-
-              await supabase
-                .from('followed_stories')
-                .update({ last_checked: new Date().toISOString(), update_count: (story.update_count || 0) + 1 })
-                .eq('article_id', story.article_id)
-                .eq('is_active', true);
-
-              // Queue push notification for high significance
-              if (assessment.significance === 'high' && assessment.notificationText) {
-                await supabase.from('notification_queue').insert({
-                  article_id:   story.article_id,
-                  session_id:   story.session_id,
-                  user_id:      story.user_id,
-                  title:        `Story update · ${story.topic_label || story.topic}`,
-                  body:         assessment.notificationText,
-                  significance: assessment.significance,
-                  sent:         false,
-                }).catch(() => {});
-              }
-            }
-
-            await sleep(500);
-
-          } catch (storyError) {
-            results.errors.push(`Story check failed: ${storyError.message}`);
-          }
-        }
-      }
-    } catch (e) {
-      results.errors.push(`Story follow check error: ${e.message}`);
-    }
-  }
-
-  // ── Task 3: Always — clean expired cache ───────────────────
-  try {
-    const { error } = await supabase.rpc('clean_expired_cache');
-    if (!error) results.cacheEntriesCleaned = 1;
-  } catch (e) {}
-
-  console.log('Cron complete:', results);
-  return response.status(200).json({ success: true, results });
+// ── Entity map for topic clustering ──────────────────────────
+const ENTITY_MAP = {
+  'iran':'iran','iranian':'iran','irans':'iran',
+  'israel':'israel','israeli':'israel','israelis':'israel',
+  'ukraine':'ukraine','ukrainian':'ukraine',
+  'russia':'russia','russian':'russia',
+  'china':'china','chinese':'china',
+  'india':'india','indian':'india',
+  'germany':'germany','german':'germany',
+  'france':'france','french':'france',
+  'america':'america','american':'america',
+  'trump':'trump','biden':'biden','modi':'modi','putin':'putin',
+  'nato':'nato','gaza':'gaza','hamas':'hamas',
+  'pakistan':'pakistan','britain':'uk','british':'uk',
+  'japan':'japan','japanese':'japan',
+  'korea':'korea','korean':'korea',
+  'taiwan':'taiwan','taiwanese':'taiwan',
+  'congress':'congress','parliament':'parliament',
+  'election':'election','elections':'election',
+  'fed':'fed','rbi':'rbi','inflation':'inflation',
 };
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function getEntities(headline) {
+  const words = (headline || '').toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
+  return [...new Set(words.map(w => ENTITY_MAP[w]).filter(Boolean))].sort();
 }
+
+function makeTopicKey(entities) {
+  return entities.slice(0, 3).join('+');
+}
+
+function makeTopicLabel(entities) {
+  const labelMap = {
+    'iran':       'Iran', 'israel':     'Israel',
+    'ukraine':    'Ukraine', 'russia':  'Russia',
+    'china':      'China', 'india':     'India',
+    'germany':    'Germany', 'france':  'France',
+    'america':    'United States', 'trump': 'Trump',
+    'biden':      'Biden', 'modi':      'Modi',
+    'putin':      'Putin', 'nato':      'NATO',
+    'gaza':       'Gaza', 'hamas':      'Hamas',
+    'pakistan':   'Pakistan', 'uk':      'UK',
+    'japan':      'Japan', 'korea':     'Korea',
+    'taiwan':     'Taiwan', 'election':  'Elections',
+    'inflation':  'Inflation', 'fed':    'Federal Reserve',
+    'rbi':        'RBI',
+  };
+  return entities.slice(0, 3)
+    .map(e => labelMap[e] || e.charAt(0).toUpperCase() + e.slice(1))
+    .join(' & ');
+}
+
+// ── Cluster articles by topic ─────────────────────────────────
+function clusterArticles(articles) {
+  const clusters = {};
+  for (const article of articles) {
+    const entities = getEntities(article.headline);
+    if (entities.length < 2) continue; // need at least 2 entities
+    const key = makeTopicKey(entities);
+    if (!clusters[key]) {
+      clusters[key] = {
+        key,
+        label:    makeTopicLabel(entities),
+        articles: [],
+        sources:  new Set(),
+      };
+    }
+    clusters[key].articles.push(article);
+    clusters[key].sources.add(article.source || 'Unknown');
+  }
+  // Only return clusters with 3+ articles (genuinely hot)
+  return Object.values(clusters).filter(c => c.articles.length >= 3);
+}
+
+// ── Main handler ─────────────────────────────────────────────
+module.exports = async function handler(request, response) {
+  response.setHeader('Access-Control-Allow-Origin', '*');
+
+  const authHeader = request.headers.authorization;
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    return response.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  const GNEWS_KEY     = process.env.GNEWS_API_KEY;
+  const SUPABASE_URL  = process.env.SUPABASE_URL;
+  const SUPABASE_KEY  = process.env.SUPABASE_ANON_KEY;
+  const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  const results = { cacheWarmed: [], threadsGenerated: [], errors: [] };
+
+  // ── Step 1: Cache warming ─────────────────────────────────
+  try {
+    for (const country of COUNTRIES) {
+      try {
+        await fetch(`${VERCEL_URL}/api/content?action=news&country=${country}&category=general&max=10`);
+        await fetch(`${VERCEL_URL}/api/content?action=rss&country=${country}&category=general&max=15`);
+        results.cacheWarmed.push(country);
+      } catch (e) {
+        results.errors.push(`cache-${country}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    results.errors.push(`cache-warming: ${e.message}`);
+  }
+
+  // ── Step 2: Topic thread generation ──────────────────────
+  try {
+    // Fetch headlines from key countries
+    const headlineFetches = ['us', 'gb', 'in', 'de', 'au'].map(c =>
+      fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&category=general&max=10`)
+        .then(r => r.json())
+        .then(d => d.articles || [])
+        .catch(() => [])
+    );
+    const rssFetches = ['us', 'gb', 'in'].map(c =>
+      fetch(`${VERCEL_URL}/api/content?action=rss&country=${c}&category=general&max=15`)
+        .then(r => r.json())
+        .then(d => d.articles || [])
+        .catch(() => [])
+    );
+
+    const allResults  = await Promise.all([...headlineFetches, ...rssFetches]);
+    const allArticles = allResults.flat();
+
+    // Deduplicate headlines
+    const seen    = new Set();
+    const unique  = allArticles.filter(a => {
+      const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!k || seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+
+    // Cluster into hot topics
+    const clusters = clusterArticles(unique);
+    const today    = new Date().toISOString().slice(0, 10);
+
+    for (const cluster of clusters.slice(0, 15)) { // max 15 topics per run
+      try {
+        // Check if already generated today
+        const { data: existing } = await supabase
+          .from('topic_threads')
+          .select('id')
+          .eq('topic_key', cluster.key)
+          .eq('event_date', today)
+          .single()
+          .catch(() => ({ data: null }));
+
+        if (existing) continue; // already done today
+
+        // Generate one-sentence event description via Claude
+        const headlines = cluster.articles.slice(0, 5)
+          .map(a => `- ${a.headline} (${a.source || 'Unknown'})`)
+          .join('\n');
+
+        const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method:  'POST',
+          headers: {
+            'Content-Type':      'application/json',
+            'x-api-key':         ANTHROPIC_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model:      'claude-sonnet-4-20250514',
+            max_tokens: 80,
+            system:     'Write one crisp sentence describing what happened today with this news topic. Past tense. Specific. No fluff. Under 20 words.',
+            messages:   [{
+              role:    'user',
+              content: `Topic: ${cluster.label}\n\nToday's headlines:\n${headlines}\n\nOne sentence — what happened today:`,
+            }],
+          }),
+        });
+
+        const claudeData = await claudeRes.json();
+        const eventText  = claudeData.content?.[0]?.text?.trim();
+
+        if (!eventText) continue;
+
+        // Store in Supabase
+        await supabase.from('topic_threads').upsert({
+          topic_key:   cluster.key,
+          topic_label: cluster.label,
+          event_date:  today,
+          event_text:  eventText,
+          sources:     [...cluster.sources].slice(0, 5),
+        }, { onConflict: 'topic_key,event_date' });
+
+        results.threadsGenerated.push(cluster.label);
+
+      } catch (e) {
+        results.errors.push(`thread-${cluster.key}: ${e.message}`);
+      }
+    }
+
+    // Clean up entries older than 7 days
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    await supabase.from('topic_threads')
+      .delete()
+      .lt('event_date', cutoff)
+      .catch(() => {});
+
+  } catch (e) {
+    results.errors.push(`thread-generation: ${e.message}`);
+  }
+
+  return response.status(200).json({
+    success: true,
+    runAt:   new Date().toISOString(),
+    ...results,
+  });
+};
