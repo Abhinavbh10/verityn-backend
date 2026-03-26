@@ -123,5 +123,38 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ success: true, preferences: data || {} });
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: follow | streak | auth | preferences` });
+  // ── ACTION: threads ─────────────────────────────────────────
+  if (action === 'threads') {
+    const { topicKey, days = '4' } = query;
+    if (!topicKey) return res.status(400).json({ error: 'topicKey required' });
+    const cutoff = new Date(Date.now() - parseInt(days) * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const { data: events, error } = await supabase
+      .from('topic_threads')
+      .select('event_date, event_text, sources, topic_label')
+      .eq('topic_key', topicKey)
+      .gte('event_date', cutoff)
+      .order('event_date', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ success: true, topicKey, events: events || [] });
+  }
+
+  // ── ACTION: hot-topics ───────────────────────────────────────
+  if (action === 'hot-topics') {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from('topic_threads')
+      .select('topic_key, topic_label')
+      .gte('event_date', cutoff)
+      .order('event_date', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    const seen = new Set();
+    const unique = (data || []).filter(d => {
+      if (seen.has(d.topic_key)) return false;
+      seen.add(d.topic_key); return true;
+    });
+    return res.status(200).json({ success: true, topics: unique });
+  }
+
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: follow | streak | auth | preferences | threads | hot-topics` });
 };
