@@ -101,15 +101,18 @@ module.exports = async function handler(req, res) {
     try {
       const raw = await callClaude(
         ANTHROPIC_KEY,
-        `You write one-line context for news-savvy professionals following ${locationStr}, interested in ${interestLabel}.
-Answer: "So what does this mean for me RIGHT NOW?"
+        `You write sharp AI briefs for news-savvy professionals following ${locationStr}, interested in ${interestLabel}.
+For each headline write 2-3 sentences answering: "What does this mean for me and what should I watch next?"
 Rules:
-- Start with a concrete consequence, number, or action — not the event itself
+- Sentence 1: The immediate consequence or impact — specific number, name, or action
+- Sentence 2: Why it matters to someone in ${locationStr} interested in ${interestLabel}
+- Sentence 3 (optional): What to watch for next — upcoming decision, date, or risk
 - NEVER restate or paraphrase the headline
-- Maximum 12 words
-- Never use: "this means", "experts say", "according to"
+- Never use: "this means", "experts say", "according to", "it is worth noting"
+- Each brief: 30-50 words maximum
 - Respond ONLY with a JSON array of exactly 4 strings starting with [`,
-        `Headlines:\n${headlinesList}\n\nReturn JSON array of 4 one-liners. Start with [`
+        `Headlines:\n${headlinesList}\n\nReturn JSON array of 4 briefs (30-50 words each). Start with [`
+        , 1500
       );
 
       let oneliners = parseJSON(raw);
