@@ -161,13 +161,16 @@ module.exports = async function handler(request, response) {
     for (const cluster of clusters.slice(0, 15)) { // max 15 topics per run
       try {
         // Check if already generated today
-        const { data: existing } = await supabase
-          .from('topic_threads')
-          .select('id')
-          .eq('topic_key', cluster.key)
-          .eq('event_date', today)
-          .single()
-          .catch(() => ({ data: null }));
+        let existing = null;
+        try {
+          const { data } = await supabase
+            .from('topic_threads')
+            .select('id')
+            .eq('topic_key', cluster.key)
+            .eq('event_date', today)
+            .single();
+          existing = data;
+        } catch (e) {}
 
         if (existing) continue; // already done today
 
