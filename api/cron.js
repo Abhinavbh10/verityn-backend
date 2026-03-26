@@ -83,7 +83,7 @@ function clusterArticles(articles) {
     clusters[key].sources.add(article.source || 'Unknown');
   }
   // Only return clusters with 3+ articles (genuinely hot)
-  return Object.values(clusters).filter(c => c.articles.length >= 3);
+  return Object.values(clusters).filter(c => c.articles.length >= 2);
 }
 
 // ── Main handler ─────────────────────────────────────────────
@@ -102,7 +102,7 @@ module.exports = async function handler(request, response) {
   const SUPABASE_KEY  = process.env.SUPABASE_ANON_KEY;
   const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  const results = { cacheWarmed: [], threadsGenerated: [], errors: [] };
+  const results = { cacheWarmed: [], threadsGenerated: [], errors: [], debug: {} };
 
   // ── Step 1: Cache warming ─────────────────────────────────
   try {
@@ -122,14 +122,14 @@ module.exports = async function handler(request, response) {
   // ── Step 2: Topic thread generation ──────────────────────
   try {
     // Fetch headlines from key countries
-    const headlineFetches = ['us', 'gb', 'in', 'de', 'au'].map(c =>
-      fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&category=general&max=10`)
+    const headlineFetches = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'].map(c =>
+      fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&category=general&max=15`)
         .then(r => r.json())
         .then(d => d.articles || [])
         .catch(() => [])
     );
-    const rssFetches = ['us', 'gb', 'in'].map(c =>
-      fetch(`${VERCEL_URL}/api/content?action=rss&country=${c}&category=general&max=15`)
+    const rssFetches = ['us', 'gb', 'in', 'de', 'au'].map(c =>
+      fetch(`${VERCEL_URL}/api/content?action=rss&country=${c}&category=general&max=20`)
         .then(r => r.json())
         .then(d => d.articles || [])
         .catch(() => [])
@@ -148,6 +148,14 @@ module.exports = async function handler(request, response) {
 
     // Cluster into hot topics
     const clusters = clusterArticles(unique);
+    results.debug.totalArticles = unique.length;
+    results.debug.sampleHeadlines = unique.slice(0, 5).map(a => a.headline);
+    results.debug.clustersFound = clusters.map(c => ({
+      key: c.key,
+      label: c.label,
+      count: c.articles.length,
+      sample: c.articles[0]?.headline?.slice(0, 50),
+    }));
     const today    = new Date().toISOString().slice(0, 10);
 
     for (const cluster of clusters.slice(0, 15)) { // max 15 topics per run
@@ -223,6 +231,7 @@ module.exports = async function handler(request, response) {
   return response.status(200).json({
     success: true,
     runAt:   new Date().toISOString(),
+    debug:   results.debug || {},
     ...results,
   });
 };
