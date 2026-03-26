@@ -122,20 +122,20 @@ module.exports = async function handler(request, response) {
   // ── Step 2: Topic thread generation ──────────────────────
   try {
     // Fetch headlines from key countries
-    const headlineFetches = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'].map(c =>
-      fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&category=general&max=15`)
+    // Fetch directly from GNews — don't call own API (unreliable in serverless)
+    const countries   = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'];
+    const headlineFetches = countries.map(c =>
+      fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${c}&max=10&apikey=${GNEWS_KEY}`)
         .then(r => r.json())
-        .then(d => d.articles || [])
-        .catch(() => [])
-    );
-    const rssFetches = ['us', 'gb', 'in', 'de', 'au'].map(c =>
-      fetch(`${VERCEL_URL}/api/content?action=rss&country=${c}&category=general&max=20`)
-        .then(r => r.json())
-        .then(d => d.articles || [])
+        .then(d => (d.articles || []).map(a => ({
+          headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
+          source:   a.source?.name || 'Unknown',
+          url:      a.url,
+        })))
         .catch(() => [])
     );
 
-    const allResults  = await Promise.all([...headlineFetches, ...rssFetches]);
+    const allResults  = await Promise.all(headlineFetches);
     const allArticles = allResults.flat();
 
     // Deduplicate headlines
