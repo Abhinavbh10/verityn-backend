@@ -90,9 +90,12 @@ function clusterArticles(articles) {
 module.exports = async function handler(request, response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
 
-  const authHeader = request.headers.authorization;
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  const cronSecret    = process.env.CRON_SECRET;
+  const authBearer    = request.headers.authorization;
+  const xCronSecret   = request.headers['x-cron-secret'];
+  const validBearer   = authBearer === `Bearer ${cronSecret}`;
+  const validXHeader  = xCronSecret === cronSecret;
+  if (cronSecret && !validBearer && !validXHeader) {
     return response.status(401).json({ error: 'Unauthorized' });
   }
 
