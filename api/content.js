@@ -246,61 +246,128 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── ACTION: search ────────────────────────────────────────────
+  // ── ACTION: search — RSS-based, no quota consumed ────────────
   if (action === 'search') {
-    const GNEWS_KEY  = process.env.GNEWS_API_KEY;
-    const MEDIASTACK = process.env.MEDIASTACK_KEY;
-    const { q = '', country = 'us', max = '20' } = req.query;
+    const { q = '', country = 'us', max = '30' } = req.query;
     if (!q.trim()) return res.status(400).json({ error: 'Query required.' });
 
+    const terms = q.toLowerCase().trim().split(/\s+/).filter(t => t.length > 2);
+    if (!terms.length) return res.status(400).json({ error: 'Query too short.' });
+
+    // Search across major RSS feeds — broad coverage, no quota
+    const SEARCH_FEEDS = [
+      'https://feeds.bbci.co.uk/news/rss.xml',
+      'https://www.theguardian.com/world/rss',
+      'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
+      'https://rss.dw.com/xml/rss-en-ger',
+      'https://feeds.npr.org/1001/rss.xml',
+      'https://timesofindia.indiatimes.com/rssfeeds/296589292.cms',
+      'https://indianexpress.com/feed/',
+      'https://www.thehindu.com/news/feeder/default.rss',
+      'https://feeds.washingtonpost.com/rss/national',
+      'https://www.smh.com.au/rss/feed.xml',
+      'https://www.straitstimes.com/news/singapore/rss.xml',
+    ];
+
+    // Add country-specific feeds
+    const COUNTRY_FEEDS_EXTRA = {
+      in: ['https://feeds.feedburner.com/ndtvnews-top-stories'],
+      de: ['https://www.thelocal.de/feed/'],
+      au: ['https://www.abc.net.au/news/feed/51120/rss.xml'],
+      gb: ['https://feeds.bbci.co.uk/news/uk/rss.xml'],
+      ae: ['https://gulfnews.com/rss'],
+      jp: ['https://www.japantimes.co.jp/feed/'],
+    };
+    const extraFeeds = COUNTRY_FEEDS_EXTRA[country] || [];
+    const allFeeds = [...new Set([...SEARCH_FEEDS, ...extraFeeds])];
+
     try {
-      const fetches = [];
-      if (GNEWS_KEY) {
-        fetches.push(
-          fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=${max}&apikey=${GNEWS_KEY}`)
-            .then(r => r.json()).catch(() => ({}))
-        );
-      }
-      if (MEDIASTACK) {
-        fetches.push(
-          fetch(`http://api.mediastack.com/v1/news?access_key=${MEDIASTACK}&keywords=${encodeURIComponent(q)}&languages=en&limit=10`)
-            .then(r => r.json()).catch(() => ({}))
-        );
-      }
-      const [gnews, ms] = await Promise.all(fetches);
+      // Fetch all feeds in parallel
+      const feedResults = await Promise.all(
+        allFeeds.map(url =>
+          fetch(url, { headers: { 'User-Agent': 'Verityn/1.0' } })
+            .then(r => r.text())
+            .catch(() => '')
+        )
+      );
+
       const articles = [];
+      for (let fi = 0; fi < feedResults.length; fi++) {
+        const xml = feedResults[fi];
+        if (!xml) continue;
+        const items = xml.match(/<item[\s\S]*?<\/item>/g) || [];
+        for (const item of items) {
+          const title = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
+          const desc  = cleanText((item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1]);
+          const link  = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
+          const pub   = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
+          const imgM  = item.match(/url="([^"]+\.(jpg|jpeg|png|webp)[^"]*)"/) ||
+                        item.match(/<media:content[^>]+url="([^"]+)"/);
+          const image = imgM ? imgM[1] : null;
 
-      for (const a of (gnews?.articles || [])) {
-        const t = inferTopic(a.title, a.description);
-        articles.push({
-          id: `search-${Math.random().toString(36).slice(2)}`,
-          headline: cleanText(a.title), summary: cleanText(a.description || ''),
-          source: a.source?.name || 'Unknown', sourceUrl: a.url,
-          image: a.image || null, publishedAt: a.publishedAt,
-          time: getRelativeTime(a.publishedAt),
-          topic: t.topic, topicLabel: t.label,
-        });
-      }
-      for (const a of (ms?.data || [])) {
-        const t = inferTopic(a.title, a.description);
-        articles.push({
-          id: `search-ms-${Math.random().toString(36).slice(2)}`,
-          headline: cleanText(a.title), summary: cleanText(a.description || ''),
-          source: a.source || 'Unknown', sourceUrl: a.url,
-          image: null, publishedAt: a.published_at,
-          time: getRelativeTime(a.published_at),
-          topic: t.topic, topicLabel: t.label,
-        });
+          if (!title || title.length < 10) continue;
+
+          // Match against search terms — headline OR description must contain term
+          const searchText = (title + ' ' + desc).toLowerCase();
+          const matches = terms.every(term => searchText.includes(term));
+          if (!matches) continue;
+
+          const pubDate = pub ? new Date(pub) : new Date();
+          if (isNaN(pubDate.getTime())) continue;
+          // Only last 7 days
+          if ((Date.now() - pubDate) > 7 * 24 * 60 * 60 * 1000) continue;
+
+          // Get source name from feed URL
+          const feedDomain = allFeeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0];
+          const sourceMap = {
+            'feeds.bbci.co.uk': 'BBC News', 'bbc.co.uk': 'BBC News',
+            'theguardian.com': 'The Guardian',
+            'rss.nytimes.com': 'New York Times',
+            'rss.dw.com': 'Deutsche Welle',
+            'feeds.npr.org': 'NPR',
+            'timesofindia.indiatimes.com': 'Times of India',
+            'indianexpress.com': 'Indian Express',
+            'thehindu.com': 'The Hindu',
+            'feeds.washingtonpost.com': 'Washington Post',
+            'smh.com.au': 'Sydney Morning Herald',
+            'straitstimes.com': 'Straits Times',
+            'feeds.feedburner.com': 'NDTV',
+            'thelocal.de': 'The Local',
+            'abc.net.au': 'ABC Australia',
+            'gulfnews.com': 'Gulf News',
+            'japantimes.co.jp': 'Japan Times',
+          };
+          const sourceName = sourceMap[feedDomain] || feedDomain.split('.')[0];
+
+          const t = inferTopic(title, desc);
+          articles.push({
+            id: `search-${fi}-${articles.length}`,
+            headline: title,
+            summary: /^<[a-z]/i.test(desc.trim()) ? '' : desc,
+            source: sourceName,
+            sourceUrl: link,
+            image,
+            publishedAt: pubDate.toISOString(),
+            time: getRelativeTime(pubDate),
+            topic: t.topic,
+            topicLabel: t.label,
+            country: country.toUpperCase(),
+          });
+        }
       }
 
+      // Dedup + sort by recency
       const seen = new Set();
-      const deduped = articles.filter(a => {
-        const k = a.headline?.slice(0, 50).toLowerCase().replace(/[^a-z]/g, '');
-        if (!k || seen.has(k)) return false;
-        seen.add(k); return true;
-      });
+      const deduped = articles
+        .filter(a => {
+          const k = a.headline.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (seen.has(k)) return false;
+          seen.add(k); return true;
+        })
+        .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+        .slice(0, parseInt(max));
 
-      return res.status(200).json({ success: true, articles: deduped });
+      return res.status(200).json({ success: true, articles: deduped, source: 'rss' });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
