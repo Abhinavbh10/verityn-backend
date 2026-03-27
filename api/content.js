@@ -50,21 +50,27 @@ const COUNTRY_FEEDS = {
   in: [
     'https://www.thehindu.com/news/feeder/default.rss',
     'https://feeds.feedburner.com/ndtvnews-top-stories',
-    'https://timesofindia.indiatimes.com/rssfeeds/296589292.cms',
     'https://indianexpress.com/feed/',
+    'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
+    'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml',
   ],
   us: [
     'https://feeds.npr.org/1001/rss.xml',
     'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
     'https://feeds.washingtonpost.com/rss/national',
+    'https://feeds.reuters.com/reuters/topNews',
+    'https://feeds.apnews.com/rss/apf-topnews',
   ],
   gb: [
     'https://feeds.bbci.co.uk/news/rss.xml',
     'https://www.theguardian.com/world/rss',
+    'https://feeds.reuters.com/reuters/UKTopNews',
   ],
   de: [
     'https://rss.dw.com/xml/rss-en-ger',
     'https://www.thelocal.de/feed/',
+    'https://www.spiegel.de/international/index.rss',
+    'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
   ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
@@ -74,10 +80,20 @@ const COUNTRY_FEEDS = {
     'https://www.straitstimes.com/news/singapore/rss.xml',
     'https://www.channelnewsasia.com/rssfeeds/8395884',
   ],
-  ae: ['https://gulfnews.com/rss', 'https://www.thenationalnews.com/rss'],
-  jp: ['https://www.japantimes.co.jp/feed/'],
+  ae: [
+    'https://gulfnews.com/rss',
+    'https://www.thenationalnews.com/rss',
+    'https://www.aljazeera.com/xml/rss/all.xml',
+  ],
+  jp: [
+    'https://www.japantimes.co.jp/feed/',
+    'https://www3.nhk.or.jp/rss/news/cat0.xml',
+  ],
   ca: ['https://www.theglobeandmail.com/arc/outboundfeeds/rss/'],
-  fr: ['https://www.france24.com/en/rss'],
+  fr: [
+    'https://www.france24.com/en/rss',
+    'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
+  ],
   za: ['https://www.dailymaverick.co.za/feed/'],
   br: ['https://www.bbc.com/portuguese/topics/c2lef194ex8t'],
 };
@@ -115,54 +131,117 @@ module.exports = async function handler(req, res) {
       au: ['abc-news-au'], sg: [], ae: [], jp: ['google-news-jp'],
     };
 
+    const NYT_KEY      = process.env.NYT_API_KEY;
+    const GUARDIAN_KEY = process.env.GUARDIAN_API_KEY;
+
     try {
       const fetches = [];
+
+      // GNews
       if (GNEWS_KEY) {
         fetches.push(
           fetch(`https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=${max}&apikey=${GNEWS_KEY}`)
-            .then(r => r.json()).catch(() => ({}))
+            .then(r => r.json()).then(d => ({ src: 'gnews', data: d })).catch(() => ({ src: 'gnews', data: {} }))
         );
       }
+
+      // Mediastack — improved with category support
       if (MEDIASTACK) {
         const sources = COUNTRY_SOURCES[country]?.join(',') || '';
-        const url = sources
-          ? `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK}&sources=${sources}&languages=en&limit=5`
-          : `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK}&countries=${country}&languages=en&limit=5`;
-        fetches.push(fetch(url).then(r => r.json()).catch(() => ({})));
+        const msUrl = sources
+          ? `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK}&sources=${sources}&languages=en&limit=8`
+          : `http://api.mediastack.com/v1/news?access_key=${MEDIASTACK}&countries=${country}&languages=en&limit=8`;
+        fetches.push(fetch(msUrl).then(r => r.json()).then(d => ({ src: 'ms', data: d })).catch(() => ({ src: 'ms', data: {} })));
       }
 
-      const [gnewsData, mediastackData] = await Promise.all(fetches);
+      // NYT Top Stories API (free, high quality, full abstracts + images)
+      if (NYT_KEY) {
+        const nytSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'science' ? 'science' : category === 'sports' ? 'sports' : 'world';
+        fetches.push(
+          fetch(`https://api.nytimes.com/svc/topstories/v2/${nytSection}.json?api-key=${NYT_KEY}`)
+            .then(r => r.json()).then(d => ({ src: 'nyt', data: d })).catch(() => ({ src: 'nyt', data: {} }))
+        );
+      }
+
+      // Guardian API (free, full trail text + images)
+      if (GUARDIAN_KEY) {
+        const gSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'sports' ? 'sport' : 'world';
+        fetches.push(
+          fetch(`https://content.guardianapis.com/${gSection}?api-key=${GUARDIAN_KEY}&show-fields=trailText,thumbnail&page-size=10&lang=en`)
+            .then(r => r.json()).then(d => ({ src: 'guardian', data: d })).catch(() => ({ src: 'guardian', data: {} }))
+        );
+      }
+
+      const results = await Promise.all(fetches);
       const articles = [];
 
-      if (gnewsData?.articles) {
-        for (const a of gnewsData.articles) {
-          const t = inferTopic(a.title, a.description);
-          articles.push({
-            id: `gnews-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-            headline: cleanText(a.title), summary: cleanText(a.description || ''),
-            source: a.source?.name || 'Unknown', sourceUrl: a.url,
-            image: a.image || null, publishedAt: a.publishedAt,
-            time: getRelativeTime(a.publishedAt),
-            topic: t.topic, topicLabel: t.label,
-            country: country.toUpperCase(), sourceCount: 1,
-          });
-        }
-      }
-      if (mediastackData?.data) {
-        for (const a of mediastackData.data) {
-          const t = inferTopic(a.title, a.description);
-          articles.push({
-            id: `ms-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-            headline: cleanText(a.title), summary: cleanText(a.description || ''),
-            source: a.source || 'Unknown', sourceUrl: a.url,
-            image: null, publishedAt: a.published_at,
-            time: getRelativeTime(a.published_at),
-            topic: t.topic, topicLabel: t.label,
-            country: country.toUpperCase(), sourceCount: 1,
-          });
-        }
-      }
+      for (const result of results) {
+        const { src, data } = result;
+        if (!src || !data) continue;
 
+        if (src === 'gnews' && data?.articles) {
+          for (const a of data.articles) {
+            const t = inferTopic(a.title, a.description);
+            articles.push({
+              id: `gnews-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              headline: cleanText(a.title), summary: cleanText(a.description || ''),
+              source: a.source?.name || 'Unknown', sourceUrl: a.url,
+              image: a.image || null, publishedAt: a.publishedAt,
+              time: getRelativeTime(a.publishedAt),
+              topic: t.topic, topicLabel: t.label,
+              country: country.toUpperCase(), sourceCount: 1,
+            });
+          }
+        }
+
+        if (src === 'ms' && data?.data) {
+          for (const a of data.data) {
+            const t = inferTopic(a.title, a.description);
+            articles.push({
+              id: `ms-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              headline: cleanText(a.title), summary: cleanText(a.description || ''),
+              source: a.source || 'Unknown', sourceUrl: a.url,
+              image: null, publishedAt: a.published_at,
+              time: getRelativeTime(a.published_at),
+              topic: t.topic, topicLabel: t.label,
+              country: country.toUpperCase(), sourceCount: 1,
+            });
+          }
+        }
+
+        if (src === 'nyt' && data?.results) {
+          for (const a of (data.results || []).slice(0, 10)) {
+            if (!a.title) continue;
+            const t = inferTopic(a.title, a.abstract);
+            const img = (a.multimedia || []).find(m => m.format === 'Super Jumbo' || m.format === 'threeByTwoSmallAt2X');
+            articles.push({
+              id: `nyt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              headline: cleanText(a.title), summary: cleanText(a.abstract || ''),
+              source: 'New York Times', sourceUrl: a.url,
+              image: img?.url || null, publishedAt: a.published_date,
+              time: getRelativeTime(a.published_date),
+              topic: t.topic, topicLabel: t.label,
+              country: 'US', sourceCount: 1,
+            });
+          }
+        }
+
+        if (src === 'guardian' && data?.response?.results) {
+          for (const a of data.response.results) {
+            if (!a.webTitle) continue;
+            const t = inferTopic(a.webTitle, a.fields?.trailText);
+            articles.push({
+              id: `guardian-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              headline: cleanText(a.webTitle), summary: cleanText(a.fields?.trailText || ''),
+              source: 'The Guardian', sourceUrl: a.webUrl,
+              image: a.fields?.thumbnail || null, publishedAt: a.webPublicationDate,
+              time: getRelativeTime(a.webPublicationDate),
+              topic: t.topic, topicLabel: t.label,
+              country: country.toUpperCase(), sourceCount: 1,
+            });
+          }
+        }
+      }
       // Dedup by headline
       const seen = new Set();
       const deduped = articles.filter(a => {
@@ -199,10 +278,13 @@ module.exports = async function handler(req, res) {
         for (const item of items) {
           const title       = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
           const link        = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
+          // Try content:encoded first (full abstract), fall back to description
+          const rawEncoded   = (item.match(/<content:encoded>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/content:encoded>/) || [])[1] || '';
           const rawDesc_     = (item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '';
-          // Always clean HTML — keep if result is substantial text
-          const cleanedDesc_ = cleanText(rawDesc_);
-          // Only discard if cleaned result is still HTML-like (failed cleaning)
+          // Prefer content:encoded if it exists and is longer
+          const rawBest      = rawEncoded.length > rawDesc_.length ? rawEncoded : rawDesc_;
+          const cleanedDesc_ = cleanText(rawBest);
+          // Discard if cleaned result is still HTML-like
           const description  = /^<[a-z]/i.test(cleanedDesc_.trim()) ? '' : cleanedDesc_;
           const pubDate     = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
           const sourceName  = cleanText((item.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1] || feeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0]);
