@@ -312,7 +312,7 @@ module.exports = async function handler(req, res) {
           if (ageHours > 72) continue;
           const t = inferTopic(title, description);
           articles.push({
-            id: `rss-${country}-${fi}-${articles.length}-${Date.now()}`,
+            id: `rss-${country}-${fi}-${Math.random().toString(36).slice(2,10)}-${Date.now()}`,
             headline: title, summary: description || '',
             source: sourceName, sourceUrl: link,
             image, publishedAt: pub.toISOString(),
