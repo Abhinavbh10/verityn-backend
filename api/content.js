@@ -49,10 +49,10 @@ function cleanText(text) {
 const COUNTRY_FEEDS = {
   in: [
     'https://www.thehindu.com/news/feeder/default.rss',
-    'https://feeds.feedburner.com/ndtvnews-top-stories',
+    'https://feeds.ndtv.com/ndtvnews-top-stories',
     'https://indianexpress.com/feed/',
     'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
-    'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml',
+    'https://www.hindustantimes.com/rss/topnews/rssfeed.xml',
   ],
   us: [
     'https://feeds.npr.org/1001/rss.xml',
@@ -67,7 +67,7 @@ const COUNTRY_FEEDS = {
     'https://feeds.reuters.com/reuters/UKTopNews',
   ],
   de: [
-    'https://rss.dw.com/xml/rss-en-ger',
+    'https://rss.dw.com/xml/rss-en-all',
     'https://www.thelocal.de/feed/',
     'https://www.spiegel.de/international/index.rss',
     'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
@@ -267,7 +267,15 @@ module.exports = async function handler(req, res) {
     try {
       const results = await Promise.all(
         feeds.map(url =>
-          fetch(url, { headers: { 'User-Agent': 'Verityn/1.0' } })
+          fetch(url, { 
+            headers: { 
+              'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+              'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Cache-Control': 'no-cache',
+            },
+            signal: AbortSignal.timeout(8000),
+          })
             .then(r => r.text())
             .catch(() => '')
         )
@@ -344,7 +352,7 @@ module.exports = async function handler(req, res) {
       'https://feeds.bbci.co.uk/news/rss.xml',
       'https://www.theguardian.com/world/rss',
       'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
-      'https://rss.dw.com/xml/rss-en-ger',
+      'https://rss.dw.com/xml/rss-en-all',
       'https://feeds.npr.org/1001/rss.xml',
       'https://timesofindia.indiatimes.com/rssfeeds/296589292.cms',
       'https://indianexpress.com/feed/',
@@ -370,7 +378,15 @@ module.exports = async function handler(req, res) {
       // Fetch all feeds in parallel
       const feedResults = await Promise.all(
         allFeeds.map(url =>
-          fetch(url, { headers: { 'User-Agent': 'Verityn/1.0' } })
+          fetch(url, { 
+            headers: { 
+              'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+              'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Cache-Control': 'no-cache',
+            },
+            signal: AbortSignal.timeout(8000),
+          })
             .then(r => r.text())
             .catch(() => '')
         )
