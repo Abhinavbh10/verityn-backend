@@ -156,5 +156,21 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ success: true, topics: unique });
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: follow | streak | auth | preferences | threads | hot-topics` });
+  // ── ACTION: daily-summary ────────────────────────────────────
+  if (action === 'daily-summary') {
+    try {
+      const { data } = await supabase
+        .from('digest_cache')
+        .select('digest')
+        .eq('cache_key', 'daily-summary')
+        .gt('expires_at', new Date().toISOString())
+        .single();
+      const summary = data?.digest?.summary || '';
+      return res.status(200).json({ success: true, summary });
+    } catch (e) {
+      return res.status(200).json({ success: true, summary: '' });
+    }
+  }
+
+  return res.status(400).json({ error: 'Unknown action.' });
 };
