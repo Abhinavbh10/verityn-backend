@@ -182,6 +182,9 @@ module.exports = async function handler(req, res) {
         if (src === 'gnews' && data?.articles) {
           for (const a of data.articles) {
             const t = inferTopic(a.title, a.description);
+            // Filter out low-quality lifestyle/celebrity/sports from GNews
+            const skipPatterns = /taylor swift|kardashian|celebrity|red carpet|nfl draft|nba trade|iheartradio|oscars|emmys|grammys|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal/i;
+            if (skipPatterns.test(a.title)) continue;
             articles.push({
               id: `gnews-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
               headline: cleanText(a.title), summary: cleanText(a.description || ''),
@@ -242,10 +245,6 @@ module.exports = async function handler(req, res) {
           }
         }
       }
-      // Debug — log which sources returned results
-      const sourceDebug = {};
-      for (const r of results) { sourceDebug[r.src] = (r.data?.articles || r.data?.results || r.data?.response?.results || r.data?.data || []).length; }
-
       // Dedup by headline
       const seen = new Set();
       const deduped = articles.filter(a => {
@@ -254,7 +253,7 @@ module.exports = async function handler(req, res) {
         seen.add(k); return true;
       });
 
-      return res.status(200).json({ success: true, articles: deduped, debug: { sources: sourceDebug, total: articles.length, keys: { nyt: !!NYT_KEY, guardian: !!GUARDIAN_KEY, gnews: !!GNEWS_KEY, mediastack: !!MEDIASTACK } } });
+      return res.status(200).json({ success: true, articles: deduped });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
@@ -326,7 +325,7 @@ module.exports = async function handler(req, res) {
         .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
         .slice(0, parseInt(max));
 
-      return res.status(200).json({ success: true, articles: deduped, debug: { sources: sourceDebug, total: articles.length, keys: { nyt: !!NYT_KEY, guardian: !!GUARDIAN_KEY, gnews: !!GNEWS_KEY, mediastack: !!MEDIASTACK } } });
+      return res.status(200).json({ success: true, articles: deduped });
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
