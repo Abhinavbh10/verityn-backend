@@ -48,11 +48,11 @@ function cleanText(text) {
 // ── RSS feeds per country ─────────────────────────────────────
 const COUNTRY_FEEDS = {
   in: [
-    'https://www.thehindu.com/news/feeder/default.rss',
-    'https://feeds.ndtv.com/ndtvnews-top-stories',
     'https://indianexpress.com/feed/',
     'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
-    'https://www.hindustantimes.com/rss/topnews/rssfeed.xml',
+    'https://www.thehindu.com/news/feeder/default.rss',
+    'https://www.business-standard.com/rss/latest.rss',
+    'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
   ],
   us: [
     'https://feeds.npr.org/1001/rss.xml',
@@ -154,8 +154,8 @@ module.exports = async function handler(req, res) {
         fetches.push(fetch(msUrl).then(r => r.json()).then(d => ({ src: 'ms', data: d })).catch(() => ({ src: 'ms', data: {} })));
       }
 
-      // NYT Top Stories API (free, high quality, full abstracts + images)
-      if (NYT_KEY) {
+      // NYT Top Stories API — only for US requests
+      if (NYT_KEY && (country === 'us' || country === 'gb')) {
         const nytSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'science' ? 'science' : category === 'sports' ? 'sports' : 'world';
         fetches.push(
           fetch(`https://api.nytimes.com/svc/topstories/v2/${nytSection}.json?api-key=${NYT_KEY}`)
@@ -163,8 +163,8 @@ module.exports = async function handler(req, res) {
         );
       }
 
-      // Guardian API (free, full trail text + images)
-      if (GUARDIAN_KEY) {
+      // Guardian API — only for GB and US requests
+      if (GUARDIAN_KEY && (country === 'gb' || country === 'us')) {
         const gSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'sports' ? 'sport' : 'world';
         fetches.push(
           fetch(`https://content.guardianapis.com/${gSection}?api-key=${GUARDIAN_KEY}&show-fields=trailText,thumbnail&page-size=10&lang=en`)
