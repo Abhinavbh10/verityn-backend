@@ -2,20 +2,11 @@ name: Verityn Cron Jobs
 
 on:
   schedule:
-    # Cache warming — runs at 5am UTC every day
-    # (10:30am IST, 1am EST, 6am BST)
-    - cron: '0 5 * * *'
-
-    # Story follow checks — runs every 30 minutes
-    - cron: '*/30 * * * *'
+    # Every 3 hours — handles thread generation + daily summary
+    - cron: '0 */3 * * *'
 
   # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
-    inputs:
-      task:
-        description: 'Task to run (leave empty for auto)'
-        required: false
-        default: ''
 
 jobs:
   run-cron:
@@ -27,12 +18,13 @@ jobs:
         run: |
           echo "Triggering cron at $(date -u)"
 
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+          RESPONSE=$(curl -s -o /tmp/cron_response.json -w "%{http_code}" \
             -X GET \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
             "https://verityn-backend-ten.vercel.app/api/cron")
 
           echo "Response status: $RESPONSE"
+          cat /tmp/cron_response.json
 
           if [ "$RESPONSE" = "200" ]; then
             echo "Cron completed successfully"
