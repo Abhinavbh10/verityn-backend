@@ -230,6 +230,39 @@ module.exports = async function handler(request, response) {
         .lt('event_date', cutoff);
     } catch (e) {}
 
+    // ── Generate "Today in Brief" summary sentence ───────────
+    try {
+      const topHeadlines = unique.slice(0, 8)
+        .map(a => a.headline).join('; ');
+      const summaryRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method:  'POST',
+        headers: {
+          'Content-Type':      'application/json',
+          'x-api-key':         ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model:      'claude-sonnet-4-20250514',
+          max_tokens: 80,
+          system:     'Write one editorial sentence summarising the mood of today\'s news. Confident, intelligent tone. Under 25 words. No clichés. No "today" or "this morning". Start with the most important theme.',
+          messages:   [{ role: 'user', content: `Top headlines: ${topHeadlines}\n\nOne sentence:` }],
+        }),
+      });
+      const summaryData = await summaryRes.json();
+      const summaryText = summaryData.content?.[0]?.text?.trim();
+      if (summaryText) {
+        await supabase.from('digest_cache').upsert({
+          cache_key:  'daily-summary',
+          digest:     { summary: summaryText },
+          fetched_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        }, { onConflict: 'cache_key' });
+        results.threadsGenerated.push('daily-summary');
+      }
+    } catch (e) {
+      results.errors.push('daily-summary: ' + e.message);
+    }
+
   } catch (e) {
     results.errors.push(`thread-generation: ${e.message}`);
   }
