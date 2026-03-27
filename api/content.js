@@ -154,8 +154,8 @@ module.exports = async function handler(req, res) {
         fetches.push(fetch(msUrl).then(r => r.json()).then(d => ({ src: 'ms', data: d })).catch(() => ({ src: 'ms', data: {} })));
       }
 
-      // NYT Top Stories API — only for US requests
-      if (NYT_KEY && (country === 'us' || country === 'gb')) {
+      // NYT Top Stories API — world news, fires for all countries
+      if (NYT_KEY) {
         const nytSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'science' ? 'science' : category === 'sports' ? 'sports' : 'world';
         fetches.push(
           fetch(`https://api.nytimes.com/svc/topstories/v2/${nytSection}.json?api-key=${NYT_KEY}`)
@@ -163,8 +163,8 @@ module.exports = async function handler(req, res) {
         );
       }
 
-      // Guardian API — only for GB and US requests
-      if (GUARDIAN_KEY && (country === 'gb' || country === 'us')) {
+      // Guardian API — world news, fires for all countries
+      if (GUARDIAN_KEY) {
         const gSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'sports' ? 'sport' : 'world';
         fetches.push(
           fetch(`https://content.guardianapis.com/${gSection}?api-key=${GUARDIAN_KEY}&show-fields=trailText,thumbnail&page-size=10&lang=en`)
@@ -224,7 +224,7 @@ module.exports = async function handler(req, res) {
               image: img?.url || null, publishedAt: a.published_date,
               time: getRelativeTime(a.published_date),
               topic: t.topic, topicLabel: t.label,
-              country: 'US', sourceCount: 1,
+              country: 'WORLD', sourceCount: 1,
             });
           }
         }
