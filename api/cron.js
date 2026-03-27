@@ -232,7 +232,21 @@ module.exports = async function handler(request, response) {
 
     // ── Generate "Today in Brief" summary sentence ───────────
     try {
-      const topHeadlines = unique.slice(0, 8)
+      // Filter to substantive topics only before summarising
+      const SUMMARY_TOPICS = ['world','politics','finance','tech','climate'];
+      function inferBasicTopic(headline) {
+        const t = headline.toLowerCase();
+        if (/\biran\b|\bisrael\b|\bwar\b|\bstrike\b|\bcrisis\b|\bconflict\b|\bnato\b|\belection\b|\bminister\b|\bpresident\b|\bparliament\b|\bsanction\b/.test(t)) return 'politics';
+        if (/\bmarket\b|\bstock\b|\bfed\b|\binflation\b|\bgdp\b|\brate\b|\bbank\b|\boil\b|\beconom\b|\btrade\b|\bbudget\b/.test(t)) return 'finance';
+        if (/\bai\b|\btech\b|\bchip\b|\bsoftware\b|\bcyber\b|\bdigital\b|\bstartup\b/.test(t)) return 'tech';
+        if (/\bclimate\b|\benergy\b|\bemission\b|\brenewable\b|\benvironment\b/.test(t)) return 'climate';
+        if (/\bsport\b|\bcar\b|\bfilm\b|\bmusic\b|\bcelebrit\b|\brecipe\b|\btravel\b|\bfashion\b|\bfootball\b|\bcricket\b|\bnba\b|\bnfl\b/.test(t)) return 'skip';
+        return 'world';
+      }
+      const substantive = unique
+        .filter(a => inferBasicTopic(a.headline) !== 'skip')
+        .slice(0, 8);
+      const topHeadlines = (substantive.length > 0 ? substantive : unique.slice(0, 8))
         .map(a => a.headline).join('; ');
       const summaryRes = await fetch('https://api.anthropic.com/v1/messages', {
         method:  'POST',
@@ -244,8 +258,8 @@ module.exports = async function handler(request, response) {
         body: JSON.stringify({
           model:      'claude-sonnet-4-20250514',
           max_tokens: 80,
-          system:     'Write one editorial sentence summarising the mood of today\'s news. Confident, intelligent tone. Under 25 words. No clichés. No "today" or "this morning". Start with the most important theme.',
-          messages:   [{ role: 'user', content: `Top headlines: ${topHeadlines}\n\nOne sentence:` }],
+          system:     'Write one sharp editorial sentence summarising the most important world, political, or economic developments. Confident, intelligent tone. Under 25 words. No sports, entertainment, or lifestyle. No "today" or "this morning". Start with the dominant serious theme.',
+          messages:   [{ role: 'user', content: `Headlines: ${topHeadlines}\n\nOne sentence:` }],
         }),
       });
       const summaryData = await summaryRes.json();
