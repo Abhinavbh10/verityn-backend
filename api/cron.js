@@ -111,18 +111,22 @@ function clusterArticles(articles) {
   const clusters = {};
   for (const article of articles) {
     const entities = getEntities(article.headline);
-    if (entities.length < 1) continue; // need at least 1 entity
-    const key = makeTopicKey(entities);
-    if (!clusters[key]) {
-      clusters[key] = {
-        key,
-        label:    makeTopicLabel(entities),
-        articles: [],
-        sources:  new Set(),
-      };
+    if (entities.length < 1) continue;
+
+    // Add article to a cluster for EACH individual entity
+    // So "Iran oil Trump" article goes into iran, oil, trump clusters separately
+    for (const entity of entities) {
+      const key   = entity; // single entity as key
+      const label = makeTopicLabel([entity]);
+      if (!clusters[key]) {
+        clusters[key] = { key, label, articles: [], sources: new Set() };
+      }
+      // Avoid duplicate articles in same cluster
+      if (!clusters[key].articles.find(a => a.headline === article.headline)) {
+        clusters[key].articles.push(article);
+        clusters[key].sources.add(article.source || 'Unknown');
+      }
     }
-    clusters[key].articles.push(article);
-    clusters[key].sources.add(article.source || 'Unknown');
   }
   // Only return clusters with 3+ articles (genuinely hot)
   return Object.values(clusters).filter(c => c.articles.length >= 2).sort((a,b) => b.articles.length - a.articles.length);
