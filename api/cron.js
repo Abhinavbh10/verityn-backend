@@ -108,65 +108,46 @@ function makeTopicLabel(entities) {
 
 // ── Cluster articles by topic ─────────────────────────────────
 function clusterArticles(articles) {
-  // ── Union-Find clustering — articles sharing any entity belong to same story ──
-  const articleEntities = articles.map(a => ({
-    article: a,
-    entities: getEntities(a.headline),
-  })).filter(ae => ae.entities.length > 0);
-
-  // Union-Find helpers
-  const parent = articleEntities.map((_, i) => i);
-  function find(i) { return parent[i] === i ? i : (parent[i] = find(parent[i])); }
-  function union(i, j) { parent[find(i)] = find(j); }
-
-  // Merge articles that share any entity into the same cluster
-  for (let i = 0; i < articleEntities.length; i++) {
-    for (let j = i + 1; j < articleEntities.length; j++) {
-      const shared = articleEntities[i].entities.filter(e => articleEntities[j].entities.includes(e));
-      if (shared.length >= 1) union(i, j);
-    }
-  }
-
-  // Group articles by cluster root
-  const groups = {};
-  for (let i = 0; i < articleEntities.length; i++) {
-    const root = find(i);
-    if (!groups[root]) groups[root] = [];
-    groups[root].push(articleEntities[i]);
-  }
-
-  // Priority list — first matching entity becomes the cluster label
+  // Priority order — determines which entity "owns" an article
   const ENTITY_PRIORITY = [
     'iran','israel','ukraine','russia','china','india','germany','france',
     'trump','putin','modi','zelensky','netanyahu',
     'fed','oil','ai','chips','markets','rates','inflation','tariffs','trade',
     'nato','nuclear','sanctions','war','ceasefire','hormuz',
-    'climate','energy','election'
+    'climate','energy','election','congress','america','uk','australia','japan','korea'
   ];
 
   function dominantEntity(entities) {
     for (const p of ENTITY_PRIORITY) { if (entities.includes(p)) return p; }
-    return entities[0] || 'world';
+    return entities[0] || null;
   }
 
-  // Build final clusters keyed by dominant entity
+  // Assign each article its dominant entity
+  const tagged = articles
+    .map(a => ({ article: a, entities: getEntities(a.headline) }))
+    .filter(ae => ae.entities.length > 0)
+    .map(ae => ({ ...ae, dominant: dominantEntity(ae.entities) }))
+    .filter(ae => ae.dominant);
+
+  // Group by dominant entity — simple and collision-free
   const clusters = {};
-  for (const group of Object.values(groups)) {
-    const allEntities = [...new Set(group.flatMap(ae => ae.entities))];
-    const dominant    = dominantEntity(allEntities);
-    const key         = dominant;
+  for (const ae of tagged) {
+    const key = ae.dominant;
     if (!clusters[key]) {
-      clusters[key] = { key, label: makeTopicLabel([dominant]), articles: [], sources: new Set() };
+      clusters[key] = {
+        key,
+        label: makeTopicLabel([key]),
+        articles: [],
+        sources: new Set(),
+      };
     }
-    for (const ae of group) {
-      if (!clusters[key].articles.find(a => a.headline === ae.article.headline)) {
-        clusters[key].articles.push(ae.article);
-        clusters[key].sources.add(ae.article.source || 'Unknown');
-      }
+    if (!clusters[key].articles.find(a => a.headline === ae.article.headline)) {
+      clusters[key].articles.push(ae.article);
+      clusters[key].sources.add(ae.article.source || 'Unknown');
     }
   }
 
-  // Return clusters with 2+ articles (genuine momentum), sorted by volume
+  // Return clusters with 2+ articles, sorted by volume
   return Object.values(clusters)
     .filter(c => c.articles.length >= 2)
     .sort((a, b) => b.articles.length - a.articles.length);
