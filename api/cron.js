@@ -250,6 +250,11 @@ module.exports = async function handler(request, response) {
 
     const allResults  = await Promise.all(headlineFetches);
     const allArticles = allResults.flat();
+    // Debug: count per source
+    const gNewsCount    = allResults.slice(0, countries.length).flat().length;
+    const nytCount      = NYT_KEY ? (allResults[countries.length] || []).length : 0;
+    const guardianCount = GUARDIAN_KEY ? (allResults[countries.length + (NYT_KEY ? 1 : 0)] || []).length : 0;
+    results.debug.sourceCounts = { gnews: gNewsCount, nyt: nytCount, guardian: guardianCount };
 
     // Deduplicate headlines
     const seen    = new Set();
