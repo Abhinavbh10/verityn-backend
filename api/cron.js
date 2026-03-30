@@ -255,20 +255,19 @@ module.exports = async function handler(request, response) {
           }))).catch(() => [])
       ) : [Promise.resolve([])]),
       // RSS — BBC, DW, Al Jazeera, Reuters, Economic Times
-      fetch('https://feeds.bbci.co.uk/news/world/rss.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+      fetch('https://feeds.bbci.co.uk/news/world/rss.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC')).catch(() => []),
-      fetch('https://rss.dw.com/xml/rss-en-all', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+      fetch('https://rss.dw.com/xml/rss-en-all', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'DW')).catch(() => []),
-      fetch('https://www.aljazeera.com/xml/rss/all.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+      fetch('https://www.aljazeera.com/xml/rss/all.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'Al Jazeera')).catch(() => []),
-      fetch('https://feeds.reuters.com/reuters/topNews', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+      fetch('https://feeds.reuters.com/reuters/topNews', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
-      fetch('https://economictimes.indiatimes.com/rssfeedstopstories.cms', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+      fetch('https://economictimes.indiatimes.com/rssfeedstopstories.cms', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'Economic Times')).catch(() => []),
     ];
 
     const allResults  = await Promise.all(headlineFetches);
-        const allResults  = await Promise.all(headlineFetches);
     const allArticles = allResults.flat();
     // Debug: total count
     results.debug.sourceCounts = { total: allArticles.length };
