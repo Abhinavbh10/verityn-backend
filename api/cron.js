@@ -215,46 +215,63 @@ module.exports = async function handler(request, response) {
     const NYT_KEY      = process.env.NYT_API_KEY;
     const GUARDIAN_KEY = process.env.GUARDIAN_API_KEY;
 
-    const countries   = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'];
+    const countries = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'];
+
+    // Helper to extract clean headlines from RSS
+    function parseRssHeadlines(xml, sourceName) {
+      const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
+      return items.slice(0, 15).map(item => {
+        const title = (item.match(/<title[^>]*>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/title>/) || [])[1] || '';
+        return { headline: title.trim(), source: sourceName, url: '' };
+      }).filter(a => a.headline.length > 10);
+    }
+
     const headlineFetches = [
-      // GNews per country
+      // GNews — 10 per country
       ...countries.map(c =>
         fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${c}&max=10&apikey=${GNEWS_KEY}`)
           .then(r => r.json())
           .then(d => (d.articles || []).map(a => ({
             headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
-            source:   a.source?.name || 'Unknown',
-            url:      a.url,
-          })))
-          .catch(() => [])
+            source: a.source?.name || 'Unknown', url: a.url,
+          }))).catch(() => [])
       ),
-      // NYT world section — rich source for global topics
-      NYT_KEY ? fetch(`https://api.nytimes.com/svc/topstories/v2/world.json?api-key=${NYT_KEY}`)
-        .then(r => r.json())
-        .then(d => (d.results || []).slice(0, 20).map(a => ({
-          headline: (a.title || '').trim(),
-          source:   'New York Times',
-          url:      a.url,
-        })))
-        .catch(() => []) : Promise.resolve([]),
-      // Guardian world section
-      GUARDIAN_KEY ? fetch(`https://content.guardianapis.com/world?api-key=${GUARDIAN_KEY}&show-fields=trailText&page-size=20`)
-        .then(r => r.json())
-        .then(d => (d.response?.results || []).map(a => ({
-          headline: (a.webTitle || '').trim(),
-          source:   'The Guardian',
-          url:      a.webUrl,
-        })))
-        .catch(() => []) : Promise.resolve([]),
+      // NYT — world, politics, business, technology sections
+      ...(NYT_KEY ? ['world','politics','business','technology'].map(section =>
+        fetch(`https://api.nytimes.com/svc/topstories/v2/${section}.json?api-key=${NYT_KEY}`)
+          .then(r => r.json())
+          .then(d => (d.results || []).slice(0, 15).map(a => ({
+            headline: (a.title || '').trim(),
+            source: 'New York Times', url: a.url,
+          }))).catch(() => [])
+      ) : [Promise.resolve([])]),
+      // Guardian — world, politics, business, technology sections
+      ...(GUARDIAN_KEY ? ['world','politics','business','technology'].map(section =>
+        fetch(`https://content.guardianapis.com/${section}?api-key=${GUARDIAN_KEY}&page-size=15`)
+          .then(r => r.json())
+          .then(d => (d.response?.results || []).map(a => ({
+            headline: (a.webTitle || '').trim(),
+            source: 'The Guardian', url: a.webUrl,
+          }))).catch(() => [])
+      ) : [Promise.resolve([])]),
+      // RSS — BBC, DW, Al Jazeera, Reuters, Economic Times
+      fetch('https://feeds.bbci.co.uk/news/world/rss.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC')).catch(() => []),
+      fetch('https://rss.dw.com/xml/rss-en-all', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'DW')).catch(() => []),
+      fetch('https://www.aljazeera.com/xml/rss/all.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Al Jazeera')).catch(() => []),
+      fetch('https://feeds.reuters.com/reuters/topNews', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
+      fetch('https://economictimes.indiatimes.com/rssfeedstopstories.cms', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' } })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Economic Times')).catch(() => []),
     ];
 
     const allResults  = await Promise.all(headlineFetches);
+        const allResults  = await Promise.all(headlineFetches);
     const allArticles = allResults.flat();
-    // Debug: count per source
-    const gNewsCount    = allResults.slice(0, countries.length).flat().length;
-    const nytCount      = NYT_KEY ? (allResults[countries.length] || []).length : 0;
-    const guardianCount = GUARDIAN_KEY ? (allResults[countries.length + (NYT_KEY ? 1 : 0)] || []).length : 0;
-    results.debug.sourceCounts = { gnews: gNewsCount, nyt: nytCount, guardian: guardianCount };
+    // Debug: total count
+    results.debug.sourceCounts = { total: allArticles.length };
 
     // Deduplicate headlines
     const seen    = new Set();
