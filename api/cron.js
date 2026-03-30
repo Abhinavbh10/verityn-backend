@@ -108,28 +108,68 @@ function makeTopicLabel(entities) {
 
 // ── Cluster articles by topic ─────────────────────────────────
 function clusterArticles(articles) {
-  const clusters = {};
-  for (const article of articles) {
-    const entities = getEntities(article.headline);
-    if (entities.length < 1) continue;
+  // ── Union-Find clustering — articles sharing any entity belong to same story ──
+  const articleEntities = articles.map(a => ({
+    article: a,
+    entities: getEntities(a.headline),
+  })).filter(ae => ae.entities.length > 0);
 
-    // Add article to a cluster for EACH individual entity
-    // So "Iran oil Trump" article goes into iran, oil, trump clusters separately
-    for (const entity of entities) {
-      const key   = entity; // single entity as key
-      const label = makeTopicLabel([entity]);
-      if (!clusters[key]) {
-        clusters[key] = { key, label, articles: [], sources: new Set() };
-      }
-      // Avoid duplicate articles in same cluster
-      if (!clusters[key].articles.find(a => a.headline === article.headline)) {
-        clusters[key].articles.push(article);
-        clusters[key].sources.add(article.source || 'Unknown');
+  // Union-Find helpers
+  const parent = articleEntities.map((_, i) => i);
+  function find(i) { return parent[i] === i ? i : (parent[i] = find(parent[i])); }
+  function union(i, j) { parent[find(i)] = find(j); }
+
+  // Merge articles that share any entity into the same cluster
+  for (let i = 0; i < articleEntities.length; i++) {
+    for (let j = i + 1; j < articleEntities.length; j++) {
+      const shared = articleEntities[i].entities.filter(e => articleEntities[j].entities.includes(e));
+      if (shared.length >= 1) union(i, j);
+    }
+  }
+
+  // Group articles by cluster root
+  const groups = {};
+  for (let i = 0; i < articleEntities.length; i++) {
+    const root = find(i);
+    if (!groups[root]) groups[root] = [];
+    groups[root].push(articleEntities[i]);
+  }
+
+  // Priority list — first matching entity becomes the cluster label
+  const ENTITY_PRIORITY = [
+    'iran','israel','ukraine','russia','china','india','germany','france',
+    'trump','putin','modi','zelensky','netanyahu',
+    'fed','oil','ai','chips','markets','rates','inflation','tariffs','trade',
+    'nato','nuclear','sanctions','war','ceasefire','hormuz',
+    'climate','energy','election'
+  ];
+
+  function dominantEntity(entities) {
+    for (const p of ENTITY_PRIORITY) { if (entities.includes(p)) return p; }
+    return entities[0] || 'world';
+  }
+
+  // Build final clusters keyed by dominant entity
+  const clusters = {};
+  for (const group of Object.values(groups)) {
+    const allEntities = [...new Set(group.flatMap(ae => ae.entities))];
+    const dominant    = dominantEntity(allEntities);
+    const key         = dominant;
+    if (!clusters[key]) {
+      clusters[key] = { key, label: makeTopicLabel([dominant]), articles: [], sources: new Set() };
+    }
+    for (const ae of group) {
+      if (!clusters[key].articles.find(a => a.headline === ae.article.headline)) {
+        clusters[key].articles.push(ae.article);
+        clusters[key].sources.add(ae.article.source || 'Unknown');
       }
     }
   }
-  // Only return clusters with 3+ articles (genuinely hot)
-  return Object.values(clusters).filter(c => c.articles.length >= 2).sort((a,b) => b.articles.length - a.articles.length);
+
+  // Return clusters with 2+ articles, sorted by volume
+  return Object.values(clusters)
+    .filter(c => c.articles.length >= 2)
+    .sort((a, b) => b.articles.length - a.articles.length);
 }
 
 // ── Main handler ─────────────────────────────────────────────
