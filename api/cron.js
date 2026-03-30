@@ -166,7 +166,7 @@ function clusterArticles(articles) {
     }
   }
 
-  // Return clusters with 2+ articles, sorted by volume
+  // Return clusters with 2+ articles (genuine momentum), sorted by volume
   return Object.values(clusters)
     .filter(c => c.articles.length >= 2)
     .sort((a, b) => b.articles.length - a.articles.length);
@@ -212,17 +212,41 @@ module.exports = async function handler(request, response) {
   try {
     // Fetch headlines from key countries
     // Fetch directly from GNews — don't call own API (unreliable in serverless)
+    const NYT_KEY      = process.env.NYT_API_KEY;
+    const GUARDIAN_KEY = process.env.GUARDIAN_API_KEY;
+
     const countries   = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'];
-    const headlineFetches = countries.map(c =>
-      fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${c}&max=10&apikey=${GNEWS_KEY}`)
+    const headlineFetches = [
+      // GNews per country
+      ...countries.map(c =>
+        fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${c}&max=10&apikey=${GNEWS_KEY}`)
+          .then(r => r.json())
+          .then(d => (d.articles || []).map(a => ({
+            headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
+            source:   a.source?.name || 'Unknown',
+            url:      a.url,
+          })))
+          .catch(() => [])
+      ),
+      // NYT world section — rich source for global topics
+      NYT_KEY ? fetch(`https://api.nytimes.com/svc/topstories/v2/world.json?api-key=${NYT_KEY}`)
         .then(r => r.json())
-        .then(d => (d.articles || []).map(a => ({
-          headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
-          source:   a.source?.name || 'Unknown',
+        .then(d => (d.results || []).slice(0, 20).map(a => ({
+          headline: (a.title || '').trim(),
+          source:   'New York Times',
           url:      a.url,
         })))
-        .catch(() => [])
-    );
+        .catch(() => []) : Promise.resolve([]),
+      // Guardian world section
+      GUARDIAN_KEY ? fetch(`https://content.guardianapis.com/world?api-key=${GUARDIAN_KEY}&show-fields=trailText&page-size=20`)
+        .then(r => r.json())
+        .then(d => (d.response?.results || []).map(a => ({
+          headline: (a.webTitle || '').trim(),
+          source:   'The Guardian',
+          url:      a.webUrl,
+        })))
+        .catch(() => []) : Promise.resolve([]),
+    ];
 
     const allResults  = await Promise.all(headlineFetches);
     const allArticles = allResults.flat();
@@ -238,6 +262,7 @@ module.exports = async function handler(request, response) {
     // Cluster into hot topics
     const clusters = clusterArticles(unique);
     results.debug.totalArticles = unique.length;
+    results.debug.allClusters = clusterArticles(unique).map(c => ({ key: c.key, label: c.label, count: c.articles.length }));
     results.debug.sampleHeadlines = unique.slice(0, 5).map(a => a.headline);
     results.debug.clustersFound = clusters.map(c => ({
       key: c.key,
