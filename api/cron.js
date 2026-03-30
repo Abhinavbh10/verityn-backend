@@ -13,6 +13,7 @@ const VERCEL_URL    = process.env.VERCEL_URL
 
 // ── Entity map for topic clustering ──────────────────────────
 const ENTITY_MAP = {
+  // Countries & regions
   'iran':'iran','iranian':'iran','irans':'iran',
   'israel':'israel','israeli':'israel','israelis':'israel',
   'ukraine':'ukraine','ukrainian':'ukraine',
@@ -21,16 +22,44 @@ const ENTITY_MAP = {
   'india':'india','indian':'india',
   'germany':'germany','german':'germany',
   'france':'france','french':'france',
-  'america':'america','american':'america',
-  'trump':'trump','biden':'biden','modi':'modi','putin':'putin',
-  'nato':'nato','gaza':'gaza','hamas':'hamas',
-  'pakistan':'pakistan','britain':'uk','british':'uk',
+  'america':'america','american':'america','us':'america',
+  'britain':'uk','british':'uk','england':'uk',
+  'australia':'australia','australian':'australia',
   'japan':'japan','japanese':'japan',
   'korea':'korea','korean':'korea',
   'taiwan':'taiwan','taiwanese':'taiwan',
-  'congress':'congress','parliament':'parliament',
+  'pakistan':'pakistan','saudi':'saudi',
+  'europe':'europe','european':'europe',
+  'nato':'nato','gaza':'gaza','hamas':'hamas',
+  // Leaders
+  'trump':'trump','biden':'biden','modi':'modi','putin':'putin',
+  'zelensky':'zelensky','netanyahu':'netanyahu','xi':'xi',
+  'macron':'macron','scholz':'scholz',
+  // Institutions
+  'congress':'congress','parliament':'parliament','senate':'senate',
   'election':'election','elections':'election',
-  'fed':'fed','rbi':'rbi','inflation':'inflation',
+  // Finance & Economy
+  'fed':'fed','rbi':'rbi','ecb':'ecb',
+  'inflation':'inflation','inflationary':'inflation',
+  'recession':'recession','gdp':'gdp',
+  'oil':'oil','opec':'opec','crude':'oil',
+  'rate':'rates','rates':'rates','interest':'rates',
+  'market':'markets','markets':'markets','stocks':'stocks',
+  'dollar':'dollar','rupee':'rupee','euro':'euro',
+  'bank':'banking','banking':'banking',
+  'tariff':'tariffs','tariffs':'tariffs','trade':'trade',
+  // Tech
+  'ai':'ai','artificial':'ai',
+  'chip':'chips','chips':'chips','semiconductor':'chips',
+  'nvidia':'nvidia','openai':'openai','google':'google',
+  'apple':'apple','microsoft':'microsoft','meta':'meta',
+  'cyber':'cyber','cybersecurity':'cyber',
+  // Climate & Energy
+  'climate':'climate','emissions':'climate','carbon':'climate',
+  'energy':'energy','solar':'energy','renewable':'energy',
+  'war':'war','conflict':'conflict','ceasefire':'ceasefire',
+  'sanctions':'sanctions','nuclear':'nuclear',
+  'strait':'hormuz','hormuz':'hormuz',
 };
 
 function getEntities(headline) {
@@ -54,6 +83,19 @@ function makeTopicLabel(entities) {
     'putin':      'Putin', 'nato':      'NATO',
     'gaza':       'Gaza', 'hamas':      'Hamas',
     'pakistan':   'Pakistan', 'uk':      'UK',
+    'oil':        'Oil Prices', 'rates':      'Interest Rates',
+    'markets':    'Markets', 'chips':       'Semiconductors',
+    'ai':         'Artificial Intelligence', 'climate':    'Climate',
+    'trade':      'Trade', 'tariffs':     'Tariffs',
+    'hormuz':     'Strait of Hormuz', 'ceasefire':  'Ceasefire Talks',
+    'nuclear':    'Nuclear', 'sanctions':   'Sanctions',
+    'banking':    'Banking', 'dollar':      'US Dollar',
+    'google':     'Google', 'nvidia':       'Nvidia',
+    'openai':     'OpenAI', 'microsoft':    'Microsoft',
+    'cyber':      'Cybersecurity', 'energy':      'Energy',
+    'election':   'Elections', 'zelensky':    'Zelensky',
+    'netanyahu':  'Netanyahu', 'saudi':       'Saudi Arabia',
+    'australia':  'Australia', 'europe':      'Europe',
     'japan':      'Japan', 'korea':     'Korea',
     'taiwan':     'Taiwan', 'election':  'Elections',
     'inflation':  'Inflation', 'fed':    'Federal Reserve',
@@ -69,7 +111,7 @@ function clusterArticles(articles) {
   const clusters = {};
   for (const article of articles) {
     const entities = getEntities(article.headline);
-    if (entities.length < 2) continue; // need at least 2 entities
+    if (entities.length < 1) continue; // need at least 1 entity
     const key = makeTopicKey(entities);
     if (!clusters[key]) {
       clusters[key] = {
@@ -83,7 +125,7 @@ function clusterArticles(articles) {
     clusters[key].sources.add(article.source || 'Unknown');
   }
   // Only return clusters with 3+ articles (genuinely hot)
-  return Object.values(clusters).filter(c => c.articles.length >= 2);
+  return Object.values(clusters).filter(c => c.articles.length >= 2).sort((a,b) => b.articles.length - a.articles.length);
 }
 
 // ── Main handler ─────────────────────────────────────────────
@@ -161,7 +203,7 @@ module.exports = async function handler(request, response) {
     }));
     const today    = new Date().toISOString().slice(0, 10);
 
-    for (const cluster of clusters.slice(0, 15)) { // max 15 topics per run
+    for (const cluster of clusters.slice(0, 20)) { // max 20 topics per run
       try {
         // Check if already generated today
         let existing = null;
