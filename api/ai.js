@@ -269,5 +269,101 @@ Respond ONLY with valid JSON array starting with [`,
     }
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: digest | oneliner | enrich` });
+
+  // ── ACTION: briefing ─────────────────────────────────────────
+  // Selects 7 stories from pool + writes personalised why-lines
+  if (action === 'briefing') {
+    const { articles = [], countries = ['us'], interests = [] } = params;
+    const pool         = (Array.isArray(articles) ? articles : []).slice(0, 40);
+    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
+
+    if (pool.length === 0) return res.status(400).json({ error: 'No articles.' });
+
+    const locationStr  = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
+    const interestStr  = interestsArr.length ? interestsArr.join(', ') : 'world news';
+
+    // Cache key based on top 20 headlines
+    function hashStr(s) {
+      let h = 0;
+      for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h = h & h; }
+      return Math.abs(h).toString(36);
+    }
+    const cacheKey = `briefing-${countriesArr.sort().join('-')}-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}`.slice(0, 100);
+
+    // Check cache
+    try {
+      const { data: cached } = await supabase.from('digest_cache').select('digest')
+        .eq('cache_key', cacheKey).gt('expires_at', new Date().toISOString()).single();
+      if (cached?.digest?.stories?.length >= 7) {
+        return res.status(200).json({ success: true, fromCache: true, ...cached.digest });
+      }
+    } catch (e) {}
+
+    const headlinesList = pool.map((a, i) =>
+      `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.topic || 'world'}`
+    ).join('
+');
+
+    const prompt = `You are the editor of a personal intelligence briefing for a professional who:
+- Lives in / follows: ${locationStr}
+- Interests: ${interestStr}
+
+From the articles below, select exactly 7 that matter most to THIS person today.
+Assign each to a tier:
+- tier 1: the single most important story (1 story only)
+- tier 2: stories that directly affect their countries or interests (2-3 stories)  
+- tier 3: stories every informed person should know today (remaining stories to reach 7)
+
+For each selected story write a "why" line — one conversational sentence explaining why THIS person specifically should care. Be concrete. No vague phrases like "this is important". Use specific numbers, names, consequences where possible. Keep under 20 words.
+
+Also write one "mood" sentence (under 20 words) summarising the overall tone of today's news. Calm, intelligent, no clichés.
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "mood": "string",
+  "stories": [
+    { "index": number, "tier": 1|2|3, "why": "string" },
+    ...exactly 7 items...
+  ]
+}
+
+Articles:
+${headlinesList}`;
+
+    try {
+      const raw = await callClaude(ANTHROPIC_KEY, prompt, 600);
+      const clean = raw.replace(/\`\`\`json|\`\`\`/g, '').trim();
+      const parsed = JSON.parse(clean);
+
+      if (!parsed.stories || parsed.stories.length < 7) {
+        return res.status(500).json({ error: 'Briefing generation failed — insufficient stories.' });
+      }
+
+      // Map back to full article objects
+      const briefingStories = parsed.stories.map(s => ({
+        ...pool[s.index - 1],
+        tier: s.tier,
+        why:  s.why,
+      })).filter(s => s.headline);
+
+      const result = { mood: parsed.mood, stories: briefingStories };
+
+      // Cache for 3 hours
+      try {
+        await supabase.from('digest_cache').upsert({
+          cache_key:  cacheKey,
+          digest:     result,
+          fetched_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+        }, { onConflict: 'cache_key' });
+      } catch (e) {}
+
+      return res.status(200).json({ success: true, fromCache: false, ...result });
+    } catch (e) {
+      return res.status(500).json({ error: 'Briefing generation failed: ' + e.message });
+    }
+  }
+
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: digest | oneliner | enrich | briefing` });
 };
