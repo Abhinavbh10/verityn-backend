@@ -485,12 +485,35 @@ ${headlinesList}`;
         return dot / (Math.sqrt(magA) * Math.sqrt(magB));
       }
 
-      // Score = semantic similarity + recency bonus
+
+    // Country-specific terms for content-based relevance bonus
+    const COUNTRY_TERMS = {
+      de: ['germany','german','berlin','frankfurt','munich','hamburg','bundesbank','bundestag','bundesrat','scholz','merz','dax','volkswagen','siemens','bayer','deutsche bank','eurobond','bundesliga'],
+      in: ['india','indian','delhi','mumbai','bangalore','chennai','kolkata','rbi','sensex','nifty','rupee','modi','bjp','congress','tata','infosys','reliance','adani'],
+      us: ['america','american','united states','washington','new york','california','federal reserve','fed','nasdaq','dow jones','s&p','biden','trump','senate','congress','pentagon'],
+      gb: ['britain','british','uk','england','london','edinburgh','bank of england','ftse','sterling','pound','sunak','labour','tory','brexit','parliament','downing street'],
+      au: ['australia','australian','sydney','melbourne','brisbane','reserve bank','asx','albanese','canberra'],
+      sg: ['singapore','singaporean','mas','straits times','lee','jurong','changi'],
+      ae: ['uae','dubai','abu dhabi','emirates','gulf','dirham','adnoc','aramco'],
+      jp: ['japan','japanese','tokyo','osaka','bank of japan','nikkei','yen','kishida','softbank','toyota','sony'],
+    };
+
+    // Build country terms for user's selected countries
+    const userCountryTerms = countriesArr.flatMap(c => COUNTRY_TERMS[c] || [c.toLowerCase()]);
+
+      // Score = semantic similarity + recency bonus + country content bonus
       const scored = candidates.map((a, i) => {
         const similarity = cosineSimilarity(profileEmbedding, articleEmbeddings[i]);
         const hoursOld   = (Date.now() - new Date(a.publishedAt)) / 3600000;
-        const recency    = Math.max(0, 1 - hoursOld / 48); // decay over 48h
-        const score      = (similarity * 0.75) + (recency * 0.25);
+        const recency    = Math.max(0, 1 - hoursOld / 48);
+
+        // Country content bonus — does headline/summary mention user's country?
+        const articleText = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
+        const countryMentions = userCountryTerms.filter(term => articleText.includes(term)).length;
+        const countryBonus = Math.min(0.25, countryMentions * 0.08); // max +0.25 boost
+
+        // Final score: semantic relevance + recency + country mention
+        const score = (similarity * 0.65) + (recency * 0.15) + countryBonus;
         return { ...a, relevanceScore: Math.round(score * 100) / 100 };
       }).sort((a, b) => b.relevanceScore - a.relevanceScore);
 
