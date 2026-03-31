@@ -71,7 +71,8 @@ module.exports = async function handler(req, res) {
 
   // ── ACTION: oneliner ─────────────────────────────────────────
   if (action === 'oneliner') {
-    const { articles = [], countries = ['us'], interests = [] } = params;
+    const { articles = [], countries = ['us'], interests = [], ts } = params;
+    const skipCache = !!ts; // skip cache on explicit refresh calls
     const top4 = (Array.isArray(articles) ? articles : []).slice(0, 4);
     if (!top4.length) return res.status(400).json({ error: 'No articles.' });
 
@@ -273,7 +274,8 @@ Respond ONLY with valid JSON array starting with [`,
   // ── ACTION: briefing ─────────────────────────────────────────
   // Selects 7 stories from pool + writes personalised why-lines
   if (action === 'briefing') {
-    const { articles = [], countries = ['us'], interests = [] } = params;
+    const { articles = [], countries = ['us'], interests = [], ts } = params;
+    const skipCache = !!ts; // skip cache on explicit refresh calls
     const pool         = (Array.isArray(articles) ? articles : []).slice(0, 40);
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
@@ -291,19 +293,20 @@ Respond ONLY with valid JSON array starting with [`,
     }
     const cacheKey = `briefing-${countriesArr.sort().join('-')}-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}`.slice(0, 100);
 
-    // Check cache
-    try {
-      const { data: cached } = await supabase.from('digest_cache').select('digest')
-        .eq('cache_key', cacheKey).gt('expires_at', new Date().toISOString()).single();
-      if (cached?.digest?.stories?.length >= 7) {
-        return res.status(200).json({ success: true, fromCache: true, ...cached.digest });
-      }
-    } catch (e) {}
+    // Check cache — skip if this is a fresh refresh request
+    if (!skipCache) {
+      try {
+        const { data: cached } = await supabase.from('digest_cache').select('digest')
+          .eq('cache_key', cacheKey).gt('expires_at', new Date().toISOString()).single();
+        if (cached?.digest?.stories?.length >= 7) {
+          return res.status(200).json({ success: true, fromCache: true, ...cached.digest });
+        }
+      } catch (e) {}
+    }
 
     const headlinesList = pool.map((a, i) =>
       `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.topic || 'world'}`
-    ).join('
-');
+    ).join('\n');
 
     const prompt = `You are the editor of a personal intelligence briefing for a professional who:
 - Lives in / follows: ${locationStr}
