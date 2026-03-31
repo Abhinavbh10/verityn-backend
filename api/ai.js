@@ -329,7 +329,7 @@ Articles:
 ${headlinesList}`;
 
     try {
-      const raw = await callClaude(ANTHROPIC_KEY, prompt, 600);
+      const raw = await callClaude(ANTHROPIC_KEY, 'You are a news editor creating a personalised intelligence briefing.', prompt, 600);
       const clean = raw.replace(/\`\`\`json|\`\`\`/g, '').trim();
       const parsed = JSON.parse(clean);
 
@@ -376,7 +376,7 @@ ${headlinesList}`;
     if (pool.length === 0) return res.status(200).json({ success: true, articles: [] });
 
     // ── Layer 1: Rule-based filter ──────────────────────────────
-    const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal|movie review|box office|reality tv/i;
+    const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal|movie review|box office|reality tv|news bulletin|midday update|morning update|evening update|daily digest|weekly roundup|newsletter|podcast episode/i;
     const userWantsSports = interestsArr.includes('sports');
 
     const filtered = pool.filter(a => {
