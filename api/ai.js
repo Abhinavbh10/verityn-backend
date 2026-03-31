@@ -61,6 +61,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  const OPENAI_KEY    = process.env.OPENAI_API_KEY;
   const GNEWS_KEY     = process.env.GNEWS_API_KEY;
   const SUPABASE_URL  = process.env.SUPABASE_URL;
   const SUPABASE_KEY  = process.env.SUPABASE_ANON_KEY;
@@ -308,28 +309,21 @@ Respond ONLY with valid JSON array starting with [`,
       `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.topic || 'world'}`
     ).join('\n');
 
-    const prompt = `You are the editor of a personal intelligence briefing for a professional who:
-- Lives in / follows: ${locationStr}
-- Interests: ${interestStr}
+    const prompt = `You are the editor of a personal intelligence briefing for a professional who follows ${locationStr} and is interested in ${interestStr}.
 
-From the articles below, select exactly 7 that matter most to THIS person today.
-Assign each to a tier:
-- tier 1: the single most important story (1 story only)
-- tier 2: stories that directly affect their countries or interests (2-3 stories)  
-- tier 3: stories every informed person should know today (remaining stories to reach 7)
+The articles below have already been ranked by semantic relevance using embeddings. Article 1 is most relevant. Trust this ranking.
 
-For each selected story write a "why" line — one conversational sentence explaining why THIS person specifically should care. Be concrete. No vague phrases like "this is important". Use specific numbers, names, consequences where possible. Keep under 20 words.
+Select exactly 7. Assign tiers:
+- tier 1: single most important story today (1 story only)
+- tier 2: stories directly affecting their countries or interests (2-3 stories)
+- tier 3: stories every informed person should know (remaining to reach 7)
 
-Also write one "mood" sentence (under 20 words) summarising the overall tone of today's news. Calm, intelligent, no clichés.
+For each write a why line: one conversational sentence under 20 words, concrete, specific numbers/names where possible.
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "mood": "string",
-  "stories": [
-    { "index": number, "tier": 1|2|3, "why": "string" },
-    ...exactly 7 items...
-  ]
-}
+Also write a mood sentence under 20 words summarising today's news tone. Calm, intelligent, no clichés.
+
+Respond ONLY with valid JSON:
+{"mood":"string","stories":[{"index":number,"tier":1,"why":"string"}]}
 
 Articles:
 ${headlinesList}`;
@@ -368,5 +362,156 @@ ${headlinesList}`;
     }
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: digest | oneliner | enrich | briefing` });
+
+  // ── ACTION: rank ─────────────────────────────────────────────
+  // Layer 1: rule-based filter
+  // Layer 2: OpenAI embeddings for semantic relevance scoring
+  // Returns articles sorted by relevance to user profile
+  if (action === 'rank') {
+    const { articles = [], countries = ['us'], interests = [] } = params;
+    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
+    const pool = (Array.isArray(articles) ? articles : []).slice(0, 60);
+
+    if (pool.length === 0) return res.status(200).json({ success: true, articles: [] });
+
+    // ── Layer 1: Rule-based filter ──────────────────────────────
+    const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal|movie review|box office|reality tv/i;
+    const userWantsSports = interestsArr.includes('sports');
+
+    const filtered = pool.filter(a => {
+      if (!a.headline || a.headline.length < 15) return false;
+      if (NOISE_PATTERNS.test(a.headline)) return false;
+      if (!userWantsSports && /\b(nba|nfl|ipl|premier league|cricket|football score|match result|tournament bracket)\b/i.test(a.headline)) return false;
+      return true;
+    });
+
+    const candidates = filtered.length >= 10 ? filtered : pool.slice(0, 30);
+
+    // ── Layer 2: Semantic embedding ranking ─────────────────────
+    if (!OPENAI_KEY) {
+      // Fallback: rule-based scoring without embeddings
+      const COUNTRY_NAMES_FULL = {
+        de: 'germany german', in: 'india indian', us: 'america american united states',
+        gb: 'britain british uk england', au: 'australia australian',
+        sg: 'singapore', ae: 'uae dubai emirates', jp: 'japan japanese',
+      };
+      const INTEREST_TERMS = {
+        finance:   'finance economy market bank inflation stock gdp trade rupee dollar euro fed rbi',
+        tech:      'technology ai software digital cyber startup chip semiconductor',
+        politics:  'politics election parliament government minister president policy',
+        sports:    'sports football cricket match league tournament',
+        climate:   'climate energy renewable emission environment solar green',
+        world:     'world global international',
+      };
+      const profileTerms = [
+        ...countriesArr.map(c => COUNTRY_NAMES_FULL[c] || c),
+        ...interestsArr.map(i => INTEREST_TERMS[i] || i),
+      ].join(' ').toLowerCase();
+
+      const scored = candidates.map(a => {
+        const text = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
+        let score = 0;
+        profileTerms.split(' ').forEach(term => {
+          if (term.length > 2 && text.includes(term)) score += 1;
+        });
+        const hoursOld = (Date.now() - new Date(a.publishedAt)) / 3600000;
+        score += Math.max(0, 5 - hoursOld * 0.2);
+        return { ...a, relevanceScore: score };
+      }).sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+      return res.status(200).json({ success: true, articles: scored.slice(0, 12), method: 'rule-based' });
+    }
+
+    // Build rich user profile text for embedding
+    const COUNTRY_CONTEXT = {
+      de: 'Germany German economy DAX Bundesbank Berlin Frankfurt European Union',
+      in: 'India Indian economy Sensex Nifty RBI rupee Mumbai Delhi Bangalore',
+      us: 'United States America economy Federal Reserve Wall Street markets',
+      gb: 'United Kingdom Britain England economy Bank of England FTSE London',
+      au: 'Australia economy ASX Reserve Bank Sydney Melbourne',
+      sg: 'Singapore economy MAS Straits Times Southeast Asia',
+      ae: 'UAE Dubai Abu Dhabi economy Gulf Middle East',
+      jp: 'Japan economy Bank of Japan Nikkei Tokyo yen',
+    };
+    const INTEREST_CONTEXT = {
+      finance:   'finance economy markets stocks bonds inflation interest rates banking investment GDP trade',
+      tech:      'technology artificial intelligence software digital innovation startups semiconductor chips cybersecurity',
+      politics:  'politics government elections parliament policy legislation foreign affairs diplomacy',
+      sports:    'sports football cricket tennis athletics competition tournament championship',
+      climate:   'climate change energy renewable sustainability emissions environment carbon green',
+      world:     'global international world affairs geopolitics conflict humanitarian',
+    };
+
+    const profileText = [
+      ...countriesArr.map(c => COUNTRY_CONTEXT[c] || c),
+      ...interestsArr.map(i => INTEREST_CONTEXT[i] || i),
+    ].join('. ');
+
+    // Build texts to embed: profile first, then each article
+    const textsToEmbed = [
+      profileText,
+      ...candidates.map(a => `${a.headline}. ${(a.summary || '').slice(0, 200)}`),
+    ];
+
+    try {
+      const embedRes = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-small',
+          input: textsToEmbed,
+        }),
+      });
+
+      const embedData = await embedRes.json();
+      if (embedData.error) throw new Error(embedData.error.message);
+
+      const embeddings = embedData.data.sort((a, b) => a.index - b.index).map(d => d.embedding);
+      const profileEmbedding = embeddings[0];
+      const articleEmbeddings = embeddings.slice(1);
+
+      // Cosine similarity
+      function cosineSimilarity(a, b) {
+        let dot = 0, magA = 0, magB = 0;
+        for (let i = 0; i < a.length; i++) {
+          dot  += a[i] * b[i];
+          magA += a[i] * a[i];
+          magB += b[i] * b[i];
+        }
+        return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+      }
+
+      // Score = semantic similarity + recency bonus
+      const scored = candidates.map((a, i) => {
+        const similarity = cosineSimilarity(profileEmbedding, articleEmbeddings[i]);
+        const hoursOld   = (Date.now() - new Date(a.publishedAt)) / 3600000;
+        const recency    = Math.max(0, 1 - hoursOld / 48); // decay over 48h
+        const score      = (similarity * 0.75) + (recency * 0.25);
+        return { ...a, relevanceScore: Math.round(score * 100) / 100 };
+      }).sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+      return res.status(200).json({
+        success:  true,
+        articles: scored.slice(0, 12),
+        method:   'embedding',
+        profile:  profileText.slice(0, 100),
+      });
+
+    } catch (e) {
+      // Embedding failed — fall back to rule-based
+      const scored = candidates.map(a => {
+        const text = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
+        const score = countriesArr.filter(c => text.includes(c)).length +
+                      interestsArr.filter(i => text.includes(i)).length;
+        return { ...a, relevanceScore: score };
+      }).sort((a, b) => b.relevanceScore - a.relevanceScore);
+      return res.status(200).json({ success: true, articles: scored.slice(0, 12), method: 'fallback', error: e.message });
+    }
+  }
+
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: digest | oneliner | enrich | briefing | rank` });
 };
