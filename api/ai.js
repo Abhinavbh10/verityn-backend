@@ -195,8 +195,19 @@ Never use vague phrases. Be specific and concrete.
 
 Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
 
-Respond ONLY with valid JSON:
-{"mood":"string","stories":[{"index":number,"tier":1,"why":"string"}]}
+Respond ONLY with valid JSON — no markdown, no explanation:
+{
+  "mood": "one sentence summarising today",
+  "stories": [
+    {"index": 1, "tier": 1, "why": "exactly 50-60 word why-line here"},
+    {"index": 3, "tier": 2, "why": "exactly 50-60 word why-line here"},
+    {"index": 5, "tier": 2, "why": "exactly 50-60 word why-line here"},
+    {"index": 7, "tier": 2, "why": "exactly 50-60 word why-line here"},
+    {"index": 9, "tier": 3, "why": "exactly 50-60 word why-line here"},
+    {"index": 11, "tier": 3, "why": "exactly 50-60 word why-line here"},
+    {"index": 12, "tier": 3, "why": "exactly 50-60 word why-line here"}
+  ]
+}
 
 Articles:
 ${headlinesList}`;
@@ -207,9 +218,14 @@ ${headlinesList}`;
       if (!parsed?.stories || parsed.stories.length < 7) {
         return res.status(500).json({ error: 'Briefing generation failed — insufficient stories.' });
       }
-      const briefingStories = parsed.stories.map(s => ({
-        ...pool[s.index - 1], tier: s.tier, why: s.why,
-      })).filter(s => s.headline);
+      const briefingStories = parsed.stories
+        .filter(s => s.index >= 1 && s.index <= pool.length && s.why)
+        .map(s => ({
+          ...pool[s.index - 1],
+          tier: s.tier,
+          why:  s.why,
+        }))
+        .filter(s => s && s.headline);
 
       const result = { mood: parsed.mood, stories: briefingStories };
       try {
@@ -422,8 +438,114 @@ Respond ONLY with JSON:
   }
 
   // ── ACTION: digest ───────────────────────────────────────────
+  // Generates a topic-specific or general intelligence report
+  // If topic/headline passed → deep dive on that story
+  // Otherwise → general daily intelligence for user profile
   if (action === 'digest') {
-    return res.status(200).json({ success: true, briefLine: 'Digest action deprecated. Use briefing.' });
+    const { countries = ['us'], interests = [], topic, headline, source } = params;
+    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
+    const locationStr  = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
+    const interestStr  = interestsArr.length ? interestsArr.join(', ') : 'world news';
+
+    const isTopicDive = !!(topic || headline);
+    const searchQuery = topic || headline || `top news ${locationStr}`;
+
+    // Step 1: Fetch relevant articles
+    let articles = [];
+    try {
+      const fetches = [
+        ...countriesArr.map(c =>
+          fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(searchQuery)}&country=${c}&max=8`)
+            .then(r => r.json()).then(d => d.articles || []).catch(() => [])
+        ),
+      ];
+      if (GNEWS_KEY) {
+        fetches.push(
+          fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(searchQuery)}&lang=en&max=10&apikey=${GNEWS_KEY}`)
+            .then(r => r.json())
+            .then(d => (d.articles || []).map(a => ({
+              headline: a.title, summary: a.description,
+              source: a.source?.name, sourceUrl: a.url,
+              publishedAt: a.publishedAt, time: a.publishedAt,
+            }))).catch(() => [])
+        );
+      }
+      const all = (await Promise.all(fetches)).flat();
+      const seen = new Set();
+      articles = all.filter(a => {
+        const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!k || seen.has(k)) return false;
+        seen.add(k); return true;
+      }).slice(0, 12);
+    } catch (e) {}
+
+    const articlesList = articles.length > 0
+      ? articles.map((a, i) => `${i+1}. ${a.headline} (${a.source || 'Unknown'})`).join('\n')
+      : 'No specific articles found — use your general knowledge.';
+
+    // Step 2: Generate intelligence report
+    const system = isTopicDive
+      ? `You are an intelligence analyst writing a deep-dive report on a specific story for someone following ${locationStr} interested in ${interestStr}.`
+      : `You are a morning intelligence briefing editor for someone following ${locationStr} interested in ${interestStr}.`;
+
+    const prompt = isTopicDive
+      ? `Write a deep-dive intelligence report on this story: "${headline || topic}"
+${source ? `Source: ${source}` : ''}
+
+Related articles found:
+${articlesList}
+
+Structure your report as JSON:
+{
+  "title": "clean topic title (5 words max)",
+  "briefLine": "one sentence: what is happening right now (under 25 words)",
+  "background": "2-3 sentences: how did we get here? key context",
+  "whatHappened": "2-3 sentences: the specific recent development",
+  "whyItMatters": "2-3 sentences: why this matters to someone in ${locationStr} interested in ${interestStr}",
+  "watchFor": "2-3 sentences: what to watch in the next 48-72 hours",
+  "perspectives": [
+    {"side": "label", "view": "one sentence view"},
+    {"side": "label", "view": "one sentence view"}
+  ],
+  "sourceCount": ${articles.length},
+  "generatedAt": "${new Date().toISOString()}"
+}`
+      : `Write a morning intelligence briefing for someone following ${locationStr} interested in ${interestStr}.
+
+Articles available:
+${articlesList}
+
+Structure as JSON:
+{
+  "title": "Morning Intelligence Brief",
+  "briefLine": "one editorial sentence capturing the overall mood of today's news (under 25 words)",
+  "stories": [
+    {
+      "headline": "clean headline",
+      "whyItMatters": "exactly 50-60 words — specific fact, why it matters to this user, what to watch",
+      "source": "source name",
+      "tier": 1
+    }
+  ],
+  "countryLabels": "${locationStr}",
+  "generatedAt": "${new Date().toISOString()}"
+}
+Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
+
+    try {
+      const raw    = await callClaude(ANTHROPIC_KEY, system, prompt, 1000);
+      const parsed = parseJSON(raw);
+      if (!parsed) return res.status(500).json({ error: 'Report generation failed — invalid JSON.' });
+
+      return res.status(200).json({
+        success: true,
+        isTopicDive,
+        ...parsed,
+      });
+    } catch (e) {
+      return res.status(500).json({ error: 'Report generation failed: ' + e.message });
+    }
   }
 
   return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch` });
