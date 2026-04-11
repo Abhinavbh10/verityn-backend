@@ -48,11 +48,23 @@ function cleanText(text) {
 // ── RSS feeds per country ─────────────────────────────────────
 const COUNTRY_FEEDS = {
   in: [
+    // General news
     'https://indianexpress.com/feed/',
     'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
     'https://www.thehindu.com/news/feeder/default.rss',
-    'https://www.business-standard.com/rss/latest.rss',
     'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
+    // Business & Finance — F6 additions
+    'https://www.business-standard.com/rss/latest.rss',
+    'https://www.financialexpress.com/feed/',
+    'https://www.livemint.com/rss/news',
+    'https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms',
+    'https://www.moneycontrol.com/rss/latestnews.xml',
+    // Tech & Startups
+    'https://yourstory.com/feed',
+    'https://entrackr.com/feed/',
+    // TV/Broadcast
+    'https://www.ndtv.com/rss/top-stories',
+    'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml',
   ],
   us: [
     'https://feeds.npr.org/1001/rss.xml',
