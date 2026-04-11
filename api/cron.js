@@ -246,6 +246,12 @@ module.exports = async function handler(request, response) {
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
       fetch('https://economictimes.indiatimes.com/rssfeedstopstories.cms', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
         .then(r => r.text()).then(x => parseRssHeadlines(x, 'Economic Times')).catch(() => []),
+      fetch('https://www.livemint.com/rss/news', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'LiveMint')).catch(() => []),
+      fetch('https://www.financialexpress.com/feed/', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Financial Express')).catch(() => []),
+      fetch('https://www.moneycontrol.com/rss/latestnews.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(5000) })
+        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Moneycontrol')).catch(() => []),
     ];
 
     const allResults  = await Promise.all(headlineFetches);
