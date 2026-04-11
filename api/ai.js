@@ -146,15 +146,18 @@ No markdown, no explanation.`;
 
   // ── ACTION: briefing ─────────────────────────────────────────
   if (action === 'briefing') {
-    const { articles = [], countries = ['us'], interests = [], ts } = params;
+    const { articles = [], countries = ['us'], interests = [], location, profession, ts } = params;
     const skipCache    = !!ts;
     const pool         = (Array.isArray(articles) ? articles : []).slice(0, 40);
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     if (pool.length === 0) return res.status(400).json({ error: 'No articles.' });
 
-    const locationStr = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
-    const interestStr = interestsArr.length ? interestsArr.join(', ') : 'world news';
+    const locationStr  = location
+      ? (COUNTRY_NAMES[location] || location)
+      : countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
+    const interestStr  = interestsArr.length ? interestsArr.join(', ') : 'world news';
+    const professionStr = profession || null;
 
     function hashStr(s) {
       let h = 0;
@@ -188,10 +191,10 @@ Select exactly 7. Assign tiers:
 - tier 3: stories every informed person should know (remaining to reach 7)
 
 For each story write a "why" — EXACTLY 50-60 words across 3 sentences:
-Sentence 1: Specific fact with number, name, or concrete detail.
-Sentence 2: Why it matters to someone in ${locationStr} interested in ${interestStr}.
-Sentence 3: One forward-looking signal — what to watch next.
-Never use vague phrases. Be specific and concrete.
+Sentence 1: Specific fact — what happened, with a number, name, or concrete detail.
+Sentence 2: ${professionStr ? `Professional angle — why this matters to someone working in ${professionStr}.` : `Why this matters to someone interested in ${interestStr}.`}
+Sentence 3: Living angle — how this affects daily life in ${locationStr}: cost, housing, commute, local policy, or savings.
+Never use vague phrases. Be specific. Both professional AND living angles must appear where relevant.
 
 Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
 
@@ -243,7 +246,7 @@ ${headlinesList}`;
 
   // ── ACTION: rank ─────────────────────────────────────────────
   if (action === 'rank') {
-    const { articles = [], countries = ['us'], interests = [] } = params;
+    const { articles = [], countries = ['us'], interests = [], location, profession } = params;
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     const pool = (Array.isArray(articles) ? articles : []).slice(0, 60);
@@ -289,10 +292,22 @@ ${headlinesList}`;
     };
 
     const userCountryTerms = countriesArr.flatMap(c => COUNTRY_TERMS[c] || [c.toLowerCase()]);
+    const PROFESSION_CONTEXT = {
+      finance:  'investment banking financial markets portfolio management trading economics',
+      tech:     'software engineering product management AI machine learning startups venture capital',
+      business: 'strategy consulting management operations supply chain business development',
+      law:      'legal regulation compliance policy government contracts litigation',
+      medicine: 'healthcare clinical research public health pharmaceutical medical technology',
+      media:    'journalism publishing broadcasting content creative advertising marketing',
+      academia: 'research university science publishing data analysis evidence policy',
+      other:    'professional career industry work',
+    };
+
     const profileText = [
       ...countriesArr.map(c => COUNTRY_CONTEXT[c] || c),
       ...interestsArr.map(i => INTEREST_CONTEXT[i] || i),
-    ].join('. ');
+      profession ? (PROFESSION_CONTEXT[profession] || profession) : '',
+    ].filter(Boolean).join('. ');
 
     if (!OPENAI_KEY) {
       const INTEREST_TERMS = {
