@@ -274,7 +274,7 @@ module.exports = async function handler(req, res) {
               'Accept-Language': 'en-US,en;q=0.9',
               'Cache-Control': 'no-cache',
             },
-            signal: AbortSignal.timeout(8000),
+            signal: AbortSignal.timeout(12000),
           })
             .then(r => r.text())
             .catch(() => '')
@@ -385,7 +385,7 @@ module.exports = async function handler(req, res) {
               'Accept-Language': 'en-US,en;q=0.9',
               'Cache-Control': 'no-cache',
             },
-            signal: AbortSignal.timeout(8000),
+            signal: AbortSignal.timeout(12000),
           })
             .then(r => r.text())
             .catch(() => '')
@@ -534,7 +534,7 @@ module.exports = async function handler(req, res) {
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
         },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) return res.status(200).json({ success: false, error: 'Could not fetch article' });
