@@ -273,14 +273,14 @@ ${headlinesList}`;
       jp: ['japan','japanese','tokyo','bank of japan','nikkei','yen','softbank','toyota'],
     };
     const COUNTRY_CONTEXT = {
-      de: 'Germany German economy DAX Bundesbank Berlin Frankfurt European Union',
+      de: 'Germany German economy DAX Bundesbank Berlin Frankfurt European Union ECB euro Scholz CDU SPD Bundestag energy Energiewende BMW Volkswagen Siemens SAP Mittelstand manufacturing export housing',
       in: 'India Indian economy Sensex Nifty NSE BSE RBI rupee rupee Mumbai Delhi Bangalore Hyderabad startup fintech IT services pharmaceutical manufacturing SEBI budget fiscal',
       us: 'United States America economy Federal Reserve Wall Street markets',
-      gb: 'United Kingdom Britain England economy Bank of England FTSE London',
-      au: 'Australia economy ASX Reserve Bank Sydney Melbourne',
-      sg: 'Singapore economy MAS Southeast Asia',
+      gb: 'United Kingdom Britain England economy Bank of England FTSE London sterling pound City finance treasury gilts mortgage housing NHS Parliament Westminster Chancellor inflation CPI',
+      au: 'Australia economy ASX RBA Reserve Bank Sydney Melbourne Brisbane Perth iron ore mining resources housing property inflation CPI superannuation budget immigration',
+      sg: 'Singapore economy MAS Southeast Asia SGD DBS OCBC UOB fintech banking housing HDB CPF GST trade port technology hub wealth management ASEAN',
       ae: 'UAE Dubai Abu Dhabi economy Gulf Middle East',
-      jp: 'Japan economy Bank of Japan Nikkei Tokyo yen',
+      jp: 'Japan economy Bank of Japan Tokyo Osaka yen Nikkei Sony Toyota Honda Softbank semiconductor automotive manufacturing aging deflation BOJ LDP Kishida',
     };
     const INTEREST_CONTEXT = {
       finance:  'finance economy markets stocks bonds inflation interest rates banking investment GDP trade',
