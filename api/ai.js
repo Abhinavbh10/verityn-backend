@@ -264,7 +264,7 @@ ${headlinesList}`;
 
     const COUNTRY_TERMS = {
       de: ['germany','german','berlin','frankfurt','munich','hamburg','bundesbank','bundestag','bundesrat','scholz','merz','dax','volkswagen','siemens','bayer','deutsche bank','bundesliga'],
-      in: ['india','indian','delhi','mumbai','bangalore','chennai','kolkata','rbi','sensex','nifty','rupee','modi','bjp','tata','infosys','reliance','adani'],
+      in: ['india','indian','delhi','mumbai','bangalore','chennai','kolkata','hyderabad','pune','rbi','sensex','nifty','bse','nse','rupee','inr','modi','bjp','congress','tata','infosys','reliance','adani','wipro','hcl','ola','zomato','sebi','niti'],
       us: ['america','american','united states','washington','federal reserve','fed','nasdaq','dow jones','trump','senate','congress','pentagon'],
       gb: ['britain','british','uk','england','london','bank of england','ftse','sterling','pound','sunak','labour','tory','parliament'],
       au: ['australia','australian','sydney','melbourne','reserve bank','asx','albanese'],
@@ -274,7 +274,7 @@ ${headlinesList}`;
     };
     const COUNTRY_CONTEXT = {
       de: 'Germany German economy DAX Bundesbank Berlin Frankfurt European Union',
-      in: 'India Indian economy Sensex Nifty RBI rupee Mumbai Delhi Bangalore',
+      in: 'India Indian economy Sensex Nifty NSE BSE RBI rupee rupee Mumbai Delhi Bangalore Hyderabad startup fintech IT services pharmaceutical manufacturing SEBI budget fiscal',
       us: 'United States America economy Federal Reserve Wall Street markets',
       gb: 'United Kingdom Britain England economy Bank of England FTSE London',
       au: 'Australia economy ASX Reserve Bank Sydney Melbourne',
