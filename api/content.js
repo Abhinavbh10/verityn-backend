@@ -77,20 +77,32 @@ const COUNTRY_FEEDS = {
     'https://feeds.bbci.co.uk/news/rss.xml',
     'https://www.theguardian.com/world/rss',
     'https://feeds.reuters.com/reuters/UKTopNews',
+    'https://feeds.skynews.com/feeds/rss/home.xml',
+    'https://www.independent.co.uk/news/rss',
+    'https://www.ft.com/rss/home',
   ],
   de: [
     'https://rss.dw.com/xml/rss-en-all',
     'https://www.thelocal.de/feed/',
     'https://www.spiegel.de/international/index.rss',
     'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
+    'https://www.handelsblatt.com/contentexport/feed/schlagzeilen',
+    'https://www.faz.net/rss/aktuell/',
+    'https://rss.dw.com/xml/rss-en-business',
   ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
     'https://www.smh.com.au/rss/feed.xml',
+    'https://www.sbs.com.au/news/feed',
+    'https://www.skynews.com.au/feed',
+    'https://www.news.com.au/feed',
+    'https://www.afr.com/rss/feed.xml',
   ],
   sg: [
     'https://www.straitstimes.com/news/singapore/rss.xml',
     'https://www.channelnewsasia.com/rssfeeds/8395884',
+    'https://www.businesstimes.com.sg/rss/all-news',
+    'https://www.channelnewsasia.com/rssfeeds/8395744',
   ],
   ae: [
     'https://gulfnews.com/rss',
@@ -100,6 +112,8 @@ const COUNTRY_FEEDS = {
   jp: [
     'https://www.japantimes.co.jp/feed/',
     'https://www3.nhk.or.jp/rss/news/cat0.xml',
+    'https://asia.nikkei.com/rss/feed/nar',
+    'https://japannews.yomiuri.co.jp/feed/',
   ],
   ca: ['https://www.theglobeandmail.com/arc/outboundfeeds/rss/'],
   fr: [
