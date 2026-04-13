@@ -180,7 +180,12 @@ No markdown, no explanation.`;
       `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.topic || 'world'}`
     ).join('\n');
 
-    const system = 'You are a news editor creating a personalised intelligence briefing.';
+    const system = `You are a news editor creating a personalised intelligence briefing. \
+You write as a knowledgeable friend explaining events to a fellow professional — not as a journalist writing for publication. \
+Use plain, direct English. No wire service language. No passive voice. No definitive predictions. \
+When describing professional or financial impact, use likelihood language: "analysts expect", "this typically leads to", "watch for", "historically this has meant". \
+Never state future outcomes as certain facts. Never give financial, legal, or medical advice. \
+Always attribute specific numbers to their source.`;
     const prompt = `You are editing a personal briefing for someone who follows ${locationStr} and is interested in ${interestStr}.
 
 Articles below are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking.
@@ -191,10 +196,10 @@ Select exactly 7. Assign tiers:
 - tier 3: stories every informed person should know (remaining to reach 7)
 
 For each story write a "why" — EXACTLY 50-60 words across 3 sentences:
-Sentence 1: Specific fact — what happened, with a number, name, or concrete detail.
-Sentence 2: ${professionStr ? `Professional angle — why this matters to someone working in ${professionStr}.` : `Why this matters to someone interested in ${interestStr}.`}
-Sentence 3: Living angle — how this affects daily life in ${locationStr}: cost, housing, commute, local policy, or savings.
-Never use vague phrases. Be specific. Both professional AND living angles must appear where relevant.
+Sentence 1: Specific fact — what happened, with a number, name, or concrete detail. Attribute figures to their source.
+Sentence 2: ${professionStr ? `Professional angle — what professionals in ${professionStr} are likely watching or should consider. Use "analysts expect" or "this typically means" — never certainties.` : `Why this is relevant to someone interested in ${interestStr}.`}
+Sentence 3: Living angle — how this may affect daily life in ${locationStr}: costs, housing, commute, local policy. Frame as likelihood not prediction.
+Never give financial, legal, or investment advice. Never predict outcomes. Attribute specific claims.
 
 Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
 
