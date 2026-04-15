@@ -235,6 +235,37 @@ ${headlinesList}`;
         }))
         .filter(s => s && s.headline);
 
+      // ── B9: Why-line production monitoring ──────────────────────
+      const whyMonitor = {
+        ts: new Date().toISOString(),
+        location: locationStr,
+        profession: professionStr || 'none',
+        storiesReturned: briefingStories.length,
+        storiesMissingWhy: briefingStories.filter(s => !s.why).length,
+        whyWordCounts: briefingStories.map(s => ({
+          headline: (s.headline || '').slice(0, 50),
+          tier: s.tier,
+          words: s.why ? s.why.split(/\s+/).length : 0,
+          hasLocationAngle: s.why ? /daily life|living|commute|housing|cost|local|policy/i.test(s.why) : false,
+          hasProfessionAngle: professionStr
+            ? new RegExp(professionStr, 'i').test(s.why || '')
+              || /analyst|professional|investor|sector|industry|market/i.test(s.why || '')
+            : true,
+        })),
+      };
+      const outOfRange = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (w.words < 45 || w.words > 70));
+      const missingAngles = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (!w.hasLocationAngle || !w.hasProfessionAngle));
+      if (briefingStories.length < 7 || outOfRange.length > 0 || missingAngles.length > 0) {
+        console.warn('[B9 WHY-LINE MONITOR]', JSON.stringify({
+          ...whyMonitor,
+          issues: {
+            insufficientStories: briefingStories.length < 7,
+            outOfWordRange: outOfRange.map(w => `${w.headline}... (${w.words}w)`),
+            missingAngles: missingAngles.map(w => `${w.headline}... (loc:${w.hasLocationAngle},prof:${w.hasProfessionAngle})`),
+          },
+        }));
+      }
+
       const result = { mood: parsed.mood, stories: briefingStories };
       try {
         await supabase.from('digest_cache').upsert({
@@ -458,9 +489,6 @@ Respond ONLY with JSON:
   }
 
   // ── ACTION: digest ───────────────────────────────────────────
-  // Generates a topic-specific or general intelligence report
-  // If topic/headline passed → deep dive on that story
-  // Otherwise → general daily intelligence for user profile
   if (action === 'digest') {
     const { countries = ['us'], interests = [], topic, headline, source } = params;
     const countriesArr = Array.isArray(countries) ? countries : [countries];
@@ -471,7 +499,6 @@ Respond ONLY with JSON:
     const isTopicDive = !!(topic || headline);
     const searchQuery = topic || headline || `top news ${locationStr}`;
 
-    // Step 1: Fetch relevant articles
     let articles = [];
     try {
       const fetches = [
@@ -504,7 +531,6 @@ Respond ONLY with JSON:
       ? articles.map((a, i) => `${i+1}. ${a.headline} (${a.source || 'Unknown'})`).join('\n')
       : 'No specific articles found — use your general knowledge.';
 
-    // Step 2: Generate intelligence report
     const system = isTopicDive
       ? `You are an intelligence analyst writing a deep-dive report on a specific story for someone following ${locationStr} interested in ${interestStr}.`
       : `You are a morning intelligence briefing editor for someone following ${locationStr} interested in ${interestStr}.`;
