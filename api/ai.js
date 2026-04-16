@@ -177,7 +177,7 @@ No markdown, no explanation.`;
     }
 
     const headlinesList = pool.map((a, i) =>
-      `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.topic || 'world'}`
+      `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.image ? 'HAS_IMAGE' : 'NO_IMAGE'}`
     ).join('\n');
 
     const system = `You are a news editor creating a personalised intelligence briefing. \
@@ -190,10 +190,9 @@ Always attribute specific numbers to their source.`;
 
 Articles below are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking.
 
-Select exactly 7. Assign tiers:
-- tier 1: single most important story today (1 story only)
-- tier 2: stories directly affecting their countries or interests (2-3 stories)
-- tier 3: stories every informed person should know (remaining to reach 7)
+Select exactly 7 stories. All 7 carry equal weight — there is no lead story, no tiers, no hierarchy.
+Pick a diverse mix: some directly relevant to their location/interests, some that any informed person should know.
+STRONGLY PREFER articles marked HAS_IMAGE — the app displays each story with a full-bleed photo. Only pick a NO_IMAGE article if it is significantly more important than all HAS_IMAGE alternatives.
 
 For each story write a "why" — EXACTLY 50-60 words across 3 sentences:
 Sentence 1: Specific fact — what happened, with a number, name, or concrete detail. Attribute figures to their source.
@@ -207,13 +206,13 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 {
   "mood": "one sentence summarising today",
   "stories": [
-    {"index": 1, "tier": 1, "why": "exactly 50-60 word why-line here"},
-    {"index": 3, "tier": 2, "why": "exactly 50-60 word why-line here"},
-    {"index": 5, "tier": 2, "why": "exactly 50-60 word why-line here"},
-    {"index": 7, "tier": 2, "why": "exactly 50-60 word why-line here"},
-    {"index": 9, "tier": 3, "why": "exactly 50-60 word why-line here"},
-    {"index": 11, "tier": 3, "why": "exactly 50-60 word why-line here"},
-    {"index": 12, "tier": 3, "why": "exactly 50-60 word why-line here"}
+    {"index": 1, "why": "exactly 50-60 word why-line here"},
+    {"index": 3, "why": "exactly 50-60 word why-line here"},
+    {"index": 5, "why": "exactly 50-60 word why-line here"},
+    {"index": 7, "why": "exactly 50-60 word why-line here"},
+    {"index": 9, "why": "exactly 50-60 word why-line here"},
+    {"index": 11, "why": "exactly 50-60 word why-line here"},
+    {"index": 12, "why": "exactly 50-60 word why-line here"}
   ]
 }
 
@@ -230,7 +229,6 @@ ${headlinesList}`;
         .filter(s => s.index >= 1 && s.index <= pool.length && s.why)
         .map(s => ({
           ...pool[s.index - 1],
-          tier: s.tier,
           why:  s.why,
         }))
         .filter(s => s && s.headline);
@@ -244,7 +242,7 @@ ${headlinesList}`;
         storiesMissingWhy: briefingStories.filter(s => !s.why).length,
         whyWordCounts: briefingStories.map(s => ({
           headline: (s.headline || '').slice(0, 50),
-          tier: s.tier,
+          hasImage: !!s.image,
           words: s.why ? s.why.split(/\s+/).length : 0,
           hasLocationAngle: s.why ? /daily life|living|commute|housing|cost|local|policy/i.test(s.why) : false,
           hasProfessionAngle: professionStr
@@ -255,11 +253,13 @@ ${headlinesList}`;
       };
       const outOfRange = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (w.words < 45 || w.words > 70));
       const missingAngles = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (!w.hasLocationAngle || !w.hasProfessionAngle));
-      if (briefingStories.length < 7 || outOfRange.length > 0 || missingAngles.length > 0) {
+      const missingImages = briefingStories.filter(s => !s.image).length;
+      if (briefingStories.length < 7 || outOfRange.length > 0 || missingAngles.length > 0 || missingImages > 0) {
         console.warn('[B9 WHY-LINE MONITOR]', JSON.stringify({
           ...whyMonitor,
           issues: {
             insufficientStories: briefingStories.length < 7,
+            storiesMissingImages: missingImages,
             outOfWordRange: outOfRange.map(w => `${w.headline}... (${w.words}w)`),
             missingAngles: missingAngles.map(w => `${w.headline}... (loc:${w.hasLocationAngle},prof:${w.hasProfessionAngle})`),
           },
