@@ -46,6 +46,9 @@ function cleanText(text) {
 }
 
 // ── RSS feeds per country ─────────────────────────────────────
+// Germany: English-only sources (DW English, The Local Germany, Spiegel International,
+// Euronews, DW Business English, Politico Europe). Dropped German-language feeds:
+// handelsblatt.com, faz.net.
 const COUNTRY_FEEDS = {
   in: [
     // General news
@@ -82,13 +85,13 @@ const COUNTRY_FEEDS = {
     'https://www.ft.com/rss/home',
   ],
   de: [
-    'https://rss.dw.com/xml/rss-en-all',
-    'https://www.thelocal.de/feed/',
-    'https://www.spiegel.de/international/index.rss',
-    'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
-    'https://www.handelsblatt.com/contentexport/feed/schlagzeilen',
-    'https://www.faz.net/rss/aktuell/',
-    'https://rss.dw.com/xml/rss-en-business',
+    // English-only sources covering Germany
+    'https://rss.dw.com/xml/rss-en-all',           // Deutsche Welle — general
+    'https://rss.dw.com/xml/rss-en-business',       // Deutsche Welle — business
+    'https://www.thelocal.de/feed/',                // The Local — expat/daily life
+    'https://www.spiegel.de/international/index.rss', // Der Spiegel International (English)
+    'https://www.euronews.com/rss?format=mrss&level=theme&name=news', // Euronews (English)
+    'https://www.politico.eu/feed/',                // Politico Europe — EU/Germany policy
   ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
@@ -125,6 +128,26 @@ const COUNTRY_FEEDS = {
 };
 
 const BAD_SOURCES = ['news', 'unknown', 'feedburner', ''];
+
+// ── Non-Latin / CJK script detection — filters headlines that slip through ──
+// Hits: CJK, Cyrillic, Arabic, Hebrew, Devanagari, Thai.
+// Miss by design: Latin-1 supplement (German ä/ö/ü/ß, French accents, Spanish ñ).
+const NON_LATIN_SCRIPT = /[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
+
+// German-specific markers — common words/chars that appear in German but not English.
+// Used as a secondary filter for feeds that might mix languages (e.g., Spiegel International
+// occasionally republishes German-first articles).
+const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|ankündigung|reformer|minister|finanzpolitik|beschlüsse|koalition|verteilungsfähige|ausländer|wirtschaft|regierung)\b/i;
+
+function isEnglishHeadline(title) {
+  if (!title) return false;
+  // Reject anything with non-Latin scripts outright
+  if (NON_LATIN_SCRIPT.test(title)) return false;
+  // Reject headlines with multiple German-specific markers (likely German, not English with a loan word)
+  const germanHits = (title.match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
+  if (germanHits >= 2) return false;
+  return true;
+}
 
 // ── Unsplash topic map ────────────────────────────────────────
 const UNSPLASH_TOPICS = {
@@ -163,7 +186,7 @@ module.exports = async function handler(req, res) {
     try {
       const fetches = [];
 
-      // GNews
+      // GNews — lang=en enforced, but also filter defensively below
       if (GNEWS_KEY) {
         fetches.push(
           fetch(`https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=${max}&apikey=${GNEWS_KEY}`)
@@ -171,7 +194,7 @@ module.exports = async function handler(req, res) {
         );
       }
 
-      // Mediastack — improved with category support
+      // Mediastack — languages=en enforced, but also filter defensively below
       if (MEDIASTACK) {
         const sources = COUNTRY_SOURCES[country]?.join(',') || '';
         const msUrl = sources
@@ -213,6 +236,8 @@ module.exports = async function handler(req, res) {
             // Filter out low-quality lifestyle/celebrity/sports from GNews
             const skipPatterns = /taylor swift|kardashian|celebrity|red carpet|nfl draft|nba trade|iheartradio|oscars|emmys|grammys|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal/i;
             if (skipPatterns.test(a.title)) continue;
+            // English-only defence — skip non-English headlines
+            if (!isEnglishHeadline(a.title)) continue;
             articles.push({
               id: `gnews-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
               headline: cleanText(a.title), summary: cleanText(a.description || ''),
@@ -228,6 +253,7 @@ module.exports = async function handler(req, res) {
         if (src === 'ms' && data?.data) {
           for (const a of data.data) {
             const t = inferTopic(a.title, a.description);
+            if (!isEnglishHeadline(a.title)) continue;
             articles.push({
               id: `ms-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
               headline: cleanText(a.title), summary: cleanText(a.description || ''),
@@ -334,6 +360,8 @@ module.exports = async function handler(req, res) {
           if (!title || title.length < 15) continue;
           if (/<[a-z]/i.test(title)) continue;
           if (BAD_SOURCES.includes(sourceName.toLowerCase().trim())) continue;
+          // English-only defence — drop non-English headlines even if feed is supposed to be English
+          if (!isEnglishHeadline(title)) continue;
           const pub = pubDate ? new Date(pubDate) : new Date();
           if (isNaN(pub.getTime())) continue;
           const ageHours = (Date.now() - pub) / 3600000;
@@ -435,6 +463,8 @@ module.exports = async function handler(req, res) {
           const image = imgM ? imgM[1] : null;
 
           if (!title || title.length < 10) continue;
+          // English-only defence for search too
+          if (!isEnglishHeadline(title)) continue;
 
           // Match against search terms — headline OR description must contain term
           const searchText = (title + ' ' + desc).toLowerCase();
