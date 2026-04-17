@@ -5,6 +5,7 @@
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+const { checkRateLimit, logError } = require('./_helpers');
 
 // ── Shared helpers ────────────────────────────────────────────
 
@@ -162,10 +163,19 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+  const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
+  const sessionId    = req.query.sessionId || req.body?.sessionId || 'anonymous';
+
   const action = req.query.action || 'news';
 
   // ── ACTION: news ──────────────────────────────────────────────
   if (action === 'news') {
+    // A5: Rate limit GNews calls
+    const rl = await checkRateLimit(supabase, sessionId, 'gnews');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded. Try again later.', resetAt: rl.resetAt });
+
     const GNEWS_KEY = process.env.GNEWS_API_KEY;
     const MEDIASTACK = process.env.MEDIASTACK_KEY;
     const { country = 'us', category = 'general', max = '10' } = req.query;
@@ -309,12 +319,16 @@ module.exports = async function handler(req, res) {
 
       return res.status(200).json({ success: true, articles: deduped });
     } catch (e) {
+      await logError(supabase, { endpoint: "content", action: "news", error: e, sessionId });
       return res.status(500).json({ error: e.message });
     }
   }
 
   // ── ACTION: rss ───────────────────────────────────────────────
   if (action === 'rss') {
+    const rl = await checkRateLimit(supabase, sessionId, 'rss');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const { country = 'us', max = '15' } = req.query;
     const feeds = COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
 
@@ -391,6 +405,7 @@ module.exports = async function handler(req, res) {
 
       return res.status(200).json({ success: true, articles: deduped });
     } catch (e) {
+      await logError(supabase, { endpoint: "content", action: "rss", error: e, sessionId });
       return res.status(500).json({ error: e.message });
     }
   }
@@ -528,20 +543,21 @@ module.exports = async function handler(req, res) {
 
       return res.status(200).json({ success: true, articles: deduped, source: 'rss' });
     } catch (e) {
+      await logError(supabase, { endpoint: "content", action: "search", error: e, sessionId });
       return res.status(500).json({ error: e.message });
     }
   }
 
   // ── ACTION: image ─────────────────────────────────────────────
   if (action === 'image') {
+    const rl = await checkRateLimit(supabase, sessionId, 'image');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const UNSPLASH_KEY = process.env.UNSPLASH_ACCESS_KEY;
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
     const { topic = 'world', country = 'us' } = req.query;
 
     if (!UNSPLASH_KEY) return res.status(500).json({ error: 'Unsplash not configured' });
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
     const cacheKey = `image-${topic}-${country}`;
 
     try {
