@@ -4,6 +4,7 @@
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+const { checkRateLimit, logError } = require('./_helpers');
 
 function inferTopic(headline, description) {
   const text = ((headline || '') + ' ' + (description || '')).toLowerCase();
@@ -69,9 +70,12 @@ module.exports = async function handler(req, res) {
 
   const params = req.method === 'POST' ? req.body : req.query;
   const action = req.query.action || params.action || 'digest';
+  const sessionId = req.query.sessionId || params.sessionId || 'anonymous';
 
   // ── ACTION: oneliner ─────────────────────────────────────────
   if (action === 'oneliner') {
+    const rl = await checkRateLimit(supabase, sessionId, 'oneliner');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
     const { articles = [], countries = ['us'], interests = [], ts } = params;
     const skipCache    = !!ts;
     const top4         = (Array.isArray(articles) ? articles : []).slice(0, 4);
@@ -140,12 +144,16 @@ No markdown, no explanation.`;
       }
       return res.status(200).json({ success: false, onelinerMap: {} });
     } catch (e) {
+      await logError(supabase, { endpoint: 'ai', action: 'oneliner', error: e, sessionId });
       return res.status(500).json({ error: 'Oneliner failed: ' + e.message });
     }
   }
 
   // ── ACTION: briefing ─────────────────────────────────────────
   if (action === 'briefing') {
+    const rl = await checkRateLimit(supabase, sessionId, 'briefing');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const { articles = [], countries = ['us'], interests = [], location, profession, ts } = params;
     const skipCache    = !!ts;
     const pool         = (Array.isArray(articles) ? articles : []).slice(0, 40);
@@ -223,6 +231,7 @@ ${headlinesList}`;
       const raw  = await callClaude(ANTHROPIC_KEY, system, prompt, 800);
       const parsed = parseJSON(raw);
       if (!parsed?.stories || parsed.stories.length < 7) {
+        await logError(supabase, { endpoint: 'ai', action: 'briefing', error: 'Insufficient stories returned', context: { storiesCount: parsed?.stories?.length }, sessionId });
         return res.status(500).json({ error: 'Briefing generation failed — insufficient stories.' });
       }
       const briefingStories = parsed.stories
@@ -276,12 +285,16 @@ ${headlinesList}`;
       } catch (e) {}
       return res.status(200).json({ success: true, fromCache: false, ...result });
     } catch (e) {
+      await logError(supabase, { endpoint: 'ai', action: 'briefing', error: e, context: { poolSize: pool.length }, sessionId });
       return res.status(500).json({ error: 'Briefing generation failed: ' + e.message });
     }
   }
 
   // ── ACTION: rank ─────────────────────────────────────────────
   if (action === 'rank') {
+    const rl = await checkRateLimit(supabase, sessionId, 'rank');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const { articles = [], countries = ['us'], interests = [], location, profession } = params;
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
@@ -418,6 +431,9 @@ ${headlinesList}`;
 
   // ── ACTION: aisearch ─────────────────────────────────────────
   if (action === 'aisearch') {
+    const rl = await checkRateLimit(supabase, sessionId, 'aisearch');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const { query = '', countries = ['us'], interests = [] } = params;
     if (!query.trim()) return res.status(400).json({ error: 'query required' });
 
@@ -490,6 +506,9 @@ Respond ONLY with JSON:
 
   // ── ACTION: digest ───────────────────────────────────────────
   if (action === 'digest') {
+    const rl = await checkRateLimit(supabase, sessionId, 'digest');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
     const { countries = ['us'], interests = [], topic, headline, source } = params;
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
@@ -582,7 +601,10 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
     try {
       const raw    = await callClaude(ANTHROPIC_KEY, system, prompt, 1000);
       const parsed = parseJSON(raw);
-      if (!parsed) return res.status(500).json({ error: 'Report generation failed — invalid JSON.' });
+      if (!parsed) {
+        await logError(supabase, { endpoint: 'ai', action: 'digest', error: 'Invalid JSON from Claude', context: { headline: headline?.slice(0, 50) }, sessionId });
+        return res.status(500).json({ error: 'Report generation failed — invalid JSON.' });
+      }
 
       return res.status(200).json({
         success: true,
@@ -590,6 +612,7 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
         ...parsed,
       });
     } catch (e) {
+      await logError(supabase, { endpoint: 'ai', action: 'digest', error: e, sessionId });
       return res.status(500).json({ error: 'Report generation failed: ' + e.message });
     }
   }
