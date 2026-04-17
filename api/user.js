@@ -1,10 +1,11 @@
 // ============================================================
 // FILE: api/user.js
-// REPLACES: follow.js, streak.js, auth.js, preferences.js
-// ROUTE via: ?action=follow | streak | auth | preferences
+// ACTIONS: follow | streak | auth | preferences | threads |
+//          hot-topics | daily-summary | delete-account
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+const { logError } = require('./_helpers');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -14,7 +15,6 @@ module.exports = async function handler(req, res) {
 
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
-  const GNEWS_KEY    = process.env.GNEWS_API_KEY;
   const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   const action = req.query.action || 'follow';
@@ -33,7 +33,10 @@ module.exports = async function handler(req, res) {
         source: article.source, source_url: article.sourceUrl,
         country: article.country, followed_at: new Date().toISOString(), is_active: true,
       }, { onConflict: 'session_id,article_id' });
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) {
+        await logError(supabase, { endpoint: 'user', action: 'follow-post', error, sessionId });
+        return res.status(500).json({ error: error.message });
+      }
       return res.status(200).json({ success: true });
     }
 
@@ -42,7 +45,10 @@ module.exports = async function handler(req, res) {
       const { error } = await supabase.from('followed_stories')
         .update({ is_active: false })
         .eq('session_id', sessionId).eq('article_id', articleId);
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) {
+        await logError(supabase, { endpoint: 'user', action: 'follow-delete', error, sessionId });
+        return res.status(500).json({ error: error.message });
+      }
       return res.status(200).json({ success: true });
     }
 
@@ -52,7 +58,10 @@ module.exports = async function handler(req, res) {
       const { data: followed, error } = await supabase.from('followed_stories')
         .select('*').eq('session_id', sessionId).eq('is_active', true)
         .order('followed_at', { ascending: false });
-      if (error) return res.status(500).json({ error: error.message });
+      if (error) {
+        await logError(supabase, { endpoint: 'user', action: 'follow-get', error, sessionId });
+        return res.status(500).json({ error: error.message });
+      }
       return res.status(200).json({ success: true, followed: followed || [], updates: [] });
     }
   }
@@ -65,27 +74,32 @@ module.exports = async function handler(req, res) {
     const today    = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 
-    const { data: existing } = await supabase.from('reading_streaks')
-      .select('*').eq('session_id', sessionId).single().catch(() => ({ data: null }));
+    try {
+      const { data: existing } = await supabase.from('reading_streaks')
+        .select('*').eq('session_id', sessionId).single();
 
-    if (!existing) {
-      await supabase.from('reading_streaks').insert({
-        session_id: sessionId, streak: 1, last_read: today, longest_streak: 1,
-      }).catch(() => {});
-      return res.status(200).json({ streak: 1, lastRead: today, longestStreak: 1, isNew: true });
+      if (!existing) {
+        await supabase.from('reading_streaks').insert({
+          session_id: sessionId, streak: 1, last_read: today, longest_streak: 1,
+        });
+        return res.status(200).json({ streak: 1, lastRead: today, longestStreak: 1, isNew: true });
+      }
+
+      if (existing.last_read === today) {
+        return res.status(200).json({ streak: existing.streak, lastRead: today, longestStreak: existing.longest_streak });
+      }
+
+      const newStreak  = existing.last_read === yesterday ? existing.streak + 1 : 1;
+      const longest    = Math.max(newStreak, existing.longest_streak || 1);
+      await supabase.from('reading_streaks')
+        .update({ streak: newStreak, last_read: today, longest_streak: longest })
+        .eq('session_id', sessionId);
+
+      return res.status(200).json({ streak: newStreak, lastRead: today, longestStreak: longest });
+    } catch (e) {
+      await logError(supabase, { endpoint: 'user', action: 'streak', error: e, sessionId });
+      return res.status(200).json({ streak: 0, lastRead: null, longestStreak: 0 });
     }
-
-    if (existing.last_read === today) {
-      return res.status(200).json({ streak: existing.streak, lastRead: today, longestStreak: existing.longest_streak });
-    }
-
-    const newStreak  = existing.last_read === yesterday ? existing.streak + 1 : 1;
-    const longest    = Math.max(newStreak, existing.longest_streak || 1);
-    await supabase.from('reading_streaks')
-      .update({ streak: newStreak, last_read: today, longest_streak: longest })
-      .eq('session_id', sessionId).catch(() => {});
-
-    return res.status(200).json({ streak: newStreak, lastRead: today, longestStreak: longest });
   }
 
   // ── ACTION: auth (migration only — Supabase handles actual auth) ──
@@ -109,12 +123,13 @@ module.exports = async function handler(req, res) {
 
     if (req.method === 'POST') {
       const { preferences } = body;
-      await supabase.from('profiles').upsert({
+      const { error } = await supabase.from('profiles').upsert({
         session_id: sessionId,
         topics:     preferences?.interests || [],
         country:    preferences?.countries?.[0] || 'us',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'session_id' }).catch(() => {});
+      }, { onConflict: 'session_id' });
+      if (error) await logError(supabase, { endpoint: 'user', action: 'preferences-post', error, sessionId });
       return res.status(200).json({ success: true });
     }
 
@@ -135,7 +150,10 @@ module.exports = async function handler(req, res) {
       .eq('topic_key', topicKey)
       .gte('event_date', cutoff)
       .order('event_date', { ascending: true });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      await logError(supabase, { endpoint: 'user', action: 'threads', error });
+      return res.status(500).json({ error: error.message });
+    }
     return res.status(200).json({ success: true, topicKey, events: events || [] });
   }
 
@@ -147,7 +165,10 @@ module.exports = async function handler(req, res) {
       .select('topic_key, topic_label')
       .gte('event_date', cutoff)
       .order('event_date', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      await logError(supabase, { endpoint: 'user', action: 'hot-topics', error });
+      return res.status(500).json({ error: error.message });
+    }
     const seen = new Set();
     const unique = (data || []).filter(d => {
       if (seen.has(d.topic_key)) return false;
@@ -169,6 +190,33 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ success: true, summary });
     } catch (e) {
       return res.status(200).json({ success: true, summary: '' });
+    }
+  }
+
+  // ── ACTION: delete-account (GDPR Article 17) ─────────────────
+  if (action === 'delete-account') {
+    const sessionId = body.sessionId;
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+
+    try {
+      // Delete all user data across tables
+      const tables = ['profiles', 'reading_streaks', 'followed_stories', 'push_tokens'];
+      const results = {};
+      for (const table of tables) {
+        const { error } = await supabase
+          .from(table)
+          .delete()
+          .eq('session_id', sessionId);
+        results[table] = error ? error.message : 'deleted';
+      }
+
+      // Also clean up rate limit entries
+      await supabase.from('rate_limits').delete().eq('session_id', sessionId).catch(() => {});
+
+      return res.status(200).json({ success: true, deleted: results });
+    } catch (e) {
+      await logError(supabase, { endpoint: 'user', action: 'delete-account', error: e, sessionId });
+      return res.status(500).json({ error: 'Deletion failed: ' + e.message });
     }
   }
 
