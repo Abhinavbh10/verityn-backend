@@ -594,110 +594,12 @@ module.exports = async function handler(req, res) {
   }
 
 
-  // ── ACTION: article ──────────────────────────────────────────
-  // Fetches article URL server-side, extracts readable content
-  // Returns: title, byline, content (paragraphs), images, wordCount
+  // ── ACTION: article — REMOVED (L5 compliance) ────────────────
+  // Server-side article extraction was a copyright risk.
+  // ArticleReader now uses publisher WebView directly.
   if (action === 'article') {
-    const { url } = req.query;
-    if (!url) return res.status(400).json({ error: 'url required' });
-
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        signal: AbortSignal.timeout(12000),
-      });
-
-      if (!response.ok) return res.status(200).json({ success: false, error: 'Could not fetch article' });
-
-      const html = await response.text();
-
-      // ── Extract readable content ──────────────────────────────
-      function extractText(html) {
-        // Remove script, style, nav, header, footer, ads
-        let clean = html
-          .replace(/<script[\s\S]*?<\/script>/gi, '')
-          .replace(/<style[\s\S]*?<\/style>/gi, '')
-          .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-          .replace(/<header[\s\S]*?<\/header>/gi, '')
-          .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-          .replace(/<!--[\s\S]*?-->/g, '');
-
-        // Extract title
-        const titleMatch = clean.match(/<title[^>]*>([^<]+)<\/title>/i) ||
-                          clean.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-        const title = titleMatch ? titleMatch[1].replace(/&amp;/g,'&').replace(/&#039;/g,"'").replace(/&quot;/g,'"').trim() : '';
-
-        // Extract byline/author
-        const bylineMatch = clean.match(/class="[^"]*(?:byline|author)[^"]*"[^>]*>([^<]{3,80})</i) ||
-                           clean.match(/(?:by|author)[:\s]+([A-Z][a-z]+ [A-Z][a-z]+)/);
-        const byline = bylineMatch ? bylineMatch[1].trim() : '';
-
-        // Extract main image
-        const imgMatch = clean.match(/<meta\s+(?:property="og:image"|name="twitter:image")[^>]+content="([^"]+)"/i);
-        const mainImage = imgMatch ? imgMatch[1] : null;
-
-        // Extract paragraphs from article body
-        // Look for article/main content containers
-        const articleMatch = clean.match(/<article[^>]*>([\s\S]*?)<\/article>/i) ||
-                            clean.match(/<main[^>]*>([\s\S]*?)<\/main>/i) ||
-                            clean.match(/<div[^>]*(?:article|story|content|body)[^>]*>([\s\S]{500,}?)<\/div>/i);
-
-        const bodyHtml = articleMatch ? articleMatch[1] : clean;
-
-        // Extract paragraph text
-        const paragraphs = [];
-        const pMatches = bodyHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
-        for (const m of pMatches) {
-          const text = m[1]
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&nbsp;/g, ' ')
-            .replace(/\s+/g, ' ').trim();
-          if (text.length > 40) paragraphs.push(text);
-        }
-
-        // Extract inline images
-        const images = [];
-        const imgMatches = bodyHtml.matchAll(/<img[^>]+src="([^"]+)"[^>]*(?:alt="([^"]*)")?/gi);
-        for (const m of imgMatches) {
-          const src = m[1];
-          if (src.startsWith('http') && !src.includes('icon') && !src.includes('logo') && !src.includes('avatar')) {
-            images.push({ src, alt: m[2] || '' });
-            if (images.length >= 5) break;
-          }
-        }
-
-        const wordCount = paragraphs.join(' ').split(/\s+/).length;
-
-        return { title, byline, paragraphs, mainImage, images, wordCount };
-      }
-
-      const extracted = extractText(html);
-
-      if (extracted.paragraphs.length < 2) {
-        return res.status(200).json({ success: false, error: 'Could not extract article content', fallbackUrl: url });
-      }
-
-      return res.status(200).json({
-        success: true,
-        url,
-        title:      extracted.title,
-        byline:     extracted.byline,
-        mainImage:  extracted.mainImage,
-        images:     extracted.images,
-        paragraphs: extracted.paragraphs,
-        wordCount:  extracted.wordCount,
-        readTime:   Math.max(1, Math.round(extracted.wordCount / 200)),
-      });
-
-    } catch (e) {
-      return res.status(200).json({ success: false, error: e.message, fallbackUrl: url });
-    }
+    return res.status(410).json({ error: 'Article extraction removed. Use publisher URL directly.' });
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: news | rss | search | image | article` });
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: news | rss | search | image` });
 };
