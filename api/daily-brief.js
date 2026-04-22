@@ -47,25 +47,47 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 .content{display:none}
 .card-section{padding:0 24px 8px}
 .section-label{font-size:10px;letter-spacing:0.2em;color:rgba(245,240,232,0.35);text-transform:uppercase;margin-bottom:12px;font-family:monospace}
+.card-picker{display:flex;gap:8px;margin-bottom:14px}
+.card-pick-btn{flex:1;padding:10px;border:1px solid rgba(245,240,232,0.15);border-radius:8px;background:transparent;color:rgba(245,240,232,0.5);font-size:12px;font-weight:600;cursor:pointer;text-align:center;transition:all 0.15s}
+.card-pick-btn.active{border-color:#C0392B;color:#F5F0E8;background:rgba(192,57,43,0.15)}
 
-/* ── Redesigned card — 3 stories with why-lines ── */
-#card-preview{background:#0D0D0F;border-left:3px solid #C0392B;border-radius:4px;padding:28px 22px;margin-bottom:12px}
+/* ── Shared card structure ── */
+.card-preview{border-radius:4px;padding:28px 22px;margin-bottom:12px}
 .card-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}
 .card-logo-wrap{display:flex;align-items:baseline;gap:0}
 .card-logo-v{font-family:Georgia,serif;font-size:22px;font-weight:700;color:#C0392B}
-.card-logo-name{font-size:20px;font-weight:900;color:#F5F0E8;letter-spacing:-0.3px}
-.card-date-text{font-family:monospace;font-size:9px;color:rgba(245,240,232,0.3)}
-.card-mood{font-family:Georgia,serif;font-size:13px;font-style:italic;color:rgba(245,240,232,0.7);line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(245,240,232,0.07)}
-.card-story{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid rgba(245,240,232,0.05)}
+.card-story{margin-bottom:16px;padding-bottom:14px}
 .card-story:last-child{border-bottom:none;margin-bottom:8px;padding-bottom:0}
 .card-story-top{display:flex;gap:10px;align-items:baseline;margin-bottom:6px}
 .card-num{font-family:Georgia,serif;font-size:14px;font-weight:700;color:#C0392B;min-width:20px;flex-shrink:0}
-.card-headline{font-family:Georgia,serif;font-size:13px;font-weight:700;color:#F5F0E8;line-height:1.4}
-.card-why{font-size:11px;color:rgba(245,240,232,0.55);line-height:1.5;padding-left:30px;margin-top:4px}
-.card-more{font-size:10px;color:rgba(245,240,232,0.3);text-align:center;margin:12px 0 8px;font-style:italic}
-.card-footer{display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid rgba(245,240,232,0.07)}
-.card-footer-url{font-family:monospace;font-size:8px;color:rgba(245,240,232,0.2)}
-.card-footer-tag{font-family:Georgia,serif;font-size:9px;font-style:italic;color:rgba(245,240,232,0.15)}
+.card-footer{display:flex;justify-content:space-between;align-items:center;padding-top:12px}
+.card-footer-tag{font-family:Georgia,serif;font-size:9px;font-style:italic}
+
+/* ── Dark card ── */
+.card-dark{background:#0D0D0F;border-left:3px solid #C0392B}
+.card-dark .card-logo-name{font-size:20px;font-weight:900;color:#F5F0E8;letter-spacing:-0.3px}
+.card-dark .card-date-text{font-family:monospace;font-size:9px;color:rgba(245,240,232,0.3)}
+.card-dark .card-mood{font-family:Georgia,serif;font-size:13px;font-style:italic;color:rgba(245,240,232,0.7);line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(245,240,232,0.07)}
+.card-dark .card-story{border-bottom:1px solid rgba(245,240,232,0.05)}
+.card-dark .card-headline{font-family:Georgia,serif;font-size:13px;font-weight:700;color:#F5F0E8;line-height:1.4}
+.card-dark .card-why{font-size:11px;color:rgba(245,240,232,0.55);line-height:1.5;padding-left:30px;margin-top:4px}
+.card-dark .card-more{font-size:10px;color:rgba(245,240,232,0.3);text-align:center;margin:12px 0 8px;font-style:italic}
+.card-dark .card-footer{border-top:1px solid rgba(245,240,232,0.07)}
+.card-dark .card-footer-url{font-family:monospace;font-size:8px;color:rgba(245,240,232,0.2)}
+.card-dark .card-footer-tag{color:rgba(245,240,232,0.15)}
+
+/* ── Light card ── */
+.card-light{background:#FAF8F4;border-left:3px solid #C0392B}
+.card-light .card-logo-name{font-size:20px;font-weight:900;color:#111111;letter-spacing:-0.3px}
+.card-light .card-date-text{font-family:monospace;font-size:9px;color:rgba(0,0,0,0.3)}
+.card-light .card-mood{font-family:Georgia,serif;font-size:13px;font-style:italic;color:rgba(0,0,0,0.55);line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(0,0,0,0.08)}
+.card-light .card-story{border-bottom:1px solid rgba(0,0,0,0.06)}
+.card-light .card-headline{font-family:Georgia,serif;font-size:13px;font-weight:700;color:#111111;line-height:1.4}
+.card-light .card-why{font-size:11px;color:#3D2B1F;line-height:1.5;padding-left:30px;margin-top:4px}
+.card-light .card-more{font-size:10px;color:rgba(0,0,0,0.3);text-align:center;margin:12px 0 8px;font-style:italic}
+.card-light .card-footer{border-top:1px solid rgba(0,0,0,0.08)}
+.card-light .card-footer-url{font-family:monospace;font-size:8px;color:rgba(0,0,0,0.25)}
+.card-light .card-footer-tag{color:rgba(0,0,0,0.2)}
 
 .dl-btn{width:100%;padding:14px;background:rgba(192,57,43,0.15);color:#C0392B;border:1px solid rgba(192,57,43,0.3);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;margin-bottom:28px;transition:background 0.15s}
 .dl-btn:active{background:rgba(192,57,43,0.25)}
@@ -100,22 +122,47 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 <div class="content" id="content">
 
   <div class="card-section">
-    <div class="section-label">Instagram Card — Download & Post</div>
-    <div id="card-preview">
+    <div class="section-label">Instagram Card — Pick Theme & Download</div>
+
+    <div class="card-picker">
+      <button class="card-pick-btn active" id="pick-dark" onclick="switchCard('dark')">Dark</button>
+      <button class="card-pick-btn" id="pick-light" onclick="switchCard('light')">Light</button>
+    </div>
+
+    <!-- Dark card -->
+    <div class="card-preview card-dark" id="card-dark">
       <div class="card-header">
         <div class="card-logo-wrap">
           <span class="card-logo-v">V</span><span class="card-logo-name">erityn</span>
         </div>
-        <div class="card-date-text" id="c-date"></div>
+        <div class="card-date-text cd-date"></div>
       </div>
-      <div class="card-mood" id="c-mood"></div>
-      <div id="c-stories"></div>
+      <div class="card-mood cd-mood"></div>
+      <div class="cd-stories"></div>
       <div class="card-more">+ 4 more stories in your daily briefing</div>
       <div class="card-footer">
         <div class="card-footer-url">verityn.news</div>
         <div class="card-footer-tag">7 stories. Why they matter to you.</div>
       </div>
     </div>
+
+    <!-- Light card -->
+    <div class="card-preview card-light" id="card-light" style="display:none">
+      <div class="card-header">
+        <div class="card-logo-wrap">
+          <span class="card-logo-v">V</span><span class="card-logo-name">erityn</span>
+        </div>
+        <div class="card-date-text cd-date"></div>
+      </div>
+      <div class="card-mood cd-mood"></div>
+      <div class="cd-stories"></div>
+      <div class="card-more">+ 4 more stories in your daily briefing</div>
+      <div class="card-footer">
+        <div class="card-footer-url">verityn.news</div>
+        <div class="card-footer-tag">7 stories. Why they matter to you.</div>
+      </div>
+    </div>
+
     <button class="dl-btn" onclick="downloadCard()">Download Card as PNG</button>
   </div>
 
@@ -172,6 +219,29 @@ const today = new Date();
 const dateStr = today.toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit'}).replace(/\\//g,'.');
 document.getElementById('today-date').textContent = dateStr;
 
+let activeTheme = 'dark';
+
+function switchCard(theme) {
+  activeTheme = theme;
+  document.getElementById('card-dark').style.display = theme === 'dark' ? 'block' : 'none';
+  document.getElementById('card-light').style.display = theme === 'light' ? 'block' : 'none';
+  document.getElementById('pick-dark').classList.toggle('active', theme === 'dark');
+  document.getElementById('pick-light').classList.toggle('active', theme === 'light');
+}
+
+function buildStoryHTML(stories) {
+  return stories.map((s, i) => {
+    const whyFirst = (s.why || '').split('.')[0] + '.';
+    return '<div class="card-story">' +
+      '<div class="card-story-top">' +
+        '<div class="card-num">0' + (i+1) + '</div>' +
+        '<div class="card-headline">' + s.headline + '</div>' +
+      '</div>' +
+      '<div class="card-why">' + whyFirst + '</div>' +
+    '</div>';
+  }).join('');
+}
+
 async function generate() {
   const btn = document.getElementById('gen-btn');
   const spinner = document.getElementById('spinner');
@@ -190,22 +260,11 @@ async function generate() {
     if (!json.success) throw new Error(json.error);
     const d = json.data;
 
-    document.getElementById('c-date').textContent = d.date;
-    document.getElementById('c-mood').textContent = '"' + d.mood + '"';
-
-    // Card shows 3 stories with why-lines — the product demo
-    const cardHTML = d.cardStories.map((s, i) => {
-      // Show first sentence of why-line only (keeps card compact)
-      const whyFirst = (s.why || '').split('.')[0] + '.';
-      return '<div class="card-story">' +
-        '<div class="card-story-top">' +
-          '<div class="card-num">0' + (i+1) + '</div>' +
-          '<div class="card-headline">' + s.headline + '</div>' +
-        '</div>' +
-        '<div class="card-why">' + whyFirst + '</div>' +
-      '</div>';
-    }).join('');
-    document.getElementById('c-stories').innerHTML = cardHTML;
+    // Fill both cards with the same data
+    const storyHTML = buildStoryHTML(d.cardStories);
+    document.querySelectorAll('.cd-date').forEach(el => el.textContent = d.date);
+    document.querySelectorAll('.cd-mood').forEach(el => el.textContent = '"' + d.mood + '"');
+    document.querySelectorAll('.cd-stories').forEach(el => el.innerHTML = storyHTML);
 
     document.getElementById('hook-text').textContent = d.hook;
     document.getElementById('ig-text').textContent = d.instagramBody;
@@ -227,15 +286,17 @@ async function generate() {
 }
 
 async function downloadCard() {
-  const card = document.getElementById('card-preview');
+  const cardId = activeTheme === 'dark' ? 'card-dark' : 'card-light';
+  const card = document.getElementById(cardId);
+  const bgColor = activeTheme === 'dark' ? '#0D0D0F' : '#FAF8F4';
   const canvas = await html2canvas(card, {
-    backgroundColor: '#0D0D0F',
+    backgroundColor: bgColor,
     scale: 3,
     useCORS: true,
     logging: false
   });
   const link = document.createElement('a');
-  link.download = 'verityn-' + dateStr + '.png';
+  link.download = 'verityn-' + activeTheme + '-' + dateStr + '.png';
   link.href = canvas.toDataURL('image/png');
   link.click();
 }
@@ -258,7 +319,6 @@ export default async function handler(req, res) {
     return res.status(200).send(HTML);
   }
 
-  // Forward to the API handler
   if (req.query.action === 'generate') {
     try {
       const rotation = getTodayRotation();
