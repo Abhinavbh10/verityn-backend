@@ -184,9 +184,27 @@ No markdown, no explanation.`;
       } catch (e) {}
     }
 
-    const headlinesList = pool.map((a, i) =>
-      `${i + 1}. ${a.headline} | ${a.source || 'Unknown'} | ${a.country || 'WORLD'} | ${a.image ? 'HAS_IMAGE' : 'NO_IMAGE'}`
-    ).join('\n');
+    // Tag each article's relevance to help Claude make better selections
+    const COUNTRY_KEYWORDS = {
+      de: 'germany german berlin frankfurt dax bundesbank scholz merz',
+      in: 'india indian delhi mumbai rbi sensex nifty rupee modi',
+      us: 'america american united states washington fed nasdaq trump',
+      gb: 'britain british uk england london ftse sterling pound',
+      au: 'australia australian sydney melbourne asx reserve bank',
+      sg: 'singapore singaporean mas',
+      ae: 'uae dubai abu dhabi emirates gulf',
+      jp: 'japan japanese tokyo nikkei yen',
+    };
+    const GLOBAL_KEYWORDS = /\bwar\b|\bnuclear\b|\bsanctions\b|\bnato\b|\bopec\b|\bg7\b|\bg20\b|\bun\b|\bclimate summit\b|\bglobal\b|\bworld\b/i;
+    const userKeywords = countriesArr.flatMap(c => (COUNTRY_KEYWORDS[c] || '').split(' ')).filter(Boolean);
+
+    const headlinesList = pool.map((a, i) => {
+      const text = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
+      const matchesUser = userKeywords.some(kw => kw.length > 2 && text.includes(kw));
+      const isGlobal = GLOBAL_KEYWORDS.test(text);
+      const tag = matchesUser ? 'RELEVANT' : isGlobal ? 'GLOBAL' : 'CHECK_RELEVANCE';
+      return `${i + 1}. [${tag}] ${a.headline} | ${a.source || 'Unknown'} | ${a.image ? 'HAS_IMAGE' : 'NO_IMAGE'}`;
+    }).join('\n');
 
     const system = `You are a news editor creating a personalised intelligence briefing. \
 You write as a knowledgeable friend explaining events to a fellow professional — not as a journalist writing for publication. \
@@ -194,13 +212,21 @@ Use plain, direct English. No wire service language. No passive voice. No defini
 When describing professional or financial impact, use likelihood language: "analysts expect", "this typically leads to", "watch for", "historically this has meant". \
 Never state future outcomes as certain facts. Never give financial, legal, or medical advice. \
 Always attribute specific numbers to their source.`;
-    const prompt = `You are editing a personal briefing for someone who follows ${locationStr} and is interested in ${interestStr}.
+    const prompt = `You are editing a personal briefing for a professional living in ${locationStr}, interested in ${interestStr}${professionStr ? `, working in ${professionStr}` : ''}.
 
-Articles below are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking.
+RELEVANCE RULES — follow these strictly:
+1. At least 4 of the 7 stories MUST directly involve or meaningfully affect ${locationStr}. "Meaningfully affect" means the story changes costs, policy, markets, regulations, or daily life there — not just that it happened on the same planet.
+2. The remaining 2-3 stories may be global, BUT each must have a clear, specific connection to ${interestStr} or to the professional context of someone in ${locationStr}. Explain this connection in the why-line.
+3. NEVER include stories primarily about countries or regions the user does not follow, UNLESS the story has direct, concrete impact on ${locationStr} (e.g. a US Fed rate decision affects global markets — that's fine. Nigerian banking regulation does NOT affect someone in ${locationStr} — reject it).
+4. NEVER include celebrity news, sports scores, lifestyle, recipes, entertainment, or health trivia unless the user's interests explicitly include those topics.
 
-Select exactly 7 stories. All 7 carry equal weight — there is no lead story, no tiers, no hierarchy.
-Pick a diverse mix: some directly relevant to their location/interests, some that any informed person should know.
+Select exactly 7 stories. All 7 carry equal weight — no lead story, no tiers, no hierarchy.
+DIVERSITY RULE: The 7 stories MUST cover at least 3 different topic areas. Never pick 4+ stories on the same topic.
 STRONGLY PREFER articles marked HAS_IMAGE — the app displays each story with a full-bleed photo. Only pick a NO_IMAGE article if it is significantly more important than all HAS_IMAGE alternatives.
+
+Each article is tagged: [RELEVANT] = directly about the user's location/interests. [GLOBAL] = major world event. [CHECK_RELEVANCE] = may not be relevant — only pick if you can write a strong, specific why-line connecting it to ${locationStr}. When in doubt, skip CHECK_RELEVANCE articles.
+
+Articles are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking but apply the relevance rules above.
 
 For each story write a "why" — EXACTLY 50-60 words across 3 sentences:
 Sentence 1: Specific fact — what happened, with a number, name, or concrete detail. Attribute figures to their source.
@@ -241,6 +267,49 @@ ${headlinesList}`;
           why:  s.why,
         }))
         .filter(s => s && s.headline);
+
+      // ── #9: Content diversity check ─────────────────────────────
+      const topicSet = new Set();
+      for (const s of briefingStories) {
+        const t = ((s.headline || '') + ' ' + (s.summary || '')).toLowerCase();
+        if (/\btech\b|\bai\b|\bsoftware\b|\bchip\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bnvidia\b|\bopenai\b/.test(t)) topicSet.add('tech');
+        else if (/\bmarket\b|\bbank\b|\binflation\b|\bfed\b|\brbi\b|\becb\b|\bgdp\b|\btrade\b|\btariff\b|\bstock\b|\boil\b/.test(t)) topicSet.add('finance');
+        else if (/\belection\b|\bminister\b|\bparliament\b|\bgovernment\b|\bvote\b|\bpolicy\b|\bsenate\b|\bcongress\b/.test(t)) topicSet.add('politics');
+        else if (/\bclimate\b|\benergy\b|\bsolar\b|\bemission\b|\brenewable\b/.test(t)) topicSet.add('climate');
+        else if (/\bsport\b|\bcricket\b|\bfootball\b|\bnba\b|\bnfl\b|\bolympic\b/.test(t)) topicSet.add('sports');
+        else topicSet.add('world');
+      }
+      if (topicSet.size < 3) {
+        console.warn('[DIVERSITY WARNING]', JSON.stringify({
+          uniqueTopics: topicSet.size,
+          topics: [...topicSet],
+          headlines: briefingStories.map(s => s.headline?.slice(0, 40)),
+        }));
+        await logError(supabase, {
+          endpoint: 'ai', action: 'briefing-diversity',
+          error: `Only ${topicSet.size} unique topics in briefing`,
+          context: { topics: [...topicSet] }, sessionId,
+        });
+      }
+
+      // ── Relevance check — are stories actually about the user's countries? ──
+      const userKws = countriesArr.flatMap(c => (COUNTRY_KEYWORDS[c] || '').split(' ')).filter(k => k.length > 2);
+      let relevantCount = 0;
+      for (const s of briefingStories) {
+        const txt = ((s.headline || '') + ' ' + (s.summary || '') + ' ' + (s.why || '')).toLowerCase();
+        if (userKws.some(kw => txt.includes(kw))) relevantCount++;
+      }
+      if (relevantCount < 4) {
+        console.warn('[RELEVANCE WARNING]', JSON.stringify({
+          userCountries: countriesArr, relevantCount,
+          headlines: briefingStories.map(s => s.headline?.slice(0, 50)),
+        }));
+        await logError(supabase, {
+          endpoint: 'ai', action: 'briefing-relevance',
+          error: `Only ${relevantCount}/7 stories relevant to ${countriesArr.join(',')}`,
+          context: { countries: countriesArr, relevantCount }, sessionId,
+        });
+      }
 
       // ── B9: Why-line production monitoring ──────────────────────
       const whyMonitor = {
@@ -407,14 +476,31 @@ ${headlinesList}`;
         return dot / (Math.sqrt(magA) * Math.sqrt(magB));
       }
 
+      // Build a set of "foreign" country terms — countries NOT in the user's profile
+      const ALL_COUNTRY_CODES = Object.keys(COUNTRY_TERMS);
+      const foreignTerms = ALL_COUNTRY_CODES
+        .filter(c => !countriesArr.includes(c))
+        .flatMap(c => COUNTRY_TERMS[c] || []);
+
       const scored = candidates.map((a, i) => {
         const similarity = cosineSimilarity(profileEmbedding, articleEmbeddings[i]);
         const hoursOld   = (Date.now() - new Date(a.publishedAt)) / 3600000;
         const recency    = Math.max(0, 1 - hoursOld / 48);
         const articleText = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
+
+        // Country relevance: how many user-country terms appear
         const countryMentions = userCountryTerms.filter(term => articleText.includes(term)).length;
-        const countryBonus = Math.min(0.25, countryMentions * 0.08);
-        const score = (similarity * 0.65) + (recency * 0.15) + countryBonus;
+        const countryBonus = Math.min(0.35, countryMentions * 0.10);
+
+        // Foreign penalty: article is primarily about a country the user doesn't follow
+        const foreignMentions = foreignTerms.filter(term => term.length > 3 && articleText.includes(term)).length;
+        const foreignPenalty = (foreignMentions >= 2 && countryMentions === 0) ? -0.20 : 0;
+
+        // Global significance override: major geopolitical terms get a pass even if "foreign"
+        const isGlobalSignificance = /\bwar\b|\bnuclear\b|\bsanctions\b|\bglobal recession\b|\bpandemic\b|\bclimate summit\b|\bun general assembly\b|\bg7\b|\bg20\b|\bnato\b|\bopec\b/i.test(articleText);
+        const globalOverride = (foreignPenalty < 0 && isGlobalSignificance) ? 0.10 : 0;
+
+        const score = (similarity * 0.50) + (recency * 0.15) + countryBonus + foreignPenalty + globalOverride;
         return { ...a, relevanceScore: Math.round(score * 100) / 100 };
       }).sort((a, b) => b.relevanceScore - a.relevanceScore);
 
