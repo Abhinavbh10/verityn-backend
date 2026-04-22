@@ -28,12 +28,10 @@ const HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Verityn · Daily Brief</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"><\/script>
 <style>
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+*{margin:0;padding:0;box-sizing:border-box}
 body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh;padding-bottom:60px}
 .header{padding:52px 24px 24px;border-bottom:1px solid rgba(245,240,232,0.08);display:flex;align-items:center;justify-content:space-between}
 .logo{display:flex;align-items:center;gap:10px}
@@ -49,19 +47,26 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 .content{display:none}
 .card-section{padding:0 24px 8px}
 .section-label{font-size:10px;letter-spacing:0.2em;color:rgba(245,240,232,0.35);text-transform:uppercase;margin-bottom:12px;font-family:monospace}
-#card-preview{background:#0D0D0F;border-left:3px solid #C0392B;border-radius:4px;padding:24px 20px;margin-bottom:12px}
-.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.card-logo{font-family:monospace;font-size:10px;letter-spacing:0.15em;color:#F5F0E8;text-transform:uppercase}
+
+/* ── Redesigned card — 3 stories with why-lines ── */
+#card-preview{background:#0D0D0F;border-left:3px solid #C0392B;border-radius:4px;padding:28px 22px;margin-bottom:12px}
+.card-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}
+.card-logo-wrap{display:flex;align-items:baseline;gap:0}
+.card-logo-v{font-family:Georgia,serif;font-size:22px;font-weight:700;color:#C0392B}
+.card-logo-name{font-size:20px;font-weight:900;color:#F5F0E8;letter-spacing:-0.3px}
 .card-date-text{font-family:monospace;font-size:9px;color:rgba(245,240,232,0.3)}
-.card-rotation{text-align:center;font-family:monospace;font-size:8px;letter-spacing:0.15em;color:rgba(245,240,232,0.3);text-transform:uppercase;border-top:1px solid rgba(245,240,232,0.07);border-bottom:1px solid rgba(245,240,232,0.07);padding:7px 0;margin-bottom:14px}
-.card-mood{font-family:Georgia,serif;font-size:12px;font-style:italic;color:#F5F0E8;line-height:1.5;margin-bottom:14px}
-.card-divider{height:1px;background:rgba(245,240,232,0.07);margin-bottom:12px}
-.card-story{display:flex;gap:10px;margin-bottom:9px;align-items:baseline}
-.card-num{font-family:monospace;font-size:9px;color:#C0392B;min-width:18px;flex-shrink:0}
-.card-headline{font-size:11px;color:rgba(245,240,232,0.82);line-height:1.4}
-.card-footer{display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:1px solid rgba(245,240,232,0.07)}
+.card-mood{font-family:Georgia,serif;font-size:13px;font-style:italic;color:rgba(245,240,232,0.7);line-height:1.6;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(245,240,232,0.07)}
+.card-story{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid rgba(245,240,232,0.05)}
+.card-story:last-child{border-bottom:none;margin-bottom:8px;padding-bottom:0}
+.card-story-top{display:flex;gap:10px;align-items:baseline;margin-bottom:6px}
+.card-num{font-family:Georgia,serif;font-size:14px;font-weight:700;color:#C0392B;min-width:20px;flex-shrink:0}
+.card-headline{font-family:Georgia,serif;font-size:13px;font-weight:700;color:#F5F0E8;line-height:1.4}
+.card-why{font-size:11px;color:rgba(245,240,232,0.55);line-height:1.5;padding-left:30px;margin-top:4px}
+.card-more{font-size:10px;color:rgba(245,240,232,0.3);text-align:center;margin:12px 0 8px;font-style:italic}
+.card-footer{display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid rgba(245,240,232,0.07)}
 .card-footer-url{font-family:monospace;font-size:8px;color:rgba(245,240,232,0.2)}
 .card-footer-tag{font-family:Georgia,serif;font-size:9px;font-style:italic;color:rgba(245,240,232,0.15)}
+
 .dl-btn{width:100%;padding:14px;background:rgba(192,57,43,0.15);color:#C0392B;border:1px solid rgba(192,57,43,0.3);border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;margin-bottom:28px;transition:background 0.15s}
 .dl-btn:active{background:rgba(192,57,43,0.25)}
 .block{margin:0 24px 20px}
@@ -95,27 +100,28 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 <div class="content" id="content">
 
   <div class="card-section">
-    <div class="section-label">📸 Instagram Card — Download & Post</div>
+    <div class="section-label">Instagram Card — Download & Post</div>
     <div id="card-preview">
       <div class="card-header">
-        <div class="card-logo">V · Verityn Daily Brief</div>
+        <div class="card-logo-wrap">
+          <span class="card-logo-v">V</span><span class="card-logo-name">erityn</span>
+        </div>
         <div class="card-date-text" id="c-date"></div>
       </div>
-      <div class="card-rotation" id="c-rotation"></div>
       <div class="card-mood" id="c-mood"></div>
-      <div class="card-divider"></div>
       <div id="c-stories"></div>
+      <div class="card-more">+ 4 more stories in your daily briefing</div>
       <div class="card-footer">
         <div class="card-footer-url">verityn.news</div>
         <div class="card-footer-tag">7 stories. Why they matter to you.</div>
       </div>
     </div>
-    <button class="dl-btn" onclick="downloadCard()">⬇ Download Card as PNG</button>
+    <button class="dl-btn" onclick="downloadCard()">Download Card as PNG</button>
   </div>
 
   <div class="block">
     <div class="block-header">
-      <div class="block-label">🪝 Hook</div>
+      <div class="block-label">Hook</div>
       <button class="copy-btn" onclick="copyText('hook-text', this)">Copy</button>
     </div>
     <div class="hook-content" id="hook-text"></div>
@@ -125,7 +131,7 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 
   <div class="block">
     <div class="block-header">
-      <div class="block-label">📝 Instagram Caption</div>
+      <div class="block-label">Instagram Caption</div>
       <button class="copy-btn" onclick="copyText('ig-text', this)">Copy</button>
     </div>
     <div class="block-content" id="ig-text"></div>
@@ -133,7 +139,7 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 
   <div class="block">
     <div class="block-header">
-      <div class="block-label"># Hashtags</div>
+      <div class="block-label">Hashtags</div>
       <button class="copy-btn" onclick="copyText('ht-text', this)">Copy</button>
     </div>
     <div class="hashtags-content" id="ht-text"></div>
@@ -143,7 +149,7 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 
   <div class="block">
     <div class="block-header">
-      <div class="block-label">💼 LinkedIn Post</div>
+      <div class="block-label">LinkedIn Post</div>
       <button class="copy-btn" onclick="copyText('li-text', this)">Copy</button>
     </div>
     <div class="block-content" id="li-text"></div>
@@ -153,7 +159,7 @@ body{background:#0A0A0C;color:#F5F0E8;font-family:-apple-system,BlinkMacSystemFo
 
   <div class="block">
     <div class="block-header">
-      <div class="block-label">🐦 Twitter Thread</div>
+      <div class="block-label">Twitter Thread</div>
       <button class="copy-btn" onclick="copyText('tw-text', this)">Copy</button>
     </div>
     <div class="block-content" id="tw-text"></div>
@@ -175,7 +181,7 @@ async function generate() {
   btn.disabled = true;
   spinner.style.display = 'block';
   btnText.textContent = 'Generating...';
-  status.textContent = 'Fetching news...';
+  status.textContent = 'Fetching news from all countries...';
 
   try {
     status.textContent = 'Generating briefing & content...';
@@ -185,11 +191,21 @@ async function generate() {
     const d = json.data;
 
     document.getElementById('c-date').textContent = d.date;
-    document.getElementById('c-rotation').textContent = d.rotation.countries.join(' + ') + '  ·  ' + d.rotation.interests.join(' + ');
     document.getElementById('c-mood').textContent = '"' + d.mood + '"';
-    document.getElementById('c-stories').innerHTML = d.stories.map((h,i) =>
-      '<div class="card-story"><div class="card-num">0'+(i+1)+'</div><div class="card-headline">'+h+'</div></div>'
-    ).join('');
+
+    // Card shows 3 stories with why-lines — the product demo
+    const cardHTML = d.cardStories.map((s, i) => {
+      // Show first sentence of why-line only (keeps card compact)
+      const whyFirst = (s.why || '').split('.')[0] + '.';
+      return '<div class="card-story">' +
+        '<div class="card-story-top">' +
+          '<div class="card-num">0' + (i+1) + '</div>' +
+          '<div class="card-headline">' + s.headline + '</div>' +
+        '</div>' +
+        '<div class="card-why">' + whyFirst + '</div>' +
+      '</div>';
+    }).join('');
+    document.getElementById('c-stories').innerHTML = cardHTML;
 
     document.getElementById('hook-text').textContent = d.hook;
     document.getElementById('ig-text').textContent = d.instagramBody;
@@ -227,7 +243,7 @@ async function downloadCard() {
 function copyText(id, btn) {
   const text = document.getElementById(id).textContent;
   navigator.clipboard.writeText(text).then(() => {
-    btn.textContent = 'Copied ✓';
+    btn.textContent = 'Copied';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
   });
@@ -237,71 +253,102 @@ function copyText(id, btn) {
 </html>`;
 
 export default async function handler(req, res) {
-  // Serve the HTML page
   if (req.method === 'GET' && !req.query.action) {
     res.setHeader('Content-Type', 'text/html');
     return res.status(200).send(HTML);
   }
 
-  // Generate content
+  // Forward to the API handler
   if (req.query.action === 'generate') {
     try {
       const rotation = getTodayRotation();
-      const country = rotation.countries[0];
 
-      const newsRes = await fetch(
-        `${BACKEND_URL}/api/content?action=news&country=${country}&category=general&max=20`
-      );
-      const newsData = await newsRes.json();
-      const articles = newsData.articles || [];
+      const fetchPromises = rotation.countries.flatMap(country => [
+        fetch(`${BACKEND_URL}/api/content?action=news&country=${country.toLowerCase()}&category=general&max=12&sessionId=social`)
+          .then(r => r.json()).then(d => d.articles || []).catch(() => []),
+        fetch(`${BACKEND_URL}/api/content?action=rss&country=${country.toLowerCase()}&max=10&sessionId=social`)
+          .then(r => r.json()).then(d => d.articles || []).catch(() => []),
+      ]);
+      const allResults = await Promise.all(fetchPromises);
+      const articles = allResults.flat();
+
+      const seen = new Set();
+      const deduped = articles.filter(a => {
+        const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!k || seen.has(k)) return false;
+        seen.add(k); return true;
+      });
 
       const briefingRes = await fetch(`${BACKEND_URL}/api/ai?action=briefing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          countries: rotation.countries,
-          interests: rotation.interests,
-          articles
+          countries: rotation.countries.map(c => c.toLowerCase()),
+          interests: rotation.interests.map(i => i.toLowerCase()),
+          articles: deduped.slice(0, 40),
+          sessionId: 'social',
+          ts: Date.now(),
         })
       });
       const briefing = await briefingRes.json();
       const stories = briefing.stories || [];
 
+      if (stories.length < 7) {
+        return res.status(500).json({ success: false, error: 'Briefing returned fewer than 7 stories' });
+      }
+
+      const cardStories = stories.slice(0, 3);
       const storiesText = stories.map((s, i) =>
         `${i + 1}. ${s.headline}\n   → ${s.why}`
       ).join('\n\n');
 
-      const prompt = `You are the content team for Verityn, a news intelligence app for time-poor professionals living outside their home country.
+      const prompt = `You are the content team for Verityn, a news intelligence app for time-poor professionals.
 
 Today's briefing mood: ${briefing.mood}
-Today's audience: professionals in ${rotation.countries.join(' + ')} interested in ${rotation.interests.join(' + ')}
-Today's 7 stories:
+
+Today's 7 stories with personalised why-lines:
 ${storiesText}
 
-Write the following separated ONLY by the text ---SPLIT--- on its own line between each section. No other separators.
+Write the following separated by ---SPLIT--- between each section:
 
 HOOK
-One punchy opening line max 15 words that stops the scroll. No hashtags.
+One punchy opening line max 15 words that stops the scroll. No hashtags. No emoji.
 
 ---SPLIT---
 
 INSTAGRAM BODY
-List 7 headlines as 01 · headline format. Then one sentence mood. End with: Your morning briefing, personalised for where you live and what you do. Link in bio.
+Start with today's mood sentence in quotes.
+Then list 3 stories (the first 3) with their why-lines. Format:
+01 · headline
+→ first sentence of the why-line only
+
+02 · headline
+→ first sentence of the why-line only
+
+03 · headline
+→ first sentence of the why-line only
+
+Then: "+ 4 more stories in your daily briefing"
+Then: "Your morning briefing, personalised for where you live and what you do."
+Then: "Link in bio → verityn.news"
+No hashtags here.
 
 ---SPLIT---
 
 HASHTAGS
-8 relevant hashtags all on one line.
+8 relevant hashtags based on today's stories. All on one line.
 
 ---SPLIT---
 
 LINKEDIN
-Professional tone 150-200 words. End with: Get your full briefing on Verityn.
+Professional tone. 150-200 words. Lead with the most business-relevant story and its why-line. Show how Verityn connects global events to professional impact. End with: Get your full briefing at verityn.news
 
 ---SPLIT---
 
 TWITTER
-7 tweets one per story max 240 chars each. Format: 1/ headline → why. End tweet 7 with: Get your personalised briefing → verityn.news`;
+5 tweets max 240 chars each. Format:
+1/ headline → one-line why
+Use the strongest stories. End with: Your 7-story briefing, personalised → verityn.news`;
 
       const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -326,16 +373,18 @@ TWITTER
         data: {
           rotation,
           mood: briefing.mood,
-          stories: stories.map(s => s.headline),
-          hook: parts[0] ? parts[0].replace(/^HOOK/i,'').trim() : '',
-          instagramBody: parts[1] ? parts[1].replace(/^INSTAGRAM BODY/i,'').trim() : '',
-          hashtags: parts[2] ? parts[2].replace(/^HASHTAGS/i,'').trim() : '',
-          linkedin: parts[3] ? parts[3].replace(/^LINKEDIN/i,'').trim() : '',
-          twitter: parts[4] ? parts[4].replace(/^TWITTER/i,'').trim() : '',
-          date: new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit'}).replace(/\//g,'.')
+          allStories: stories.map(s => ({ headline: s.headline, why: s.why })),
+          cardStories: cardStories.map(s => ({ headline: s.headline, why: s.why })),
+          hook: parts[0] ? parts[0].replace(/^HOOK/i, '').trim() : '',
+          instagramBody: parts[1] ? parts[1].replace(/^INSTAGRAM BODY/i, '').trim() : '',
+          hashtags: parts[2] ? parts[2].replace(/^HASHTAGS/i, '').trim() : '',
+          linkedin: parts[3] ? parts[3].replace(/^LINKEDIN/i, '').trim() : '',
+          twitter: parts[4] ? parts[4].replace(/^TWITTER/i, '').trim() : '',
+          date: new Date().toLocaleDateString('en-GB', {
+            day: '2-digit', month: '2-digit', year: '2-digit'
+          }).replace(/\//g, '.')
         }
       });
-
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
