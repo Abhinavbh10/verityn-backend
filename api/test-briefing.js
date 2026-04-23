@@ -1,25 +1,27 @@
-const { createClient } = require('@supabase/supabase-js');
-
 module.exports = async function handler(req, res) {
     try {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-        if (req.method === 'OPTIONS') return res.status(200).end();
+        var key = process.env.ANTHROPIC_API_KEY;
 
-        var params = req.method === 'POST' ? req.body : {};
-        var articles = params.articles || [];
+        var testArticles = [
+            'EU carbon border tax takes effect on imports | FT',
+            'Fed signals no rate cuts until Q4 as inflation persists | Reuters',
+            'Germany green energy hits 60% for first time | DW',
+            'Ceasefire extended: What is next in the Iran war? | DW',
+            'Samsung workers rally, call for larger share of AI profits | DW',
+            'EU forges ahead with membership for Ukraine after Orban exit | Politico',
+            'Israel awaiting US green light on Iran, defence minister says | Euronews',
+            'India RBI signals August rate cut if oil stabilises | NYT',
+            'Sensex crosses 82000 on global optimism | Mint',
+            'EU passes landmark AI governance framework | Guardian',
+        ];
 
-        // Step 1: Check body size
-        var bodySize = JSON.stringify(params).length;
-
-        // Step 2: Build a minimal prompt
-        var headlines = articles.slice(0, 15).map(function(a, i) {
-            return (i + 1) + '. ' + (a.headline || 'No headline');
+        var headlines = testArticles.map(function(h, i) {
+            return (i + 1) + '. [RELEVANT] ' + h + ' | HAS_IMAGE';
         }).join('\n');
 
-        // Step 3: Call Claude
-        var key = process.env.ANTHROPIC_API_KEY;
+        var system = 'You are a news editor. Select exactly 7 stories. For each write a why in 2 sentences. Respond with valid JSON only.';
+        var prompt = 'Pick 7 stories for a finance professional in Berlin, Germany.\n\nArticles:\n' + headlines + '\n\nRespond ONLY with JSON:\n{"mood":"one sentence","stories":[{"index":1,"why":"2 sentences"},{"index":3,"why":"2 sentences"}]}';
+
         var r = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -29,9 +31,9 @@ module.exports = async function handler(req, res) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 400,
-                system: 'You are a news editor. Pick 7 stories and write a one-line summary for each. Respond with JSON only.',
-                messages: [{ role: 'user', content: 'Pick 7:\n' + headlines }],
+                max_tokens: 800,
+                system: system,
+                messages: [{ role: 'user', content: prompt }],
             }),
         });
 
@@ -39,17 +41,10 @@ module.exports = async function handler(req, res) {
 
         return res.json({
             ok: true,
-            bodySize: bodySize,
-            articlesReceived: articles.length,
-            headlinesSent: articles.slice(0, 15).length,
             claudeStatus: r.status,
-            claudeResponse: data.content ? data.content[0].text.slice(0, 200) : data,
+            response: data.content ? data.content[0].text : data,
         });
     } catch (e) {
-        return res.json({
-            ok: false,
-            error: e.message,
-            stack: (e.stack || '').split('\n').slice(0, 4),
-        });
+        return res.json({ ok: false, error: e.message });
     }
 };
