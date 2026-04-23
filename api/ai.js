@@ -60,6 +60,8 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  try {
+
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   const OPENAI_KEY    = process.env.OPENAI_API_KEY;
   const GNEWS_KEY     = process.env.GNEWS_API_KEY;
@@ -704,4 +706,13 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
   }
 
   return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch` });
+
+  } catch (topErr) {
+    // Top-level catch — surfaces the real error instead of silent 500 crash
+    return res.status(500).json({
+      error: 'Unhandled error: ' + (topErr.message || String(topErr)),
+      action: (typeof action !== 'undefined' ? action : 'unknown'),
+      stack: (topErr.stack || '').split('\n').slice(0, 4),
+    });
+  }
 };
