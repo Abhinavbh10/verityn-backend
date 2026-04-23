@@ -136,17 +136,28 @@ const BAD_SOURCES = ['news', 'unknown', 'feedburner', ''];
 const NON_LATIN_SCRIPT = /[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
 
 // German-specific markers — common words/chars that appear in German but not English.
-// Used as a secondary filter for feeds that might mix languages (e.g., Spiegel International
-// occasionally republishes German-first articles).
-const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|ankündigung|reformer|minister|finanzpolitik|beschlüsse|koalition|verteilungsfähige|ausländer|wirtschaft|regierung)\b/i;
+// Used as a secondary filter for feeds that might mix languages
+const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|beschlüsse|koalition|wirtschaft|regierung)\b/i;
+const FRENCH_MARKER = /\b(les|des|une|est|sont|pour|dans|avec|cette|par|sur|aux|qui|ont|ses|mais|leur|selon|après|avant|lors|entre|plus|vers|peut|fait|été|très|tous|dont|sans|comme|depuis|nous|vous|aussi|deux|sous|encore|autre|même|chez|boucler|négociations|budgétaires|présidentielle|française)\b/i;
+const SPANISH_MARKER = /\b(los|las|una|del|por|con|para|más|pero|como|está|son|han|fue|desde|entre|sobre|todo|esta|ese|otro|puede|tiene|también|según|después|durante)\b/i;
+const ITALIAN_MARKER = /\b(gli|dei|della|delle|sono|una|per|con|che|dal|nel|alla|sulla|anche|dopo|questo|quella|stato|essere|hanno|quale|tutti|ogni|molto|ancora|sempre|fra|tra)\b/i;
+const DUTCH_MARKER = /\b(het|een|van|voor|met|niet|ook|zijn|worden|naar|maar|heeft|werd|deze|meer|nog|aan|over|bij|uit|hun|tegen|alle|moet|kan|zou|veel|geen|wel|dan|alleen)\b/i;
 
 function isEnglishHeadline(title) {
   if (!title) return false;
   // Reject anything with non-Latin scripts outright
   if (NON_LATIN_SCRIPT.test(title)) return false;
-  // Reject headlines with multiple German-specific markers (likely German, not English with a loan word)
+  // Reject headlines with 2+ markers from any non-English European language
   const germanHits = (title.match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
   if (germanHits >= 2) return false;
+  const frenchHits = (title.match(new RegExp(FRENCH_MARKER.source, 'gi')) || []).length;
+  if (frenchHits >= 2) return false;
+  const spanishHits = (title.match(new RegExp(SPANISH_MARKER.source, 'gi')) || []).length;
+  if (spanishHits >= 2) return false;
+  const italianHits = (title.match(new RegExp(ITALIAN_MARKER.source, 'gi')) || []).length;
+  if (italianHits >= 2) return false;
+  const dutchHits = (title.match(new RegExp(DUTCH_MARKER.source, 'gi')) || []).length;
+  if (dutchHits >= 2) return false;
   return true;
 }
 
