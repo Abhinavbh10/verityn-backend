@@ -222,6 +222,7 @@ RELEVANCE RULES — follow these strictly:
 
 Select exactly 7 stories. All 7 carry equal weight — no lead story, no tiers, no hierarchy.
 DIVERSITY RULE: The 7 stories MUST cover at least 3 different topic areas. Never pick 4+ stories on the same topic.
+SOURCE DIVERSITY: Never pick more than 2 stories from the same news source. If 5 articles are from Politico, pick at most 2 — find the rest from other sources.
 STRONGLY PREFER articles marked HAS_IMAGE — the app displays each story with a full-bleed photo. Only pick a NO_IMAGE article if it is significantly more important than all HAS_IMAGE alternatives.
 
 Each article is tagged: [RELEVANT] = directly about the user's location/interests. [GLOBAL] = major world event. [CHECK_RELEVANCE] = may not be relevant — only pick if you can write a strong, specific why-line connecting it to ${locationStr}. When in doubt, skip CHECK_RELEVANCE articles.
