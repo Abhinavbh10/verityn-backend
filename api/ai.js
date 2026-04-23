@@ -229,10 +229,9 @@ Each article is tagged: [RELEVANT] = directly about the user's location/interest
 
 Articles are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking but apply the relevance rules above.
 
-For each story write a "why" — EXACTLY 50-60 words across 3 sentences:
-Sentence 1: Specific fact — what happened, with a number, name, or concrete detail. Attribute figures to their source.
-Sentence 2: ${professionStr ? `Professional angle — what professionals in ${professionStr} are likely watching or should consider. Use "analysts expect" or "this typically means" — never certainties.` : `Why this is relevant to someone interested in ${interestStr}.`}
-Sentence 3: Living angle — how this may affect daily life in ${locationStr}: costs, housing, commute, local policy. Frame as likelihood not prediction.
+For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:
+Sentence 1: The specific impact on someone living in ${locationStr}${professionStr ? ` working in ${professionStr}` : ''}. Use a number, timeframe, or concrete consequence. NEVER restate what the headline already says.
+Sentence 2: What to watch or do — a forward-looking signal, date, or decision point.
 Never give financial, legal, or investment advice. Never predict outcomes. Attribute specific claims.
 
 Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
@@ -241,13 +240,13 @@ Respond ONLY with valid JSON — no markdown, no explanation:
 {
   "mood": "one sentence summarising today",
   "stories": [
-    {"index": 1, "why": "exactly 50-60 word why-line here"},
-    {"index": 3, "why": "exactly 50-60 word why-line here"},
-    {"index": 5, "why": "exactly 50-60 word why-line here"},
-    {"index": 7, "why": "exactly 50-60 word why-line here"},
-    {"index": 9, "why": "exactly 50-60 word why-line here"},
-    {"index": 11, "why": "exactly 50-60 word why-line here"},
-    {"index": 12, "why": "exactly 50-60 word why-line here"}
+    {"index": 1, "why": "2-sentence why-line here"},
+    {"index": 3, "why": "2-sentence why-line here"},
+    {"index": 5, "why": "2-sentence why-line here"},
+    {"index": 7, "why": "2-sentence why-line here"},
+    {"index": 9, "why": "2-sentence why-line here"},
+    {"index": 11, "why": "2-sentence why-line here"},
+    {"index": 12, "why": "2-sentence why-line here"}
   ]
 }
 
