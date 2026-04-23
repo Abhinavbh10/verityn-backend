@@ -230,8 +230,8 @@ Each article is tagged: [RELEVANT] = directly about the user's location/interest
 Articles are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking but apply the relevance rules above.
 
 For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:
-Sentence 1: The specific impact on someone living in ${locationStr}${professionStr ? ` working in ${professionStr}` : ''}. Use a number, timeframe, or concrete consequence. NEVER restate what the headline already says.
-Sentence 2: What to watch or do — a forward-looking signal, date, or decision point.
+Sentence 1: The specific impact on YOU — the reader living in ${locationStr}${professionStr ? ` working in ${professionStr}` : ''}. Use "your" not "this affects." Use a number, timeframe, or concrete consequence. NEVER restate what the headline already says.
+Sentence 2: What YOU should watch or do — a forward-looking signal, date, or decision point. Use "watch your" or "check" not "investors should monitor."
 Never give financial, legal, or investment advice. Never predict outcomes. Attribute specific claims.
 
 Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
