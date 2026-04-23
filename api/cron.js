@@ -13,14 +13,20 @@ const COUNTRIES = ['in', 'us', 'gb', 'de', 'au', 'sg', 'ae', 'jp'];
 const rawUrl = process.env.VERCEL_URL || 'verityn-backend-ten.vercel.app';
 const VERCEL_URL = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
 
-// Fix #20: Non-English headline filter (same logic as content.js)
+// Non-English headline filter (same logic as content.js)
 const NON_LATIN_SCRIPT = /[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
 const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|beschlüsse|koalition|wirtschaft|regierung)\b/i;
+const FRENCH_MARKER = /\b(les|des|une|est|sont|pour|dans|avec|cette|par|sur|aux|qui|ont|ses|mais|leur|selon|après|avant|lors|entre|plus|vers|peut|fait|été|très|tous|dont|sans|comme|depuis|nous|vous|aussi|deux|sous|encore|autre|même|chez)\b/i;
+const SPANISH_MARKER = /\b(los|las|una|del|por|con|para|más|pero|como|está|son|han|fue|desde|entre|sobre|todo|esta|ese|otro|puede|tiene|también|según)\b/i;
 function isEnglishHeadline(title) {
   if (!title) return false;
   if (NON_LATIN_SCRIPT.test(title)) return false;
   const germanHits = (title.match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
   if (germanHits >= 2) return false;
+  const frenchHits = (title.match(new RegExp(FRENCH_MARKER.source, 'gi')) || []).length;
+  if (frenchHits >= 2) return false;
+  const spanishHits = (title.match(new RegExp(SPANISH_MARKER.source, 'gi')) || []).length;
+  if (spanishHits >= 2) return false;
   return true;
 }
 
