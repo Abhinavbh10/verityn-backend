@@ -22,7 +22,7 @@ module.exports = async function handler(req, res) {
         }
 
         // Truncate everything aggressively
-        var pool = articles.slice(0, 20).map(function(a) {
+        var pool = articles.slice(0, 30).map(function(a) {
             return {
                 headline: (a.headline || '').slice(0, 200),
                 source: (a.source || '').slice(0, 50),
@@ -65,7 +65,7 @@ module.exports = async function handler(req, res) {
             system: 'You are a news editor. Select 7 stories. Write 2-sentence why-lines. Respond with JSON only, no markdown.',
             messages: [{
                 role: 'user',
-                content: 'Pick 7 stories for a ' + (professionStr || 'professional') + ' in ' + locationStr + '.\n\nArticles:\n' + headlinesList + '\n\nRespond ONLY with JSON:\n{"mood":"one sentence","stories":[{"index":1,"why":"2 sentences"}]}'
+                content: 'Pick ' + Math.min(7, pool.length) + ' stories for a ' + (professionStr || 'professional') + ' in ' + locationStr + '.\n\nArticles:\n' + headlinesList + '\n\nRespond ONLY with JSON:\n{"mood":"one sentence","stories":[{"index":1,"why":"2 sentences"}]}'
             }],
         });
 
@@ -105,7 +105,7 @@ module.exports = async function handler(req, res) {
 
         console.log('BRIEFING: parsed=' + (parsed ? 'yes, stories=' + (parsed.stories ? parsed.stories.length : 0) : 'no'));
 
-        if (!parsed || !parsed.stories || parsed.stories.length < 7) {
+        if (!parsed || !parsed.stories || parsed.stories.length < Math.min(7, pool.length)) {
             return res.status(500).json({ error: 'Parse failed', raw: rawText.slice(0, 300) });
         }
 
