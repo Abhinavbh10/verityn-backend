@@ -280,7 +280,7 @@ module.exports = async function handler(request, response) {
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 80,
-            system: 'Write one crisp sentence describing what happened today with this news topic. Past tense. Specific. No fluff. Under 20 words.',
+            system: 'Write one crisp sentence describing what happened today with this news topic. Past tense. Specific. No fluff. Under 20 words. NEVER say you cannot find relevant news. If headlines don\'t exactly match, summarize the closest related development.',
             messages: [{
               role: 'user',
               content: `Topic: ${cluster.label}\n\nToday's headlines:\n${headlines}\n\nOne sentence — what happened today:`,
@@ -292,6 +292,7 @@ module.exports = async function handler(request, response) {
         const eventText = claudeData.content?.[0]?.text?.trim();
 
         if (!eventText) continue;
+        if (/I don't see|I cannot|I couldn't|no .+-related news/i.test(eventText)) continue;
 
         await supabase.from('topic_threads').upsert({
           topic_key: cluster.key,
