@@ -1,5 +1,5 @@
 // api/newsletter.js — Verityn daily brief newsletter
-// Actions: preview | test | send
+// Actions: subscribe | unsubscribe | preview | test | send
 
 var FROM_EMAIL = 'hello@verityn.news';
 var FROM_NAME = 'Verityn';
@@ -46,17 +46,26 @@ function buildStoryCard(s, i) {
         + '</tr></table></td></tr>'
         + '<tr><td><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="background-color:#111111;border-radius:14px;padding:5px 14px"><a href="' + url + '" style="font-size:12px;font-weight:700;color:#FFFFFF;text-decoration:none">Read &#8250;</a></td>'
-        + '<td style="width:6px"></td>'
-        + '<td style="background-color:#FBF4F3;border-radius:14px;padding:5px 14px"><a href="https://verityn.news" style="font-size:12px;font-weight:700;color:#C0392B;text-decoration:none">Deep Dive &#8250;</a></td>'
         + '</tr></table></td></tr>'
         + '</table></td></tr></table></td></tr>';
 }
 
-function buildEmailHTML(stories, recipientName) {
+function buildSubjectLine(stories) {
+    // Use top story's headline + why-line essence as subject
+    if (!stories || !stories.length) return 'Your 7 stories are ready';
+    var top = stories[0];
+    var headline = (top.headline || '').replace(/\s+/g, ' ').trim();
+    // Keep under 60 chars for mobile preview
+    if (headline.length > 55) headline = headline.substring(0, 52) + '...';
+    return headline;
+}
+
+function buildEmailHTML(stories, recipientName, email) {
     var name = recipientName || 'there';
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    var hour = new Date().getHours();
+    var hour = new Date().getUTCHours() + 2; // rough CET
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
 
     var storyCards = '';
     for (var i = 0; i < stories.length; i++) {
@@ -81,25 +90,22 @@ function buildEmailHTML(stories, recipientName) {
         // Greeting
         + '<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-family:Georgia,serif;font-size:16px;font-weight:700;color:#111111;padding-bottom:2px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
-        + '<tr><td style="font-size:12px;color:#999999">4 min &middot; 7 stories</td></tr>'
+        + '<tr><td style="font-size:12px;color:#999999">4 min &middot; 7 stories &middot; why they matter to you</td></tr>'
         + '</table></td></tr>'
         // Stories
         + storyCards
         // Caught up
         + '<tr><td style="text-align:center;padding:8px 0 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#111111;text-align:center;padding-bottom:4px">You\'re caught up.</td></tr>'
-        + '<tr><td style="font-size:11px;color:#999999;text-align:center;padding-bottom:14px">Go deeper on any story in the app.</td></tr>'
-        + '<tr><td align="center"><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
-        + '<td style="background-color:#C0392B;border-radius:8px;padding:10px 24px"><a href="https://verityn.news" style="font-size:13px;font-weight:600;color:#FFFFFF;text-decoration:none">Open Verityn</a></td>'
-        + '</tr></table></td></tr></table></td></tr>'
+        + '<tr><td style="font-size:11px;color:#999999;text-align:center;padding-bottom:14px">Forward this to someone who hates doomscrolling.</td></tr>'
+        + '</table></td></tr>'
         // Footer
-        + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111">'
+        + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:0 0 12px 12px">'
         + '<tr><td style="padding:20px 24px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="text-align:center;padding-bottom:8px"><span style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#C0392B">V</span><span style="font-size:12px;font-weight:800;color:rgba(245,240,232,0.6)">erityn</span></td></tr>'
         + '<tr><td style="text-align:center;font-size:11px;color:rgba(245,240,232,0.3);line-height:1.8">'
-        + '<a href="https://verityn.news/unsubscribe" style="color:rgba(245,240,232,0.3);text-decoration:underline">Unsubscribe</a> &middot; '
-        + '<a href="https://verityn.news/preferences" style="color:rgba(245,240,232,0.3);text-decoration:underline">Preferences</a> &middot; '
-        + '<a href="https://instagram.com/verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">Instagram</a><br>verityn.news</td></tr>'
+        + '<a href="' + unsubLink + '" style="color:rgba(245,240,232,0.3);text-decoration:underline">Unsubscribe</a> &middot; '
+        + '<a href="https://verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">verityn.news</a></td></tr>'
         + '</table></td></tr></table></td></tr>'
         + '</table></td></tr></table></body></html>';
 }
@@ -112,28 +118,27 @@ async function getLatestBriefing(supabase) {
             .order('created_at', { ascending: false })
             .limit(1);
 
-        if (result.data && result.data.length > 0 && result.data[0].stories && result.data[0].stories.length >= 7) {
+        if (result.data && result.data.length > 0 && result.data[0].stories && result.data[0].stories.length >= 3) {
             return result.data[0].stories;
         }
     } catch (e) { }
 
+    // Generate fresh briefing if cache empty
     try {
-        var r = await fetch('https://verityn-backend-ten.vercel.app/api/ai?action=briefing', {
+        var r = await fetch('https://verityn-backend-ten.vercel.app/api/briefing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                articles: [],
-                countries: ['de', 'in'],
-                interests: ['finance', 'tech', 'world'],
+                countries: ['us', 'gb', 'de', 'in'],
+                interests: ['world', 'finance', 'tech', 'politics'],
                 location: 'de',
-                profession: 'finance',
+                profession: 'professional',
                 sessionId: 'newsletter',
-                ts: Date.now(),
             }),
         });
         var d = await r.json();
-        if (d.stories && d.stories.length >= 7) {
-            try { await supabase.from('newsletter_cache').insert({ stories: d.stories, mood: d.mood }); } catch (e) { }
+        if (d.stories && d.stories.length >= 3) {
+            try { await supabase.from('newsletter_cache').insert({ stories: d.stories }); } catch (e) { }
             return d.stories;
         }
     } catch (e) { }
@@ -153,50 +158,86 @@ async function getSubscribers(supabase) {
 }
 
 module.exports = async function handler(req, res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.status(200).end();
+
     try {
         var supabase = getSupabase();
-        var action = req.query.action;
-        var email = req.query.email;
+        var action = req.query.action || (req.body && req.body.action);
 
-        if (action === 'preview') {
-            var stories = await getLatestBriefing(supabase);
-            if (!stories) {
-                return res.json({
-                    error: 'No briefing available yet.',
-                    hint: 'Open the Verityn app first to generate a briefing, or insert test data into the newsletter_cache table.',
-                });
+        // ── Subscribe ──
+        if (action === 'subscribe') {
+            var body = req.body || {};
+            var email = (body.email || '').trim().toLowerCase();
+            if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email required' });
+
+            var name = (body.name || email.split('@')[0]).trim();
+
+            // Check if already exists
+            var existing = await supabase.from('waitlist').select('id, unsubscribed').eq('email', email).limit(1);
+            if (existing.data && existing.data.length > 0) {
+                if (existing.data[0].unsubscribed) {
+                    // Re-subscribe
+                    await supabase.from('waitlist').update({ unsubscribed: false, name: name }).eq('email', email);
+                    return res.json({ ok: true, resubscribed: true });
+                }
+                return res.json({ ok: true, already: true });
             }
-            res.setHeader('Content-Type', 'text/html');
-            return res.send(buildEmailHTML(stories, 'John'));
+
+            var { error } = await supabase.from('waitlist').insert({ email: email, name: name, unsubscribed: false });
+            if (error) return res.status(500).json({ error: error.message });
+            return res.json({ ok: true, subscribed: true });
         }
 
+        // ── Unsubscribe ──
+        if (action === 'unsubscribe') {
+            var email2 = (req.query.email || (req.body && req.body.email) || '').trim().toLowerCase();
+            if (!email2) return res.status(400).json({ error: 'Email required' });
+
+            await supabase.from('waitlist').update({ unsubscribed: true }).eq('email', email2);
+            return res.json({ ok: true, unsubscribed: true });
+        }
+
+        // ── Preview ──
+        if (action === 'preview') {
+            var stories = await getLatestBriefing(supabase);
+            if (!stories) return res.json({ error: 'No briefing available yet.' });
+            res.setHeader('Content-Type', 'text/html');
+            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com'));
+        }
+
+        // ── Test ──
         if (action === 'test') {
-            if (!email) return res.json({ error: 'Add &email=your@email.com to the URL' });
-            if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP_USER and SMTP_PASS not set in Vercel env vars' });
+            var testEmail = req.query.email;
+            if (!testEmail) return res.json({ error: 'Add &email=your@email.com' });
+            if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
             var stories2 = await getLatestBriefing(supabase);
             if (!stories2) return res.json({ error: 'No briefing available yet.' });
 
             var transporter = getTransporter();
-            var today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+            var subject = buildSubjectLine(stories2);
             try {
                 var result = await transporter.sendMail({
                     from: FROM_NAME + ' <' + FROM_EMAIL + '>',
-                    to: email,
-                    subject: 'Your 7 stories \u2014 ' + today,
-                    html: buildEmailHTML(stories2, email.split('@')[0]),
+                    to: testEmail,
+                    subject: subject,
+                    html: buildEmailHTML(stories2, testEmail.split('@')[0], testEmail),
                 });
                 try { transporter.close(); } catch (e) { }
-                return res.json({ ok: true, messageId: result.messageId, to: email });
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
             }
         }
 
+        // ── Send to all ──
         if (action === 'send') {
-            if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Newsletter disabled. Set NEWSLETTER_ENABLED=true.' });
-            if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP credentials not set' });
+            if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Set NEWSLETTER_ENABLED=true' });
+            if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
             var stories3 = await getLatestBriefing(supabase);
             if (!stories3) return res.json({ error: 'No briefing available' });
@@ -204,8 +245,7 @@ module.exports = async function handler(req, res) {
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
-            var today2 = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-            var subject = 'Your 7 stories \u2014 ' + today2;
+            var subject2 = buildSubjectLine(stories3);
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
 
@@ -215,35 +255,31 @@ module.exports = async function handler(req, res) {
                     await transporter2.sendMail({
                         from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                         to: sub.email,
-                        subject: subject,
-                        html: buildEmailHTML(stories3, sub.name || sub.email.split('@')[0]),
+                        subject: subject2,
+                        html: buildEmailHTML(stories3, sub.name || sub.email.split('@')[0], sub.email),
                     });
                     sent++;
                 } catch (e) {
                     failed++;
                     errors.push({ email: sub.email, error: e.message });
                 }
-                if (i > 0 && i % 5 === 0) {
-                    await new Promise(function(r) { setTimeout(r, 2000); });
-                }
+                if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
             }
 
             try { transporter2.close(); } catch (e) { }
-
             try {
                 await supabase.from('newsletter_log').insert({
                     sent_count: sent, failed_count: failed,
                     errors: errors.length > 0 ? errors : null,
-                    subject: subject, story_count: stories3.length,
+                    subject: subject2, story_count: stories3.length,
                 });
             } catch (e) { }
 
-            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length });
+            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject2 });
         }
 
-        return res.json({ error: 'action must be preview, test, or send', usage: '/api/newsletter?action=preview' });
-
+        return res.json({ actions: 'subscribe, unsubscribe, preview, test, send' });
     } catch (e) {
-        return res.json({ error: 'Function error: ' + e.message, stack: (e.stack || '').split('\n').slice(0, 3) });
+        return res.json({ error: e.message });
     }
 };
