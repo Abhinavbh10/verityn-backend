@@ -26,9 +26,60 @@ function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function cleanSource(raw) {
+    if (!raw) return 'NEWS';
+    var s = raw.toUpperCase().replace(/^(WWW\.|FEEDS\.|RSS\.|NEWS\.)/, '').replace(/\.(COM|ORG|NET|CO\.UK|CO|IO)$/i, '');
+    var map = {
+        'NYTIMES': 'NEW YORK TIMES',
+        'NYT': 'NEW YORK TIMES',
+        'RSS.NYTIMES': 'NEW YORK TIMES',
+        'FEEDS.NPR': 'NPR',
+        'NPR': 'NPR',
+        'WASHINGTONPOST': 'WASHINGTON POST',
+        'BBC': 'BBC',
+        'THEGUARDIAN': 'THE GUARDIAN',
+        'GUARDIAN': 'THE GUARDIAN',
+        'REUTERS': 'REUTERS',
+        'ALJAZEERA': 'AL JAZEERA',
+        'BLOOMBERG': 'BLOOMBERG',
+        'CNBC': 'CNBC',
+        'CNN': 'CNN',
+        'DW': 'DEUTSCHE WELLE',
+        'FT': 'FINANCIAL TIMES',
+        'POLITICO': 'POLITICO',
+        'EURONEWS': 'EURONEWS',
+        'ECONOMICTIMES': 'ECONOMIC TIMES',
+        'INDIATIMES': 'ECONOMIC TIMES',
+        'HINDUSTANTIMES': 'HINDUSTAN TIMES',
+        'NDTV': 'NDTV',
+        'LIVEMINT': 'LIVEMINT',
+        'THEHILL': 'THE HILL',
+        'AXIOS': 'AXIOS',
+        'APNEWS': 'AP NEWS',
+        'AP': 'AP NEWS',
+        'TECHCRUNCH': 'TECHCRUNCH',
+        'THEVERGE': 'THE VERGE',
+        'ARSTECHNICA': 'ARS TECHNICA',
+        'WIRED': 'WIRED',
+        'FOXNEWS': 'FOX NEWS',
+        'SKYNEWS': 'SKY NEWS',
+        'ABC': 'ABC NEWS',
+        'CBS': 'CBS NEWS',
+        'NBC': 'NBC NEWS',
+        'SPIEGEL': 'DER SPIEGEL',
+        'ZEIT': 'DIE ZEIT',
+        'LEMONDE': 'LE MONDE',
+        'SCMP': 'SOUTH CHINA MORNING POST',
+        'JAPANTIMES': 'JAPAN TIMES',
+        'STRAITS TIMES': 'STRAITS TIMES',
+    };
+    var clean = s.replace(/\.(COM|ORG|NET|CO\.UK|CO|IO)$/i, '');
+    return map[clean] || map[s] || s.replace(/[-_]/g, ' ');
+}
+
 function buildStoryCard(s, i) {
     var num = i + 1;
-    var source = (s.source || 'NEWS').toUpperCase();
+    var source = cleanSource(s.source);
     var headline = escapeHtml(s.headline);
     var why = escapeHtml(s.why || '');
     var url = s.sourceUrl || 'https://verityn.news';
@@ -51,11 +102,9 @@ function buildStoryCard(s, i) {
 }
 
 function buildSubjectLine(stories) {
-    // Use top story's headline + why-line essence as subject
     if (!stories || !stories.length) return 'Your 7 stories are ready';
     var top = stories[0];
     var headline = (top.headline || '').replace(/\s+/g, ' ').trim();
-    // Keep under 60 chars for mobile preview
     if (headline.length > 55) headline = headline.substring(0, 52) + '...';
     return headline;
 }
