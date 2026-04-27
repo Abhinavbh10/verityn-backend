@@ -195,10 +195,60 @@ async function getLatestBriefing(supabase) {
     return null;
 }
 
+async function getRegionalWhyLines(stories, region) {
+    if (!stories || !stories.length) return stories;
+    if (region === 'global') return stories;
+
+    var regionContext = {
+        eu: 'a professional living in Europe (Germany/EU). Reference European regulations, ECB policy, euro currency, EU housing markets, European job markets, Schengen implications.',
+        us: 'a professional living in the United States. Reference Fed policy, US dollar, American housing markets, US job markets, 401k/retirement, US healthcare costs, state-level impacts.',
+        india: 'a professional living in India. Reference RBI policy, Indian rupee, Indian stock markets, EMI/home loans, IT sector impacts, startup ecosystem, cost of living in Indian cities.',
+    };
+
+    var context = regionContext[region];
+    if (!context) return stories;
+
+    var headlines = stories.map(function(s, i) {
+        return (i + 1) + '. ' + s.headline;
+    }).join('\n');
+
+    try {
+        var r = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 1000,
+                messages: [{
+                    role: 'user',
+                    content: 'For each headline below, write a short why-line (1-2 sentences) explaining why this news matters to ' + context + '\n\nHeadlines:\n' + headlines + '\n\nRespond with ONLY a JSON array of strings, one why-line per headline, in the same order. No markdown, no backticks, just the JSON array.',
+                }],
+            }),
+        });
+        var data = await r.json();
+        var text = (data.content && data.content[0] && data.content[0].text) || '';
+        var clean = text.replace(/```json|```/g, '').trim();
+        var whyLines = JSON.parse(clean);
+
+        if (Array.isArray(whyLines) && whyLines.length === stories.length) {
+            return stories.map(function(s, i) {
+                return Object.assign({}, s, { why: whyLines[i] });
+            });
+        }
+    } catch (e) {
+        // Fall back to original why-lines
+    }
+    return stories;
+}
+
 async function getSubscribers(supabase) {
     var result = await supabase
         .from('waitlist')
-        .select('email, name')
+        .select('email, name, region')
         .eq('unsubscribed', false)
         .order('created_at', { ascending: true });
 
@@ -223,19 +273,20 @@ module.exports = async function handler(req, res) {
             if (!email || !email.includes('@')) return res.status(400).json({ error: 'Valid email required' });
 
             var name = (body.name || email.split('@')[0]).trim();
+            var timezone = body.timezone || '';
+            var region = body.region || 'global';
 
             // Check if already exists
             var existing = await supabase.from('waitlist').select('id, unsubscribed').eq('email', email).limit(1);
             if (existing.data && existing.data.length > 0) {
                 if (existing.data[0].unsubscribed) {
-                    // Re-subscribe
-                    await supabase.from('waitlist').update({ unsubscribed: false, name: name }).eq('email', email);
+                    await supabase.from('waitlist').update({ unsubscribed: false, name: name, timezone: timezone, region: region }).eq('email', email);
                     return res.json({ ok: true, resubscribed: true });
                 }
                 return res.json({ ok: true, already: true });
             }
 
-            var { error } = await supabase.from('waitlist').insert({ email: email, name: name, unsubscribed: false });
+            var { error } = await supabase.from('waitlist').insert({ email: email, name: name, unsubscribed: false, timezone: timezone, region: region });
             if (error) return res.status(500).json({ error: error.message });
             return res.json({ ok: true, subscribed: true });
         }
@@ -294,25 +345,51 @@ module.exports = async function handler(req, res) {
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
+            // Group subscribers by region
+            var groups = {};
+            for (var g = 0; g < subscribers.length; g++) {
+                var reg = subscribers[g].region || 'global';
+                if (!groups[reg]) groups[reg] = [];
+                groups[reg].push(subscribers[g]);
+            }
+
+            // Generate regional why-lines (parallel for speed)
+            var regions = Object.keys(groups);
+            var regionalStories = {};
+            for (var ri = 0; ri < regions.length; ri++) {
+                var rgn = regions[ri];
+                if (rgn === 'global' || rgn === 'asia') {
+                    regionalStories[rgn] = stories3;
+                } else {
+                    regionalStories[rgn] = await getRegionalWhyLines(stories3, rgn);
+                }
+            }
+
             var subject2 = buildSubjectLine(stories3);
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
 
-            for (var i = 0; i < Math.min(subscribers.length, BATCH_SIZE); i++) {
-                var sub = subscribers[i];
-                try {
-                    await transporter2.sendMail({
-                        from: FROM_NAME + ' <' + FROM_EMAIL + '>',
-                        to: sub.email,
-                        subject: subject2,
-                        html: buildEmailHTML(stories3, sub.name || sub.email.split('@')[0], sub.email),
-                    });
-                    sent++;
-                } catch (e) {
-                    failed++;
-                    errors.push({ email: sub.email, error: e.message });
+            for (var ri2 = 0; ri2 < regions.length; ri2++) {
+                var region = regions[ri2];
+                var subs = groups[region];
+                var regionStories = regionalStories[region];
+
+                for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
+                    var sub = subs[i];
+                    try {
+                        await transporter2.sendMail({
+                            from: FROM_NAME + ' <' + FROM_EMAIL + '>',
+                            to: sub.email,
+                            subject: subject2,
+                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email),
+                        });
+                        sent++;
+                    } catch (e) {
+                        failed++;
+                        errors.push({ email: sub.email, error: e.message });
+                    }
+                    if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
                 }
-                if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
             }
 
             try { transporter2.close(); } catch (e) { }
@@ -324,7 +401,7 @@ module.exports = async function handler(req, res) {
                 });
             } catch (e) { }
 
-            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject2 });
+            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject2, regions: regions });
         }
 
         return res.json({ actions: 'subscribe, unsubscribe, preview, test, send' });
