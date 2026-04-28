@@ -1,5 +1,14 @@
 // api/newsletter.js — Verityn daily brief newsletter
-// Actions: subscribe | unsubscribe | preview | test | send
+// Actions: subscribe | unsubscribe | preview | test | send | feedback
+//
+// CHANGES (2026-04-28):
+// 1. translateArticles cap raised 8 → 12 so we have a real chance of getting
+//    3-4 local stories into the briefing pool, not just 1-2.
+// 2. Translated local articles are now FRONT-loaded into allArticles
+//    (translated.concat(allArticles), not allArticles.concat(translated)).
+//    Without this, briefing.js's slice(0,30) was cutting them off.
+// 3. Logging added around the German pipeline so the next failure is visible
+//    in Vercel logs instead of silent.
 
 var FROM_EMAIL = 'hello@verityn.news';
 var FROM_NAME = 'Verityn';
@@ -72,6 +81,12 @@ function cleanSource(raw) {
         'SCMP': 'SOUTH CHINA MORNING POST',
         'JAPANTIMES': 'JAPAN TIMES',
         'STRAITS TIMES': 'STRAITS TIMES',
+        'TAGESSCHAU': 'TAGESSCHAU',
+        'TAGESSPIEGEL': 'TAGESSPIEGEL',
+        'SUEDDEUTSCHE': 'SÜDDEUTSCHE ZEITUNG',
+        'FAZ': 'FAZ',
+        'HANDELSBLATT': 'HANDELSBLATT',
+        'BERLINER-ZEITUNG': 'BERLINER ZEITUNG',
     };
     var clean = s.replace(/\.(COM|ORG|NET|CO\.UK|CO|IO)$/i, '');
     return map[clean] || map[s] || s.replace(/[-_]/g, ' ');
@@ -305,9 +320,9 @@ async function getWeather(region) {
     var coords = {
         eu: { lat: 52.52, lon: 13.41, city: 'Berlin' },
         us: { lat: 40.71, lon: -74.01, city: 'New York' },
-        india: { lat: 28.61, lon: 77.23, city: 'Delhi' },
-        asia: { lat: 35.68, lon: 139.69, city: 'Tokyo' },
-        global: { lat: 51.51, lon: -0.13, city: 'London' },
+        india: { lat: 19.07, lon: 72.87, city: 'Mumbai' },
+        asia: { lat: 1.35, lon: 103.81, city: 'Singapore' },
+        global: { lat: 51.50, lon: -0.12, city: 'London' },
     };
     var c = coords[region] || coords.global;
     try {
@@ -390,10 +405,15 @@ async function generateExtras(stories, region) {
     }
 }
 
+// Translate up to 12 German articles per send. Was 8 — raised so we have a
+// real chance of getting 3-4 truly local stories into the briefing pool.
+var TRANSLATE_LIMIT = 12;
+
 async function translateArticles(articles) {
     if (!articles || !articles.length) return [];
 
-    var toTranslate = articles.slice(0, 8).map(function(a, i) {
+    var slice = articles.slice(0, TRANSLATE_LIMIT);
+    var toTranslate = slice.map(function(a, i) {
         return (i + 1) + '. HEADLINE: ' + (a.headline || '') + '\n   SUMMARY: ' + (a.summary || '').slice(0, 150);
     }).join('\n\n');
 
@@ -407,7 +427,7 @@ async function translateArticles(articles) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 1500,
+                max_tokens: 2000,
                 messages: [{
                     role: 'user',
                     content: 'Translate these German news headlines and summaries to English. Keep translations natural and news-style, not word-for-word. If a headline or summary is already in English, keep it as-is.\n\n' + toTranslate + '\n\nRespond with ONLY a JSON array of objects, each with "headline" and "summary" keys. Same order as input. No markdown, no backticks.',
@@ -419,8 +439,8 @@ async function translateArticles(articles) {
         var clean = text.replace(/```json|```/g, '').trim();
         var translated = JSON.parse(clean);
 
-        if (Array.isArray(translated) && translated.length === Math.min(articles.length, 8)) {
-            return articles.slice(0, 8).map(function(a, i) {
+        if (Array.isArray(translated) && translated.length === slice.length) {
+            return slice.map(function(a, i) {
                 return Object.assign({}, a, {
                     headline: translated[i].headline || a.headline,
                     summary: translated[i].summary || a.summary,
@@ -428,7 +448,9 @@ async function translateArticles(articles) {
                 });
             });
         }
-    } catch (e) { }
+    } catch (e) {
+        console.log('[newsletter] translateArticles failed:', e.message);
+    }
 
     return [];
 }
@@ -470,7 +492,7 @@ async function generateFreshBriefing(supabase, region) {
     var localKey = localFeedRegions[region];
     if (localKey) {
         fetchPromises.push(
-            fetch(BASE + '/api/content?action=rss&country=' + localKey + '&max=10&sessionId=' + sid)
+            fetch(BASE + '/api/content?action=rss&country=' + localKey + '&max=15&sessionId=' + sid)
                 .then(function(r) { return r.json(); })
                 .catch(function() { return { articles: [] }; })
         );
@@ -493,16 +515,25 @@ async function generateFreshBriefing(supabase, region) {
         }
     }
 
+    console.log('[newsletter] region=' + region + ' englishArticles=' + allArticles.length + ' localArticles=' + localArticles.length);
+
     // Step 2: Translate local articles if we have them
+    var translatedCount = 0;
     if (localArticles.length > 0) {
         var translated = await translateArticles(localArticles);
         if (translated.length > 0) {
             translated = translated.map(function(a) {
                 return Object.assign({}, a, { country: 'DE', isLocal: true });
             });
-            allArticles = allArticles.concat(translated);
+            // FRONT-LOAD translated articles. They MUST survive briefing.js's
+            // slice(0,30). Without this, with 30+ English articles already in
+            // the pool, German translations end up at index 30+ and get cut.
+            allArticles = translated.concat(allArticles);
+            translatedCount = translated.length;
         }
     }
+
+    console.log('[newsletter] region=' + region + ' translated=' + translatedCount + ' poolTotal=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
@@ -522,9 +553,16 @@ async function generateFreshBriefing(supabase, region) {
         });
         var d2 = await r2.json();
         if (d2.stories && d2.stories.length >= 3) {
+            // Log local-story count in the chosen briefing for visibility
+            var localPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
+            console.log('[newsletter] region=' + region + ' briefingStories=' + d2.stories.length + ' localPicked=' + localPicked);
             return d2.stories;
+        } else if (d2.error) {
+            console.log('[newsletter] briefing error: ' + d2.error);
         }
-    } catch (e) { }
+    } catch (e) {
+        console.log('[newsletter] briefing fetch failed: ' + e.message);
+    }
 
     return null;
 }
@@ -755,7 +793,8 @@ module.exports = async function handler(req, res) {
                     html: buildEmailHTML(stories2, testName, testEmail, extras2),
                 });
                 try { transporter.close(); } catch (e) { }
-                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length });
+                var localCount = stories2.filter(function(s) { return s.isLocal; }).length;
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length, localStories: localCount });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
