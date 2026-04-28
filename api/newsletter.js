@@ -704,7 +704,37 @@ module.exports = async function handler(req, res) {
 
             // Use subscriber's actual region for full pipeline
             var stories2 = await generateFreshBriefing(supabase, testRegion);
-            if (!stories2) return res.json({ error: 'No briefing available yet.' });
+            if (!stories2) {
+                // Debug: try without translation to isolate the issue
+                var debugStories = null;
+                try {
+                    var BASE = 'https://verityn-backend-ten.vercel.app';
+                    var dSid = 'debug-' + Date.now();
+                    var dr1 = await fetch(BASE + '/api/content?action=rss&country=de&max=5&sessionId=' + dSid);
+                    var dd1 = await dr1.json();
+                    var articleCount = dd1.articles ? dd1.articles.length : 0;
+
+                    var dr2 = await fetch(BASE + '/api/briefing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            articles: (dd1.articles || []).slice(0, 5),
+                            countries: ['de', 'gb'],
+                            location: 'de',
+                            interests: ['world'],
+                        }),
+                    });
+                    var dd2 = await dr2.json();
+                    return res.json({
+                        error: 'Full pipeline failed. Debug info:',
+                        articlesFound: articleCount,
+                        briefingResponse: dd2.error || dd2.stories ? 'got ' + (dd2.stories || []).length + ' stories' : 'unknown',
+                        briefingRaw: JSON.stringify(dd2).slice(0, 500),
+                    });
+                } catch (debugErr) {
+                    return res.json({ error: 'Full pipeline failed. Debug also failed: ' + debugErr.message });
+                }
+            }
 
             // Enrich with body text + better why-lines
             if (testRegion !== 'global' && testRegion !== 'asia') {
