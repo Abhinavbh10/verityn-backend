@@ -51,7 +51,7 @@ const ENTITY_MAP = {
   'nato':'nato','gaza':'gaza','hamas':'hamas',
   'trump':'trump','biden':'biden','modi':'modi','putin':'putin',
   'zelensky':'zelensky','netanyahu':'netanyahu','xi':'xi',
-  'macron':'macron','scholz':'scholz',
+  'macron':'macron','scholz':'scholz','merz':'merz',
   'congress':'congress','parliament':'parliament','senate':'senate',
   'election':'election','elections':'election',
   'fed':'fed','rbi':'rbi','ecb':'ecb',
@@ -73,7 +73,19 @@ const ENTITY_MAP = {
   'war':'war','conflict':'conflict','ceasefire':'ceasefire',
   'sanctions':'sanctions','nuclear':'nuclear',
   'strait':'hormuz','hormuz':'hormuz',
+  // Companies / specific named entities — extend as needed
+  'lufthansa':'lufthansa','ryanair':'ryanair',
+  'volkswagen':'volkswagen','vw':'volkswagen',
+  'bmw':'bmw','mercedes':'mercedes','siemens':'siemens',
+  'tesla':'tesla','spacex':'spacex','amazon':'amazon',
 };
+
+// ── Entities too broad to stand alone — must be paired with a secondary ──
+const BROAD_ENTITIES = new Set([
+  'germany','france','india','china','japan','korea','taiwan','saudi',
+  'australia','uk','europe','america','pakistan','russia',
+  'markets','banking',
+]);
 
 function getEntities(headline) {
   const words = (headline || '').toLowerCase()
@@ -96,41 +108,81 @@ function makeTopicLabel(entities) {
     'election':'Elections','zelensky':'Zelensky','netanyahu':'Netanyahu',
     'saudi':'Saudi Arabia','australia':'Australia','europe':'Europe',
     'japan':'Japan','korea':'Korea','taiwan':'Taiwan','inflation':'Inflation',
-    'fed':'Federal Reserve','rbi':'RBI',
+    'fed':'Federal Reserve','rbi':'RBI','merz':'Merz','scholz':'Scholz',
+    'lufthansa':'Lufthansa','ryanair':'Ryanair','volkswagen':'Volkswagen',
+    'bmw':'BMW','mercedes':'Mercedes','siemens':'Siemens',
+    'tesla':'Tesla','spacex':'SpaceX','amazon':'Amazon',
   };
   return entities.slice(0, 3)
     .map(e => labelMap[e] || e.charAt(0).toUpperCase() + e.slice(1))
     .join(' & ');
 }
 
+// ── Cluster articles by entity-pair signature ────────────────
+// Broad entities (countries, "markets") MUST be paired with a specific
+// secondary entity, otherwise the article is dropped from clustering.
+// This prevents "germany" from sweeping in unrelated German stories.
 function clusterArticles(articles) {
   const ENTITY_PRIORITY = [
     'iran','israel','ukraine','russia','china','india','germany','france',
-    'trump','putin','modi','zelensky','netanyahu',
+    'trump','putin','modi','zelensky','netanyahu','merz','scholz',
     'fed','oil','ai','chips','markets','rates','inflation','tariffs','trade',
     'nato','nuclear','sanctions','war','ceasefire','hormuz',
-    'climate','energy','election','congress','america','uk','australia','japan','korea'
+    'climate','energy','election','congress','america','uk','australia','japan','korea',
+    'lufthansa','ryanair','volkswagen','bmw','mercedes','siemens',
+    'tesla','spacex','nvidia','openai','google','apple','microsoft','meta','amazon',
   ];
-  function dominantEntity(entities) {
-    for (const p of ENTITY_PRIORITY) { if (entities.includes(p)) return p; }
-    return entities[0] || null;
+
+  function rankedTop(entities, n) {
+    const ranked = [];
+    for (const p of ENTITY_PRIORITY) {
+      if (entities.includes(p) && !ranked.includes(p)) ranked.push(p);
+      if (ranked.length >= n) break;
+    }
+    for (const e of entities) {
+      if (!ranked.includes(e)) ranked.push(e);
+      if (ranked.length >= n) break;
+    }
+    return ranked;
   }
+
   const tagged = articles
     .map(a => ({ article: a, entities: getEntities(a.headline) }))
-    .filter(ae => ae.entities.length > 0)
-    .map(ae => ({ ...ae, dominant: dominantEntity(ae.entities) }))
-    .filter(ae => ae.dominant);
+    .filter(ae => ae.entities.length > 0);
+
   const clusters = {};
   for (const ae of tagged) {
-    const key = ae.dominant;
+    const top = rankedTop(ae.entities, 2);
+    const dominant = top[0];
+    const secondary = top[1] || null;
+    if (!dominant) continue;
+
+    let key;
+    if (BROAD_ENTITIES.has(dominant)) {
+      // Broad entity — drop article unless we have a specific secondary
+      if (!secondary || BROAD_ENTITIES.has(secondary)) continue;
+      key = [dominant, secondary].sort().join('+');
+    } else {
+      // Specific entity — pair with secondary if available, else stand alone
+      key = secondary && !BROAD_ENTITIES.has(secondary)
+        ? [dominant, secondary].sort().join('+')
+        : dominant;
+    }
+
     if (!clusters[key]) {
-      clusters[key] = { key, label: makeTopicLabel([key]), articles: [], sources: new Set() };
+      clusters[key] = {
+        key,
+        label: makeTopicLabel(key.split('+')),
+        articles: [],
+        sources: new Set(),
+      };
     }
     if (!clusters[key].articles.find(a => a.headline === ae.article.headline)) {
       clusters[key].articles.push(ae.article);
       clusters[key].sources.add(ae.article.source || 'Unknown');
     }
   }
+
   return Object.values(clusters)
     .filter(c => c.articles.length >= 2)
     .sort((a, b) => b.articles.length - a.articles.length);
@@ -142,6 +194,23 @@ function parseRssHeadlines(xml, sourceName) {
     const title = (item.match(/<title[^>]*>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/title>/) || [])[1] || '';
     return { headline: title.trim(), source: sourceName, url: '' };
   }).filter(a => a.headline.length > 10);
+}
+
+// ── Detect "while X while Y" fusion in generated text ────────
+// If Claude produces a fused sentence despite instructions, reject it.
+function isFusedSentence(text) {
+  if (!text) return false;
+  // Two or more "while" occurrences = fused sentence
+  const whileCount = (text.match(/\bwhile\b/gi) || []).length;
+  if (whileCount >= 2) return true;
+  // "while" + "as" within 12 words of each other = also fused
+  if (/\bwhile\b[\s\S]{1,80}\bas\b/i.test(text) && /\bwhile\b/i.test(text)) {
+    const words = text.split(/\s+/);
+    const whileIdx = words.findIndex(w => /while/i.test(w));
+    const asIdx = words.findIndex(w => /^as$/i.test(w));
+    if (whileIdx !== -1 && asIdx !== -1 && Math.abs(whileIdx - asIdx) < 12) return true;
+  }
+  return false;
 }
 
 // ── Main handler ─────────────────────────────────────────────
@@ -163,7 +232,7 @@ module.exports = async function handler(request, response) {
   const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  const results = { cacheWarmed: [], threadsGenerated: [], errors: [], debug: {} };
+  const results = { cacheWarmed: [], threadsGenerated: [], threadsSkipped: [], errors: [], debug: {} };
 
   // ── Step 0: Cleanup old rate limits (Fix #17) ──────────────
   try {
@@ -253,9 +322,24 @@ module.exports = async function handler(request, response) {
     }));
 
     const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // Pre-fetch yesterday's threads in one query so we can dedup against them
+    const yesterdayMap = {};
+    try {
+      const { data: yesterdayThreads } = await supabase
+        .from('topic_threads').select('topic_key, event_text')
+        .eq('event_date', yesterday);
+      for (const t of (yesterdayThreads || [])) {
+        yesterdayMap[t.topic_key] = t.event_text;
+      }
+    } catch (e) {
+      // non-fatal — proceed without dedup context
+    }
 
     for (const cluster of clusters.slice(0, 20)) {
       try {
+        // Skip if today's entry already exists for this cluster
         let existing = null;
         try {
           const { data } = await supabase
@@ -270,6 +354,35 @@ module.exports = async function handler(request, response) {
           .map(a => `- ${a.headline} (${a.source || 'Unknown'})`)
           .join('\n');
 
+        const yesterdayText = yesterdayMap[cluster.key] || null;
+
+        // ── Stronger prompt: forbids "while" fusion, allows SKIP ──
+        const systemPrompt = `You write one crisp past-tense sentence about a specific news story. Under 20 words. Specific facts.
+
+CRITICAL RULES:
+- The sentence describes ONE event only. NEVER fuse two unrelated events with "while", "as", or "and".
+- If the headlines cover multiple unrelated stories, pick the single most important one and ignore the rest.
+- If today's headlines don't materially advance the story (i.e. they restate yesterday's news), respond with exactly: SKIP
+
+Output the sentence directly OR the word SKIP. Nothing else.`;
+
+        const userMsg = yesterdayText
+          ? `Topic: ${cluster.label}
+
+Yesterday's update:
+"${yesterdayText}"
+
+Today's headlines:
+${headlines}
+
+One sentence on the single most important new development today. If today doesn't add new information beyond yesterday, respond SKIP:`
+          : `Topic: ${cluster.label}
+
+Today's headlines:
+${headlines}
+
+One sentence on the single most important development:`;
+
         const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {
@@ -280,11 +393,8 @@ module.exports = async function handler(request, response) {
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
             max_tokens: 80,
-            system: 'Write one crisp sentence describing what happened today with this news topic. Past tense. Specific. No fluff. Under 20 words. NEVER say you cannot find relevant news. If headlines don\'t exactly match, summarize the closest related development.',
-            messages: [{
-              role: 'user',
-              content: `Topic: ${cluster.label}\n\nToday's headlines:\n${headlines}\n\nOne sentence — what happened today:`,
-            }],
+            system: systemPrompt,
+            messages: [{ role: 'user', content: userMsg }],
           }),
         });
 
@@ -292,7 +402,20 @@ module.exports = async function handler(request, response) {
         const eventText = claudeData.content?.[0]?.text?.trim();
 
         if (!eventText) continue;
-        if (/I don't see|I cannot|I couldn't|no .+-related news/i.test(eventText)) continue;
+
+        // ── Skip signals ──
+        if (eventText === 'SKIP' || /^SKIP[\s.!]/.test(eventText)) {
+          results.threadsSkipped.push(`${cluster.label} (no progress)`);
+          continue;
+        }
+        if (/I don't see|I cannot|I couldn't|no .+-related news/i.test(eventText)) {
+          results.threadsSkipped.push(`${cluster.label} (claude refused)`);
+          continue;
+        }
+        if (isFusedSentence(eventText)) {
+          results.threadsSkipped.push(`${cluster.label} (fused output rejected)`);
+          continue;
+        }
 
         await supabase.from('topic_threads').upsert({
           topic_key: cluster.key,
