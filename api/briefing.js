@@ -1,16 +1,20 @@
 // api/briefing.js — Standalone briefing endpoint
 //
-// CHANGES (2026-04-28):
-// 1. Translated local-language articles (newsletter.js sets isLocal: true)
-//    are now tagged [DE-LOCAL] in the headline list shown to Claude. This
-//    distinguishes guaranteed-local Tagesschau/FAZ/SZ stories from
-//    [DE]-tagged stories that are merely from German publishers writing
-//    about world topics (DW, Politico EU, Spiegel International).
-// 2. LOCAL NEWS RULE raised from "at least 2 of 7" to "at least 3, ideally 4
-//    of 7". Aligned with product spec.
-// 3. Pool size raised 30 → 35 to reduce slice-loss when both English and
-//    translated local articles are abundant. (Front-loading in newsletter.js
-//    is the real fix; this is belt-and-braces.)
+// CHANGES (2026-04-28, second pass):
+// 1. HARD SOURCE CAP rule moved to top of prompt with explicit conflict
+//    resolution: if local rule and source cap conflict, find a local story
+//    from a different source. Hard ceiling at 2 picks per source.
+// 2. DEDUPLICATION rule added — when two articles describe the same news
+//    event, pick only one (prefer the local-language source).
+// 3. Why-line examples cleaned up (humanizer skill — em dashes are an AI
+//    tell, especially when Claude parrots the example wholesale).
+// 4. Source-count post-check logs violations for visibility.
+//
+// Earlier changes (still in effect):
+// - [DE-LOCAL] tag distinguishes translated guaranteed-local stories from
+//   [DE]-tagged stories from German publishers writing about world topics
+// - LOCAL NEWS RULE: 3 minimum, 4 ideal of 7
+// - Pool size 35
 
 const { createClient } = require('@supabase/supabase-js');
 
@@ -29,6 +33,17 @@ function parseJSON(raw) {
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Light-weight source normaliser used only for the post-pick cap audit.
+// Real cleanSource lives in newsletter.js. This just folds variants for counting.
+function normaliseSource(s) {
+    if (!s) return 'unknown';
+    return s.toLowerCase()
+        .replace(/^(www\.|feeds\.|rss\.|news\.)/, '')
+        .replace(/\.(com|org|net|co\.uk|co|io|de|fr|eu|uk|in|at|ch|jp|au|sg|ae|es|it|nl)$/, '')
+        .replace(/[-_\s]+/g, '')
+        .trim();
 }
 
 module.exports = async function handler(req, res) {
@@ -51,8 +66,6 @@ module.exports = async function handler(req, res) {
         if (!Array.isArray(articles)) articles = [];
         if (!Array.isArray(countries)) countries = [countries];
 
-        // Truncate and clean. Pool size 35 (was 30) — gives a small buffer for
-        // when both English and translated local articles are abundant.
         var POOL_SIZE = 35;
         var pool = articles.slice(0, POOL_SIZE).map(function(a, i) {
             return {
@@ -71,7 +84,6 @@ module.exports = async function handler(req, res) {
 
         if (pool.length === 0) return res.status(400).json({ error: 'No articles provided.' });
 
-        // Pick count: 7 if we have enough, otherwise use what we have (min 3)
         var pickCount = Math.min(7, pool.length);
         if (pickCount < 3) return res.status(400).json({ error: 'Need at least 3 articles, got ' + pool.length });
 
@@ -79,46 +91,57 @@ module.exports = async function handler(req, res) {
         var professionStr = profession || '';
         var interestStr = (interests.length ? interests.join(', ') : 'world news');
 
-        // How many local stories to require. For 7-story briefings: 3 minimum,
-        // 4 ideal. For shorter briefings, scale down proportionally.
         var localMinimum = pickCount >= 7 ? 3 : pickCount >= 5 ? 2 : 1;
         var localIdeal = pickCount >= 7 ? 4 : pickCount >= 5 ? 3 : 1;
 
-        // How many guaranteed-local (translated isLocal=true) articles are in the pool
         var guaranteedLocalCount = pool.filter(function(a) { return a.isLocal; }).length;
 
         var headlinesList = pool.map(function(a, i) {
             var summary = a.summary ? ' — ' + a.summary.slice(0, 50) : '';
-            // Tag truly local (translated) articles distinctly from
-            // [country] — German publishers writing about anything.
             var locTag = a.isLocal ? (a.country || 'XX') + '-LOCAL' : (a.country || '??');
             return (i+1) + '. [' + locTag + '] ' + a.headline + summary + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
         }).join('\n');
 
+        var foreignTag = (countries[0] || 'gb').toUpperCase();
+        var localTag = (countries[1] || 'de').toUpperCase();
+        var foreignName = COUNTRY_NAMES[(countries[0] || 'gb').toLowerCase()] || 'foreign';
+
         var prompt = 'Pick exactly ' + pickCount + ' stories for a '
             + (professionStr || 'professional') + ' in ' + locationStr
             + ', interested in ' + interestStr + '.\n\n'
-            + 'LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories MUST be ABOUT '
+
+            + 'HARD RULES (non-negotiable):\n\n'
+
+            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace it with a story from a different source. The cap is not optional. If the cap conflicts with the local quota, the cap wins. Find a local story from a different source.\n\n'
+
+            + '2. NO DUPLICATES. If two articles describe the SAME news event (same actors, same announcement, same incident), pick only ONE. Example: a Tagesspiegel piece "UAE leaves OPEC oil cartel" and an NYT piece "United Arab Emirates Says It Will Leave OPEC" are the same story. Pick the local-language source if available. Never include both. Two articles that share a topic but describe different events are fine.\n\n'
+
+            + 'LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
             + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
             + 'A story is local if the HEADLINE mentions ' + locationStr
-            + ', or cities/institutions/people in that country (e.g. for Germany: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; for India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; for US: Congress, Fed, Wall Street, NYSE).\n\n'
+            + ', or cities, institutions, or named figures in that country (Germany examples: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; US: Congress, Fed, Wall Street, NYSE).\n\n'
+
             + 'TAG GLOSSARY:\n'
-            + '  [' + (countries[1] || 'DE').toUpperCase() + '-LOCAL] — translated from local-language press (e.g. Tagesschau, FAZ, Süddeutsche). Guaranteed about ' + locationStr + '. Strongly prefer these for the local quota. ' + guaranteedLocalCount + ' available in this pool.\n'
-            + '  [' + (countries[1] || 'DE').toUpperCase() + '] — published by a ' + locationStr + '-based outlet (DW, Politico EU, Spiegel International). May or may not be about ' + locationStr + '. Read the headline. Counts as local ONLY if the headline mentions ' + locationStr + ' or its cities/institutions.\n'
-            + '  [' + (countries[0] || 'GB').toUpperCase() + '] — published by a ' + (COUNTRY_NAMES[(countries[0] || 'gb').toLowerCase()] || 'foreign') + ' outlet. Counts as local only if the headline is genuinely about ' + locationStr + '.\n\n'
-            + 'For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:\n'
-            + 'Sentence 1: The specific impact on YOU living in ' + locationStr
+            + '  [' + localTag + '-LOCAL] — translated from local-language press (Tagesschau, FAZ, Süddeutsche, Spiegel-DE, Tagesspiegel, Handelsblatt, Berliner Zeitung). Guaranteed about ' + locationStr + '. Strongly prefer these for the local quota. ' + guaranteedLocalCount + ' available in this pool.\n'
+            + '  [' + localTag + '] — published by a ' + locationStr + '-based outlet writing in English (DW, Politico EU, Spiegel International, The Local). Counts as local ONLY if the headline mentions ' + locationStr + ' or its cities/institutions.\n'
+            + '  [' + foreignTag + '] — published by a ' + foreignName + ' outlet (BBC, Guardian, NYT). Counts as local only if the headline is genuinely about ' + locationStr + '.\n\n'
+
+            + 'For each story write a "why" — exactly 2 sentences, 25 to 35 words total.\n'
+            + 'Sentence 1: the specific impact on YOU living in ' + locationStr
             + (professionStr ? ' working in ' + professionStr : '')
-            + '. Use "your" not "this affects." NEVER restate the headline. Be specific about YOUR rent, YOUR commute, YOUR taxes, YOUR grocery bill, YOUR salary.\n'
-            + 'Sentence 2: What YOU should watch or do next. Give a concrete action or timeframe.\n\n'
-            + 'WHY-LINE TONE: Write like a sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
+            + '. Use "your" not "this affects." Never restate the headline. Be specific about your rent, your commute, your taxes, your grocery bill, your salary.\n'
+            + 'Sentence 2: what YOU should watch or do next. Concrete action or timeframe.\n\n'
+
+            + 'WHY-LINE TONE: Sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
             + 'WRONG: "Your understanding of democratic developments benefits from monitoring local governance"\n'
             + 'WRONG: "Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
-            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in fixed before July."\n'
-            + 'RIGHT: "Fuel surcharges on Lufthansa go up next month. If you fly for work, book Q3 trips now while fares are locked."\n\n'
-            + 'PREFER articles marked HAS_IMAGE for the lead and medium slots, but DO NOT skip a [' + (countries[1] || 'DE').toUpperCase() + '-LOCAL] story just because it lacks an image — local relevance beats image availability.\n'
-            + 'Cover different topics. Max 2 stories from the same source.\n'
-            + 'If fewer than ' + localMinimum + ' truly local stories exist in the entire pool (count the [' + (countries[1] || 'DE').toUpperCase() + '-LOCAL] entries plus any [' + (countries[1] || 'DE').toUpperCase() + ']/[' + (countries[0] || 'GB').toUpperCase() + '] stories whose headlines mention ' + locationStr + '), pick whatever truly local stories DO exist, then fill remaining slots with stories that have the strongest real impact on someone in ' + locationStr + '.\n\n'
+            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in a fixed rate before July."\n'
+            + 'RIGHT: "Lufthansa fuel surcharges go up next month. If you fly for work, book Q3 trips now while fares are locked."\n\n'
+
+            + 'PREFER articles marked HAS_IMAGE for the lead and medium slots. But do NOT skip a [' + localTag + '-LOCAL] story because it lacks an image. Local relevance beats image availability.\n'
+            + 'Cover at least 3 different topics across the picks.\n'
+            + 'If fewer than ' + localMinimum + ' truly local stories exist in the pool (count [' + localTag + '-LOCAL] entries plus any [' + localTag + ']/[' + foreignTag + '] whose headlines mention ' + locationStr + '), pick whatever truly local stories DO exist, then fill remaining slots with stories that have the strongest real impact on someone in ' + locationStr + '.\n\n'
+
             + 'Respond ONLY with valid JSON, no markdown:\n'
             + '{"mood":"one sentence","stories":[{"index":1,"why":"2-sentence why-line"}]}\n\n'
             + 'Articles:\n' + headlinesList;
@@ -133,7 +156,7 @@ module.exports = async function handler(req, res) {
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
                 max_tokens: 1400,
-                system: 'You are a news editor creating a personalised briefing. Use plain, direct English. No predictions. No financial advice. Respond with JSON only.',
+                system: 'You are a news editor creating a personalised briefing. Plain, direct English. No predictions. No financial advice. Respond with JSON only.',
                 messages: [{ role: 'user', content: prompt }],
             }),
         });
@@ -147,9 +170,8 @@ module.exports = async function handler(req, res) {
         var rawText = (data.content && data.content[0] && data.content[0].text) || '';
         var stopReason = data.stop_reason || 'unknown';
 
-        // If response was cut off, increase tokens next time
         if (stopReason === 'max_tokens') {
-            return res.status(500).json({ error: 'Response truncated — Claude ran out of tokens', stop_reason: stopReason, raw: rawText.slice(-200) });
+            return res.status(500).json({ error: 'Response truncated', stop_reason: stopReason, raw: rawText.slice(-200) });
         }
 
         var parsed = parseJSON(rawText);
@@ -158,8 +180,6 @@ module.exports = async function handler(req, res) {
             return res.status(500).json({ error: 'Parse failed', stop_reason: stopReason, storiesFound: parsed ? (parsed.stories ? parsed.stories.length : 0) : 0, raw: rawText.slice(0, 500) });
         }
 
-        // Map why-lines back to articles. Preserve isLocal so newsletter.js can
-        // log how many guaranteed-local stories ended up in the briefing.
         var briefingStories = parsed.stories
             .filter(function(s) { return s.index >= 1 && s.index <= pool.length && s.why; })
             .map(function(s) {
@@ -177,7 +197,19 @@ module.exports = async function handler(req, res) {
             return res.status(500).json({ error: 'No stories mapped', indices: parsed.stories.map(function(s){return s.index;}), poolSize: pool.length });
         }
 
-        // Cache for newsletter
+        // Post-pick audit. The pool-stage cap in newsletter.js makes 3+ from
+        // one source rare, but log if it slips through (e.g. if same publisher
+        // appears under two different source strings).
+        var sourceCounts = {};
+        for (var bi = 0; bi < briefingStories.length; bi++) {
+            var src = normaliseSource(briefingStories[bi].source);
+            sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+        }
+        var capViolations = Object.keys(sourceCounts).filter(function(k) { return sourceCounts[k] > 2; });
+        if (capViolations.length > 0) {
+            console.log('[briefing] SOURCE CAP VIOLATION: ' + JSON.stringify(sourceCounts));
+        }
+
         try {
             var supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
             await supabase.from('newsletter_cache').insert({ stories: briefingStories, mood: parsed.mood });
@@ -191,6 +223,8 @@ module.exports = async function handler(req, res) {
             poolSize: pool.length,
             guaranteedLocalInPool: guaranteedLocalCount,
             localPicked: briefingStories.filter(function(s) { return s.isLocal; }).length,
+            sourceCounts: sourceCounts,
+            capViolations: capViolations,
         });
 
     } catch(e) {
