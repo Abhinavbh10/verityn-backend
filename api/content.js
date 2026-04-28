@@ -103,6 +103,17 @@ const COUNTRY_FEEDS = {
     'https://www.euronews.com/tag/germany/feed',        // Euronews — Germany tag
     'https://www.politico.eu/feed/',                    // Politico EU
   ],
+  de_local: [
+    // German-language feeds — will be translated to English by newsletter pipeline
+    'https://www.tagesschau.de/index~rss2.xml',          // Tagesschau — main public TV news
+    'https://www.tagesspiegel.de/contentexport/feed/home', // Tagesspiegel — Berlin focused
+    'https://rss.sueddeutsche.de/rss/Topthemen',          // Süddeutsche Zeitung — top stories
+    'https://www.faz.net/rss/aktuell/',                    // FAZ — general
+    'https://www.handelsblatt.com/contentexport/feed/top', // Handelsblatt — business
+    'https://www.berliner-zeitung.de/feed.xml',            // Berliner Zeitung — Berlin local
+    'https://www.spiegel.de/schlagzeilen/index.rss',       // Spiegel — headlines (German)
+    'https://www.zeit.de/index',                            // Zeit Online
+  ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
     'https://www.smh.com.au/rss/feed.xml',
