@@ -1,20 +1,20 @@
 // api/briefing.js — Standalone briefing endpoint
 //
-// CHANGES (2026-04-28, second pass):
-// 1. HARD SOURCE CAP rule moved to top of prompt with explicit conflict
-//    resolution: if local rule and source cap conflict, find a local story
-//    from a different source. Hard ceiling at 2 picks per source.
-// 2. DEDUPLICATION rule added — when two articles describe the same news
-//    event, pick only one (prefer the local-language source).
-// 3. Why-line examples cleaned up (humanizer skill — em dashes are an AI
-//    tell, especially when Claude parrots the example wholesale).
-// 4. Source-count post-check logs violations for visibility.
+// CHANGES (2026-04-28, third pass):
+// - Added HARD RULE #3: RELEVANCE FLOOR. Every picked story must have a
+//   specific, concrete impact angle for someone living in {location}. No
+//   filler picks. No "this is interesting but doesn't affect you" stories.
+//   The pool has 25+ articles after capping; 7 with real angles is always
+//   findable.
+// - Removed the previous "fill remaining slots with strongest impact"
+//   wording that left a back door for weak picks.
 //
-// Earlier changes (still in effect):
-// - [DE-LOCAL] tag distinguishes translated guaranteed-local stories from
-//   [DE]-tagged stories from German publishers writing about world topics
+// Earlier changes still in effect:
+// - HARD SOURCE CAP (max 2 per source) and NO DUPLICATES
+// - [DE-LOCAL] vs [DE] vs [GB] tag glossary
 // - LOCAL NEWS RULE: 3 minimum, 4 ideal of 7
 // - Pool size 35
+// - Source-count audit in response payload
 
 const { createClient } = require('@supabase/supabase-js');
 
@@ -35,8 +35,6 @@ function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Light-weight source normaliser used only for the post-pick cap audit.
-// Real cleanSource lives in newsletter.js. This just folds variants for counting.
 function normaliseSource(s) {
     if (!s) return 'unknown';
     return s.toLowerCase()
@@ -112,9 +110,13 @@ module.exports = async function handler(req, res) {
 
             + 'HARD RULES (non-negotiable):\n\n'
 
-            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace it with a story from a different source. The cap is not optional. If the cap conflicts with the local quota, the cap wins. Find a local story from a different source.\n\n'
+            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace with a different source. Cap is not optional. If cap conflicts with the local quota, the cap wins.\n\n'
 
-            + '2. NO DUPLICATES. If two articles describe the SAME news event (same actors, same announcement, same incident), pick only ONE. Example: a Tagesspiegel piece "UAE leaves OPEC oil cartel" and an NYT piece "United Arab Emirates Says It Will Leave OPEC" are the same story. Pick the local-language source if available. Never include both. Two articles that share a topic but describe different events are fine.\n\n'
+            + '2. NO DUPLICATES. If two articles describe the SAME news event (same actors, same announcement, same incident), pick only ONE. Example: a Tagesspiegel piece "UAE leaves OPEC oil cartel" and an NYT piece "United Arab Emirates Says It Will Leave OPEC" are the same story. Pick the local-language source if available. Two articles that share a topic but describe different events are fine.\n\n'
+
+            + '3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for someone living in ' + locationStr + (professionStr ? ' working in ' + professionStr : '') + '. The angle can be: rent, taxes, savings, salary, commute, energy bills, grocery prices, jobs, the local job market, supply chains, banking exposure, currency, mortgages, kids, school, weekend plans, neighborhood, or a clear connection to one of the reader\'s stated interests (' + interestStr + ').\n'
+            + '   Before picking a story, ask: "Can I name a concrete way this affects this reader?" If the honest answer is no, DO NOT PICK IT. The pool has alternatives. There are no "filler" slots. There are no stories worth picking that you have to apologise for.\n'
+            + '   The angle does NOT have to be Berlin-specific. A Fed rate decision affects German Euribor mortgages. A Japan story affects German exports. A Russia story affects gas prices or migration. But the angle must be REAL. If you find yourself reaching, that is the signal to drop the story.\n\n'
 
             + 'LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
             + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
@@ -134,13 +136,12 @@ module.exports = async function handler(req, res) {
 
             + 'WHY-LINE TONE: Sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
             + 'WRONG: "Your understanding of democratic developments benefits from monitoring local governance"\n'
-            + 'WRONG: "Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
+            + 'WRONG: "This is mostly a political ethics story but worth knowing"\n'
             + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in a fixed rate before July."\n'
             + 'RIGHT: "Lufthansa fuel surcharges go up next month. If you fly for work, book Q3 trips now while fares are locked."\n\n'
 
             + 'PREFER articles marked HAS_IMAGE for the lead and medium slots. But do NOT skip a [' + localTag + '-LOCAL] story because it lacks an image. Local relevance beats image availability.\n'
-            + 'Cover at least 3 different topics across the picks.\n'
-            + 'If fewer than ' + localMinimum + ' truly local stories exist in the pool (count [' + localTag + '-LOCAL] entries plus any [' + localTag + ']/[' + foreignTag + '] whose headlines mention ' + locationStr + '), pick whatever truly local stories DO exist, then fill remaining slots with stories that have the strongest real impact on someone in ' + locationStr + '.\n\n'
+            + 'Cover at least 3 different topics across the picks.\n\n'
 
             + 'Respond ONLY with valid JSON, no markdown:\n'
             + '{"mood":"one sentence","stories":[{"index":1,"why":"2-sentence why-line"}]}\n\n'
@@ -156,7 +157,7 @@ module.exports = async function handler(req, res) {
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
                 max_tokens: 1400,
-                system: 'You are a news editor creating a personalised briefing. Plain, direct English. No predictions. No financial advice. Respond with JSON only.',
+                system: 'You are a news editor creating a personalised briefing. Plain, direct English. No predictions. No financial advice. Every story you pick must matter to this specific reader. Respond with JSON only.',
                 messages: [{ role: 'user', content: prompt }],
             }),
         });
@@ -197,9 +198,6 @@ module.exports = async function handler(req, res) {
             return res.status(500).json({ error: 'No stories mapped', indices: parsed.stories.map(function(s){return s.index;}), poolSize: pool.length });
         }
 
-        // Post-pick audit. The pool-stage cap in newsletter.js makes 3+ from
-        // one source rare, but log if it slips through (e.g. if same publisher
-        // appears under two different source strings).
         var sourceCounts = {};
         for (var bi = 0; bi < briefingStories.length; bi++) {
             var src = normaliseSource(briefingStories[bi].source);
