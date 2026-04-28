@@ -90,8 +90,9 @@ const COUNTRY_FEEDS = {
     'https://www.ft.com/rss/home',
   ],
   de: [
-    // Google News Germany (English) — actual German domestic stories
-    'https://news.google.com/rss?hl=en&gl=DE&ceid=DE:en',
+    // Google News search for Germany-specific English content
+    'https://news.google.com/rss/search?q=Germany+OR+Berlin+OR+Bundestag+OR+Scholz&hl=en&gl=DE&ceid=DE:en',
+    'https://news.google.com/rss/search?q=German+economy+OR+Deutsche+OR+Lufthansa+OR+ECB&hl=en&gl=DE&ceid=DE:en',
     // Germany-specific DW feeds (English)
     'https://rss.dw.com/xml/rss-en-ger',              // DW — Germany section
     'https://rss.dw.com/xml/rss-en-all',               // DW — general
