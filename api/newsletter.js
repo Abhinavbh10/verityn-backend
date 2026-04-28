@@ -1,4 +1,4 @@
-// api/newsletter.js — Verityn daily brief newsletter
+    // api/newsletter.js — Verityn daily brief newsletter
 // Actions: subscribe | unsubscribe | preview | test | send | feedback
 //
 // CHANGES (2026-04-28, third pass):
