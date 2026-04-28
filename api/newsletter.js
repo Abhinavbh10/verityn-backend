@@ -77,26 +77,46 @@ function cleanSource(raw) {
     return map[clean] || map[s] || s.replace(/[-_]/g, ' ');
 }
 
-function buildStoryCard(s, i) {
+function buildStoryCard(s, i, size) {
     var num = i + 1;
     var source = cleanSource(s.source);
     var headline = escapeHtml(s.headline);
     var why = escapeHtml(s.why || '');
     var url = s.sourceUrl || 'https://verityn.news';
 
+    // Quick hit — compact one-liner for stories 6-7
+    if (size === 'small') {
+        return '<tr><td style="padding-bottom:6px">'
+            + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:10px"><tr><td style="padding:12px 16px">'
+            + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            + '<td style="width:20px;vertical-align:top"><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
+            + '<td style="width:20px;height:20px;background-color:#C0392B;border-radius:10px;text-align:center;vertical-align:middle;font-size:11px;font-weight:900;color:#FFFFFF">' + num + '</td>'
+            + '</tr></table></td>'
+            + '<td style="padding-left:10px;vertical-align:top">'
+            + '<a href="' + url + '" style="font-family:Georgia,serif;font-size:14px;font-weight:700;line-height:1.3;color:#111111;text-decoration:none">' + headline + '</a>'
+            + '<div style="font-size:11px;color:#999999;margin-top:2px">' + source + '</div>'
+            + '</td></tr></table></td></tr></table></td></tr>';
+    }
+
+    // Lead story — bigger for story 1
+    var headlineSize = size === 'large' ? '20px' : '16px';
+    var whySize = size === 'large' ? '14px' : '13px';
+    var padding = size === 'large' ? '20px' : '16px';
+
     return '<tr><td style="padding-bottom:10px">'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:12px"><tr><td style="padding:16px">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:12px"><tr><td style="padding:' + padding + '">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="padding-bottom:8px"><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="width:20px;height:20px;background-color:#C0392B;border-radius:10px;text-align:center;vertical-align:middle;font-size:11px;font-weight:900;color:#FFFFFF">' + num + '</td>'
         + '<td style="padding-left:8px;font-size:11px;font-weight:600;color:#999999">' + source + '</td>'
         + '</tr></table></td></tr>'
-        + '<tr><td style="font-family:Georgia,serif;font-size:16px;font-weight:700;line-height:1.25;color:#111111;padding-bottom:8px">' + headline + '</td></tr>'
+        + '<tr><td style="font-family:Georgia,serif;font-size:' + headlineSize + ';font-weight:700;line-height:1.25;color:#111111;padding-bottom:8px">' + headline + '</td></tr>'
         + '<tr><td style="padding-bottom:10px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FBF4F3;border-radius:8px"><tr>'
-        + '<td style="padding:10px 12px;font-size:13px;color:#5C3A1E;line-height:1.45">' + why + '</td>'
+        + '<td style="padding:10px 12px;font-size:' + whySize + ';color:#5C3A1E;line-height:1.45">' + why + '</td>'
         + '</tr></table></td></tr>'
         + '<tr><td><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="background-color:#111111;border-radius:14px;padding:5px 14px"><a href="' + url + '" style="font-size:12px;font-weight:700;color:#FFFFFF;text-decoration:none">Read &#8250;</a></td>'
+        + (i === 0 ? '<td style="padding-left:10px;font-size:11px;color:#C0392B;font-weight:600">Know someone who\'d care? Forward this &#8250;</td>' : '')
         + '</tr></table></td></tr>'
         + '</table></td></tr></table></td></tr>';
 }
@@ -125,13 +145,19 @@ function buildSubjectLine(stories) {
     return hl;
 }
 
-function buildEmailHTML(stories, recipientName, email, opener) {
+function buildEmailHTML(stories, recipientName, email, extras) {
     var name = recipientName || 'there';
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     var hour = new Date().getUTCHours() + 2; // rough CET
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
 
+    var ext = extras || {};
+    var opener = ext.opener || '';
+    var theNumber = ext.the_number || '';
+    var watchingTomorrow = ext.watching_tomorrow || '';
+
+    // Opener block
     var openerHtml = '';
     if (opener) {
         openerHtml = '<tr><td style="padding:0 0 18px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
@@ -139,10 +165,69 @@ function buildEmailHTML(stories, recipientName, email, opener) {
             + '</table></td></tr>';
     }
 
+    // Story cards with visual hierarchy
     var storyCards = '';
     for (var i = 0; i < stories.length; i++) {
-        storyCards += buildStoryCard(stories[i], i);
+        var size = i === 0 ? 'large' : (i >= 5 ? 'small' : 'medium');
+        storyCards += buildStoryCard(stories[i], i, size);
     }
+
+    // Quick hits separator before compact stories
+    if (stories.length > 5) {
+        var quickHitSep = '<tr><td style="padding:6px 0 10px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+            + '<tr><td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B">Also today</td></tr>'
+            + '</table></td></tr>';
+        // Insert separator before story 6
+        var cards = storyCards.split('</td></tr>');
+        // We need to count cards properly — just add separator text before building
+    }
+
+    // Build cards manually with separator
+    storyCards = '';
+    for (var i2 = 0; i2 < stories.length; i2++) {
+        if (i2 === 5 && stories.length > 5) {
+            storyCards += '<tr><td style="padding:8px 0 10px">'
+                + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                + '<td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B">Quick hits</td>'
+                + '<td style="border-bottom:1px solid rgba(0,0,0,0.06);width:100%"></td>'
+                + '</tr></table></td></tr>';
+        }
+        var sz = i2 === 0 ? 'large' : (i2 >= 5 ? 'small' : 'medium');
+        storyCards += buildStoryCard(stories[i2], i2, sz);
+    }
+
+    // The Number section
+    var numberHtml = '';
+    if (theNumber) {
+        numberHtml = '<tr><td style="padding:4px 0 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:12px"><tr>'
+            + '<td style="padding:16px 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            + '<td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B;padding-bottom:6px">The number</td></tr>'
+            + '<tr><td style="font-family:Georgia,serif;font-size:14px;color:rgba(245,240,232,0.8);line-height:1.5">' + escapeHtml(theNumber) + '</td></tr>'
+            + '</table></td></tr></table></td></tr>';
+    }
+
+    // Watching tomorrow
+    var watchHtml = '';
+    if (watchingTomorrow) {
+        watchHtml = '<tr><td style="padding:0 0 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(192,57,43,0.05);border-radius:10px"><tr>'
+            + '<td style="padding:14px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            + '<td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B;padding-bottom:4px">Watching tomorrow</td></tr>'
+            + '<tr><td style="font-size:13px;color:#444444;line-height:1.5">' + escapeHtml(watchingTomorrow) + '</td></tr>'
+            + '</table></td></tr></table></td></tr>';
+    }
+
+    // Feedback poll
+    var feedbackBase = 'https://verityn-backend-ten.vercel.app/api/newsletter?action=feedback&email=' + encodeURIComponent(email || '') + '&rating=';
+    var feedbackHtml = '<tr><td style="padding:4px 0 16px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        + '<tr><td style="font-size:12px;color:#999999;padding-bottom:10px;text-align:center">How was today\'s briefing?</td></tr>'
+        + '<tr><td style="text-align:center">'
+        + '<a href="' + feedbackBase + 'good" style="text-decoration:none;font-size:20px;padding:0 12px">&#128077;</a>'
+        + '<a href="' + feedbackBase + 'ok" style="text-decoration:none;font-size:20px;padding:0 12px">&#129335;</a>'
+        + '<a href="' + feedbackBase + 'bad" style="text-decoration:none;font-size:20px;padding:0 12px">&#128078;</a>'
+        + '</td></tr></table></td></tr>';
+
+    // Sources count
+    var sourceCount = stories.length >= 7 ? '100+' : '50+';
 
     return '<!DOCTYPE html>'
         + '<html lang="en"><head>'
@@ -159,20 +244,25 @@ function buildEmailHTML(stories, recipientName, email, opener) {
         + '<td style="font-family:Georgia,serif;font-size:24px;font-weight:700;color:#C0392B;vertical-align:baseline">V<span style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:20px;font-weight:800;color:#111111">erityn</span></td>'
         + '<td style="text-align:right;font-size:11px;color:#999999;vertical-align:bottom">' + today + '</td>'
         + '</tr></table></td></tr>'
-        // Greeting
+        // Greeting + source count
         + '<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-family:Georgia,serif;font-size:16px;font-weight:700;color:#111111;padding-bottom:2px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
-        + '<tr><td style="font-size:12px;color:#999999">4 min &middot; 7 stories &middot; why they matter to you</td></tr>'
+        + '<tr><td style="font-size:12px;color:#999999">We read ' + sourceCount + ' articles this morning. You get 7.</td></tr>'
         + '</table></td></tr>'
         // Opener
         + openerHtml
         // Stories
         + storyCards
+        // The Number
+        + numberHtml
         // Caught up
-        + '<tr><td style="text-align:center;padding:8px 0 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + '<tr><td style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#111111;text-align:center;padding-bottom:4px">You\'re caught up.</td></tr>'
-        + '<tr><td style="font-size:11px;color:#999999;text-align:center;padding-bottom:14px">Forward this to someone who hates doomscrolling.</td></tr>'
-        + '</table></td></tr>'
+        + '<tr><td style="text-align:center;padding:8px 0 14px">'
+        + '<span style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#111111">You\'re caught up.</span>'
+        + '</td></tr>'
+        // Watching tomorrow
+        + watchHtml
+        // Feedback
+        + feedbackHtml
         // Footer
         + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:0 0 12px 12px">'
         + '<tr><td style="padding:20px 24px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
@@ -185,7 +275,7 @@ function buildEmailHTML(stories, recipientName, email, opener) {
 }
 
 async function generateOpener(stories) {
-    if (!stories || stories.length < 3) return '';
+    if (!stories || stories.length < 3) return { opener: '', theNumber: '', watchingTomorrow: '' };
 
     var headlines = stories.slice(0, 7).map(function(s, i) {
         return (i + 1) + '. ' + s.headline + (s.why ? ' — ' + s.why : '');
@@ -201,18 +291,19 @@ async function generateOpener(stories) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 150,
+                max_tokens: 300,
                 messages: [{
                     role: 'user',
-                    content: 'You write the daily opener for Verityn, a 7-story morning news briefing. Based on today\'s stories below, write exactly 2 sentences that tease what\'s in today\'s edition. Be direct, confident, slightly conversational. Not promotional. Not excited. Think sharp editor, not marketing copy. No emojis. No "let\'s dive in." No "here\'s what you need to know." Just tell them what happened and hint at why it matters.\n\nToday\'s stories:\n' + headlines + '\n\nRespond with ONLY the 2 sentences. Nothing else.',
+                    content: 'You write for Verityn, a 7-story morning news briefing. Based on today\'s stories, generate 3 things as JSON:\n\n1. "opener": Exactly 2 sentences that tease today\'s edition. Be direct, confident, slightly conversational. Not promotional. No emojis. No "let\'s dive in." Think sharp editor.\n\n2. "the_number": One striking number from today\'s stories with a one-line explanation. Format: "€2.6M — the amount Berlin\'s culture senator illegally distributed." Pick the most memorable stat.\n\n3. "watching_tomorrow": One sentence about what to watch for tomorrow based on what\'s developing. E.g. "Tomorrow: The Fed meets. We\'ll tell you what it means for your savings."\n\nToday\'s stories:\n' + headlines + '\n\nRespond with ONLY a JSON object with keys "opener", "the_number", "watching_tomorrow". No markdown, no backticks.',
                 }],
             }),
         });
         var data = await r.json();
         var text = (data.content && data.content[0] && data.content[0].text) || '';
-        return text.trim();
+        var clean = text.replace(/```json|```/g, '').trim();
+        return JSON.parse(clean);
     } catch (e) {
-        return '';
+        return { opener: '', the_number: '', watching_tomorrow: '' };
     }
 }
 
@@ -227,24 +318,35 @@ async function generateFreshBriefing(supabase, region) {
 
     var countries = regionCountries[region] || regionCountries.global;
     var BASE = 'https://verityn-backend-ten.vercel.app';
+    var sid = 'newsletter-' + Date.now();
 
-    // Step 1: Fetch articles from content endpoint for each country
+    // Step 1: Fetch articles from BOTH news (GNews) AND rss (local feeds)
     var allArticles = [];
     for (var c = 0; c < countries.length; c++) {
+        var country = countries[c];
+        // GNews
         try {
-            var r = await fetch(BASE + '/api/content?action=news&country=' + countries[c] + '&max=10&sessionId=newsletter-' + Date.now());
-            var d = await r.json();
-            if (d.articles && Array.isArray(d.articles)) {
-                allArticles = allArticles.concat(d.articles);
+            var r1 = await fetch(BASE + '/api/content?action=news&country=' + country + '&max=10&sessionId=' + sid);
+            var d1 = await r1.json();
+            if (d1.articles && Array.isArray(d1.articles)) {
+                allArticles = allArticles.concat(d1.articles);
+            }
+        } catch (e) { }
+        // RSS local feeds
+        try {
+            var r2 = await fetch(BASE + '/api/content?action=rss&country=' + country + '&max=10&sessionId=' + sid);
+            var d2 = await r2.json();
+            if (d2.articles && Array.isArray(d2.articles)) {
+                allArticles = allArticles.concat(d2.articles);
             }
         } catch (e) { }
     }
 
     if (allArticles.length < 3) return null;
 
-    // Step 2: Pass articles to briefing endpoint for curation + why-lines
+    // Step 2: Pass combined articles to briefing for curation + why-lines
     try {
-        var r2 = await fetch(BASE + '/api/briefing', {
+        var r3 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -256,9 +358,9 @@ async function generateFreshBriefing(supabase, region) {
                 sessionId: 'newsletter-' + region + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
-        var d2 = await r2.json();
-        if (d2.stories && d2.stories.length >= 3) {
-            return d2.stories;
+        var d3 = await r3.json();
+        if (d3.stories && d3.stories.length >= 3) {
+            return d3.stories;
         }
     } catch (e) { }
 
@@ -368,6 +470,22 @@ module.exports = async function handler(req, res) {
             return res.json({ ok: true, subscribed: true });
         }
 
+        // ── Feedback ──
+        if (action === 'feedback') {
+            var fbEmail = (req.query.email || '').trim();
+            var rating = (req.query.rating || '').trim();
+            if (fbEmail && rating) {
+                try {
+                    await supabase.from('newsletter_log').insert({
+                        sent_count: 0, failed_count: 0,
+                        subject: 'feedback:' + rating + ':' + fbEmail,
+                        story_count: 0,
+                    });
+                } catch (e) { }
+            }
+            return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#FAF8F4"><h2>Thanks for the feedback!</h2><p style="color:#777;margin-top:8px">See you tomorrow morning.</p></body></html>');
+        }
+
         // ── Unsubscribe ──
         if (action === 'unsubscribe') {
             var email2 = (req.query.email || (req.body && req.body.email) || '').trim().toLowerCase();
@@ -381,9 +499,9 @@ module.exports = async function handler(req, res) {
         if (action === 'preview') {
             var stories = await generateFreshBriefing(supabase, 'global');
             if (!stories) return res.json({ error: 'No briefing available yet.' });
-            var opener = await generateOpener(stories);
+            var extras = await generateOpener(stories);
             res.setHeader('Content-Type', 'text/html');
-            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', opener));
+            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
         }
 
         // ── Test ──
@@ -456,12 +574,12 @@ module.exports = async function handler(req, res) {
             // Cache today's global version for reference
             try { await supabase.from('newsletter_cache').insert({ stories: firstStories }); } catch (e) { }
 
-            // Generate opener per region
-            var regionalOpeners = {};
+            // Generate opener/number/watching per region
+            var regionalExtras = {};
             for (var oi = 0; oi < regions.length; oi++) {
                 var oRgn = regions[oi];
                 if (regionalStories[oRgn]) {
-                    regionalOpeners[oRgn] = await generateOpener(regionalStories[oRgn]);
+                    regionalExtras[oRgn] = await generateOpener(regionalStories[oRgn]);
                 }
             }
 
@@ -473,7 +591,7 @@ module.exports = async function handler(req, res) {
                 var region = regions[ri2];
                 var subs = groups[region];
                 var regionStories = regionalStories[region];
-                var regionOpener = regionalOpeners[region] || '';
+                var regionExtras = regionalExtras[region] || {};
                 if (!regionStories) continue;
 
                 for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
@@ -483,7 +601,7 @@ module.exports = async function handler(req, res) {
                             from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                             to: sub.email,
                             subject: subject2,
-                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email, regionOpener),
+                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email, regionExtras),
                         });
                         sent++;
                     } catch (e) {
