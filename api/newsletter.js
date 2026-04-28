@@ -82,9 +82,11 @@ function buildStoryCard(s, i, size) {
     var source = cleanSource(s.source);
     var headline = escapeHtml(s.headline);
     var why = escapeHtml(s.why || '');
+    var body = escapeHtml(s.body || '');
     var url = s.sourceUrl || 'https://verityn.news';
+    var image = s.image || '';
 
-    // Quick hit — compact one-liner for stories 6-7
+    // Quick hit — compact for stories 6-7
     if (size === 'small') {
         return '<tr><td style="padding-bottom:6px">'
             + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
@@ -95,26 +97,54 @@ function buildStoryCard(s, i, size) {
             + '</td></tr></table></td></tr>';
     }
 
-    // Lead story — bigger for story 1
     var headlineSize = size === 'large' ? '20px' : '16px';
     var whySize = size === 'large' ? '14px' : '13px';
+    var bodySize = size === 'large' ? '14px' : '13px';
     var cardBg = size === 'large' ? '#FAF8F4' : '#FAFAFA';
     var cardBorder = size === 'large' ? '2px solid rgba(192,57,43,0.15)' : '1px solid rgba(0,0,0,0.05)';
 
-    return '<tr><td style="padding-bottom:10px">'
+    // Image block (if available)
+    var imgHtml = '';
+    if (image && size === 'large') {
+        imgHtml = '<tr><td style="padding-bottom:12px"><img src="' + image + '" alt="" style="width:100%;border-radius:10px;display:block;max-height:200px;object-fit:cover" /></td></tr>';
+    } else if (image && size === 'medium') {
+        imgHtml = '<tr><td style="padding-bottom:10px"><img src="' + image + '" alt="" style="width:100%;border-radius:8px;display:block;max-height:160px;object-fit:cover" /></td></tr>';
+    }
+
+    // Body block (multi-source synthesis)
+    var bodyHtml = '';
+    if (body) {
+        bodyHtml = '<tr><td style="font-size:' + bodySize + ';color:#444444;line-height:1.6;padding-bottom:10px">' + body + '</td></tr>';
+    }
+
+    // Forward CTA only on lead story
+    var forwardHtml = '';
+    if (i === 0) {
+        forwardHtml = '<td style="padding-left:12px;font-size:11px;color:#C0392B;font-weight:600"><a href="mailto:?subject=You%20should%20read%20this&body=Check%20out%20Verityn%20-%20verityn.news" style="color:#C0392B;text-decoration:underline">Forward this</a></td>';
+    }
+
+    return '<tr><td style="padding-bottom:12px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:' + cardBg + ';border-radius:12px;border:' + cardBorder + '"><tr><td style="padding:18px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        // Badge + source
         + '<tr><td style="padding-bottom:10px"><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="width:24px;height:24px;background-color:#C0392B;border-radius:12px;text-align:center;vertical-align:middle;font-size:12px;font-weight:900;color:#FFFFFF">' + num + '</td>'
         + '<td style="padding-left:8px;font-size:11px;font-weight:600;color:#AAAAAA;letter-spacing:0.3px">' + source + '</td>'
         + '</tr></table></td></tr>'
+        // Image
+        + imgHtml
+        // Headline
         + '<tr><td style="font-family:Georgia,serif;font-size:' + headlineSize + ';font-weight:700;line-height:1.25;color:#111111;padding-bottom:10px">' + headline + '</td></tr>'
+        // Body
+        + bodyHtml
+        // Why-line
         + '<tr><td style="padding-bottom:12px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(192,57,43,0.05);border-left:3px solid #C0392B;border-radius:0 8px 8px 0"><tr>'
         + '<td style="padding:12px 14px"><span style="display:block;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#C0392B;margin-bottom:4px">Why this matters</span><span style="font-size:' + whySize + ';color:#5C3A1E;line-height:1.5">' + why + '</span></td>'
         + '</tr></table></td></tr>'
+        // Read + Forward
         + '<tr><td><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="background-color:#111111;border-radius:14px;padding:6px 16px"><a href="' + url + '" style="font-size:12px;font-weight:700;color:#FFFFFF;text-decoration:none">Read &#8250;</a></td>'
-        + (i === 0 ? '<td style="padding-left:12px;font-size:11px;color:#C0392B;font-weight:600">Know someone who\'d care? <span style="text-decoration:underline">Forward this</span> &#8250;</td>' : '')
+        + forwardHtml
         + '</tr></table></td></tr>'
         + '</table></td></tr></table></td></tr>';
 }
@@ -152,7 +182,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
 
     var ext = extras || {};
     var weather = ext.weather || '';
-    var theNumber = ext.the_number || '';
+    var didYouKnow = ext.did_you_know || '';
     var watching = ext.watching || '';
 
     // Story cards with visual hierarchy
@@ -169,13 +199,13 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         storyCards += buildStoryCard(stories[i2], i2, sz);
     }
 
-    // The Number — fun city fact
+    // Did you know — fun city fact
     var numberHtml = '';
-    if (theNumber) {
+    if (didYouKnow) {
         numberHtml = '<tr><td style="padding:6px 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:12px"><tr>'
             + '<td style="padding:18px 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-            + '<tr><td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B;padding-bottom:8px">&#127922; The number</td></tr>'
-            + '<tr><td style="font-family:Georgia,serif;font-size:15px;color:rgba(245,240,232,0.85);line-height:1.55">' + escapeHtml(theNumber) + '</td></tr>'
+            + '<tr><td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B;padding-bottom:8px">&#128161; Did you know?</td></tr>'
+            + '<tr><td style="font-family:Georgia,serif;font-size:15px;color:rgba(245,240,232,0.85);line-height:1.55">' + escapeHtml(didYouKnow) + '</td></tr>'
             + '</table></td></tr></table></td></tr>';
     }
 
@@ -293,7 +323,7 @@ async function getWeather(region) {
 }
 
 async function generateExtras(stories, region) {
-    if (!stories || stories.length < 3) return { the_number: '', watching: '' };
+    if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
 
     var headlines = stories.slice(0, 7).map(function(s, i) {
         return (i + 1) + '. ' + s.headline;
@@ -321,7 +351,7 @@ async function generateExtras(stories, region) {
                 max_tokens: 300,
                 messages: [{
                     role: 'user',
-                    content: 'Generate 2 things as JSON for a morning newsletter for readers in ' + city + ':\n\n1. "the_number": A fun, surprising, non-news fact about ' + city + '. Not from today\'s news. A cultural, historical, geographic, or quirky city/country fact. Format: "NUMBER — explanation." Examples: "42 — the number of lakes you can swim in within Berlin city limits." "1,247 — the number of bridges in Hamburg, more than Venice and Amsterdam combined." "23 — the number of official languages in India." Make it the kind of thing people share in group chats.\n\n2. "watching": One sentence about an ongoing story or scheduled event to watch this week. Based on these headlines:\n' + headlines + '\nDon\'t predict. Just say what\'s developing. E.g. "The ECB rate debate continues this week as inflation data drops Thursday."\n\nRespond with ONLY a JSON object with keys "the_number" and "watching". No markdown, no backticks.',
+                    content: 'Generate 2 things as JSON for a morning newsletter for readers in ' + city + ':\n\n1. "did_you_know": A fun, surprising, non-news fact about ' + city + '. Not from today\'s news. A cultural, historical, geographic, or quirky city/country fact. Format: "NUMBER — explanation." Examples: "42 — the number of lakes you can swim in within Berlin city limits." "1,247 — the number of bridges in Hamburg, more than Venice and Amsterdam combined." "23 — the official languages in India, not counting the 100+ unofficial ones." Make it the kind of thing people screenshot and send to friends. Avoid anything that sounds like a textbook. Pick something weird, delightful, or mildly absurd.\n\n2. "watching": One sentence about an ongoing story or scheduled event to watch this week. Based on these headlines:\n' + headlines + '\nDon\'t predict. Just say what\'s developing. E.g. "The ECB rate debate continues this week as inflation data drops Thursday."\n\nRespond with ONLY a JSON object with keys "did_you_know" and "watching". No markdown, no backticks.',
                 }],
             }),
         });
@@ -330,7 +360,7 @@ async function generateExtras(stories, region) {
         var clean = text.replace(/```json|```/g, '').trim();
         return JSON.parse(clean);
     } catch (e) {
-        return { the_number: '', watching: '' };
+        return { did_you_know: '', watching: '' };
     }
 }
 
@@ -394,29 +424,25 @@ async function generateFreshBriefing(supabase, region) {
     return null;
 }
 
-async function getRegionalWhyLines(stories, region) {
+async function enrichStories(stories, region) {
     if (!stories || !stories.length) return stories;
-    if (region === 'global') return stories;
 
     var regionContext = {
-        eu: 'a professional living in Europe (Germany/EU)',
-        us: 'a professional living in the United States',
-        india: 'a professional living in India',
+        eu: 'a working professional in Berlin, Germany',
+        us: 'a working professional in New York, United States',
+        india: 'a working professional in Mumbai, India',
+        global: 'a working professional',
+        asia: 'a working professional in Asia',
     };
 
-    var regionDetails = {
-        eu: 'Reference ECB policy, euro, EU regulations, housing markets, job markets, Schengen where relevant.',
-        us: 'Reference Fed policy, US dollar, 401k, healthcare costs, housing, job markets where relevant.',
-        india: 'Reference RBI policy, rupee, EMIs, stock markets, IT sector, startup ecosystem where relevant.',
-    };
+    var context = regionContext[region] || regionContext.global;
 
-    var context = regionContext[region];
-    var details = regionDetails[region];
-    if (!context) return stories;
-
-    var headlines = stories.map(function(s, i) {
-        return (i + 1) + '. ' + s.headline;
-    }).join('\n');
+    var storyData = stories.map(function(s, i) {
+        return (i + 1) + '. HEADLINE: ' + s.headline
+            + '\n   SOURCE: ' + (s.source || 'Unknown')
+            + '\n   SUMMARY: ' + (s.summary || s.description || 'No summary available')
+            + '\n   IMAGE: ' + (s.image || 'none');
+    }).join('\n\n');
 
     try {
         var r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -428,26 +454,41 @@ async function getRegionalWhyLines(stories, region) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 1200,
+                max_tokens: 2500,
                 messages: [{
                     role: 'user',
-                    content: 'You write why-lines for Verityn, a daily news briefing. A why-line is 1-2 sentences that tell the reader why a news story matters to THEM personally.\n\nWrite for ' + context + '. ' + details + '\n\nTone rules:\n- Sound like a sharp colleague explaining news over coffee, not a textbook\n- Be specific: use numbers, timeframes, concrete actions when possible\n- Say "your" not "the reader\'s"\n- Avoid hedging words: "could", "might", "may potentially"\n- Lead with the impact, not the event\n- No emojis, no exclamation marks\n- Wrong: "This policy may affect European housing markets"\n- Right: "That rate hold hits your mortgage in about 6 weeks. If you\'re on variable, this is your window to lock in fixed before July."\n\nHeadlines:\n' + headlines + '\n\nRespond with ONLY a JSON array of strings, one why-line per headline, in the same order. No markdown, no backticks, just the JSON array.',
+                    content: 'You write for Verityn, a morning news email for ' + context + '. For each story below, write two things:\n\n'
+                        + '1. "body": A 2-3 sentence news paragraph that synthesizes the story. Cite the source name naturally inline, e.g. "According to Reuters..." or "...the Guardian reports." If possible, mention a second angle or source. Be factual and specific. Use numbers, names, dates.\n\n'
+                        + '2. "why": A 1-2 sentence why-line explaining why this specific story affects the reader personally. The reader is ' + context + '.\n\n'
+                        + 'WHY-LINE RULES (critical):\n'
+                        + '- Sound like a sharp friend telling you something over coffee, not a textbook\n'
+                        + '- Say "your" — make it about THEIR life: their rent, their commute, their salary, their grocery bill, their kids school, their taxes\n'
+                        + '- Be specific: use timeframes ("by July"), amounts ("8-12%"), actions ("check your fixed rate options")\n'
+                        + '- NEVER use: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because"\n'
+                        + '- NEVER write generic lines like "Your understanding of X benefits from Y" or "This development affects the broader landscape"\n'
+                        + '- WRONG: "This policy may affect European housing markets and consumer pricing"\n'
+                        + '- RIGHT: "That rate hold hits your mortgage in about 6 weeks. If you are on variable, this is your window to lock in fixed before July."\n'
+                        + '- WRONG: "Your awareness of democratic developments in Palestinian territories benefits from understanding local governance"\n'
+                        + '- RIGHT: "Peace talks just got more complicated. If they stall, expect oil prices to creep up again, which you will feel at the pump by August."\n\n'
+                        + 'Stories:\n' + storyData + '\n\n'
+                        + 'Respond with ONLY a JSON array of objects, each with "body" and "why" keys. Same order as input. No markdown, no backticks.',
                 }],
             }),
         });
         var data = await r.json();
         var text = (data.content && data.content[0] && data.content[0].text) || '';
         var clean = text.replace(/```json|```/g, '').trim();
-        var whyLines = JSON.parse(clean);
+        var enriched = JSON.parse(clean);
 
-        if (Array.isArray(whyLines) && whyLines.length === stories.length) {
+        if (Array.isArray(enriched) && enriched.length === stories.length) {
             return stories.map(function(s, i) {
-                return Object.assign({}, s, { why: whyLines[i] });
+                return Object.assign({}, s, {
+                    body: enriched[i].body || '',
+                    why: enriched[i].why || s.why || '',
+                });
             });
         }
-    } catch (e) {
-        // Fall back to original why-lines
-    }
+    } catch (e) { }
     return stories;
 }
 
@@ -592,7 +633,7 @@ module.exports = async function handler(req, res) {
 
                 // Apply regional why-lines for eu/us/india
                 if (rgn !== 'global' && rgn !== 'asia') {
-                    regionalStories[rgn] = await getRegionalWhyLines(stories, rgn);
+                    regionalStories[rgn] = await enrichStories(stories, rgn);
                 } else {
                     regionalStories[rgn] = stories;
                 }
