@@ -519,11 +519,11 @@ async function enrichStories(stories, region) {
     if (!stories || !stories.length) return stories;
 
     var regionContext = {
-        eu: 'a working professional in Berlin, Germany',
-        us: 'a working professional in New York, United States',
-        india: 'a working professional in Mumbai, India',
-        global: 'a working professional',
-        asia: 'a working professional in Asia',
+        eu: 'someone who lives and works in Berlin, Germany. They care about: their rent (Miete), their energy bills (Strom/Gas), their grocery prices, their commute (BVG, S-Bahn, U-Bahn), their health insurance (Krankenkasse), their kids\' school or Kita, their weekend plans, their neighborhood (Kiez), their taxes (Steuererklärung), their savings at Sparkasse or Deutsche Bank. They may or may not own stocks. They may or may not fly for work. Don\'t assume wealth or corporate lifestyle. Assume a normal person living a normal life in Berlin.',
+        us: 'someone who lives and works in New York City. They care about: their rent, their subway commute (MTA), their grocery bill, their health insurance premiums, their 401k, their student loans, their Con Ed electricity bill, their kids\' school, their weekend plans, their neighborhood. Don\'t assume Wall Street or tech. Assume a normal person living a normal life in NYC.',
+        india: 'someone who lives and works in Mumbai, India. They care about: their rent, their EMI payments, their auto/Uber commute, their grocery prices (dal, atta, vegetables), their kids\' school fees, their LIC premiums, their FD rates, their local train commute, their weekend plans, their society maintenance. Don\'t assume IT professional or startup founder. Assume a normal person living a normal life in Mumbai.',
+        global: 'someone who reads international news and wants to understand how it affects daily life',
+        asia: 'someone who lives in Asia and wants to understand how news affects their daily life',
     };
 
     var context = regionContext[region] || regionContext.global;
@@ -548,19 +548,22 @@ async function enrichStories(stories, region) {
                 max_tokens: 2500,
                 messages: [{
                     role: 'user',
-                    content: 'You write for Verityn, a morning news email for ' + context + '. For each story below, write two things:\n\n'
+                    content: 'You write for Verityn, a morning news email for ' + context + '\n\nFor each story below, write two things:\n\n'
                         + '1. "body": A 2-3 sentence news paragraph that synthesizes the story. Cite the source name naturally inline, e.g. "According to Reuters..." or "...the Guardian reports." If possible, mention a second angle or source. Be factual and specific. Use numbers, names, dates.\n\n'
-                        + '2. "why": A 1-2 sentence why-line explaining why this specific story affects the reader personally. The reader is ' + context + '.\n\n'
+                        + '2. "why": A 1-2 sentence why-line explaining how this story touches the reader\'s daily life.\n\n'
                         + 'WHY-LINE RULES (critical):\n'
                         + '- Sound like a sharp friend telling you something over coffee, not a textbook\n'
-                        + '- Say "your" — make it about THEIR life: their rent, their commute, their salary, their grocery bill, their kids school, their taxes\n'
-                        + '- Be specific: use timeframes ("by July"), amounts ("8-12%"), actions ("check your fixed rate options")\n'
-                        + '- NEVER use: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because"\n'
+                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, kids, weekend plans, neighborhood\n'
+                        + '- Do NOT assume the reader owns stocks, has a corporate travel budget, works in finance, or has defense investments\n'
+                        + '- Be specific: use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass")\n'
+                        + '- If a story GENUINELY does not affect daily life, be honest. Say something like "This one is more background than action — but worth knowing if you follow [topic]." That is better than inventing fake relevance.\n'
+                        + '- NEVER use: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments"\n'
                         + '- NEVER write generic lines like "Your understanding of X benefits from Y" or "This development affects the broader landscape"\n'
-                        + '- WRONG: "This policy may affect European housing markets and consumer pricing"\n'
-                        + '- RIGHT: "That rate hold hits your mortgage in about 6 weeks. If you are on variable, this is your window to lock in fixed before July."\n'
-                        + '- WRONG: "Your awareness of democratic developments in Palestinian territories benefits from understanding local governance"\n'
-                        + '- RIGHT: "Peace talks just got more complicated. If they stall, expect oil prices to creep up again, which you will feel at the pump by August."\n\n'
+                        + '- WRONG: "Your defense contractor stocks and NATO-related investments face volatility"\n'
+                        + '- WRONG: "Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
+                        + '- RIGHT: "Fill up your car this week. Berlin pump prices follow Brent crude with a 3-week delay — expect 8-10 cents more per liter by mid-May."\n'
+                        + '- RIGHT: "Your Sparkasse savings rate stays flat for now. If you are waiting to lock a Baufinanzierung, rates won\'t move before September."\n'
+                        + '- RIGHT: "No direct impact on your daily life, but worth knowing — Germany\'s digital regulation debate picks up again in the Bundestag this June."\n\n'
                         + 'Stories:\n' + storyData + '\n\n'
                         + 'Respond with ONLY a JSON array of objects, each with "body" and "why" keys. Same order as input. No markdown, no backticks.',
                 }],
