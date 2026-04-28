@@ -160,22 +160,38 @@ function buildEmailHTML(stories, recipientName, email) {
 }
 
 async function generateFreshBriefing(supabase, region) {
-    // Country sources weighted by region
     var regionCountries = {
-        eu: ['gb', 'de', 'fr', 'us', 'in'],
-        us: ['us', 'gb', 'de', 'in'],
-        india: ['in', 'gb', 'us', 'de'],
-        asia: ['in', 'us', 'gb', 'de'],
+        eu: ['gb', 'de'],
+        us: ['us', 'gb'],
+        india: ['in', 'gb'],
+        asia: ['in', 'us'],
         global: ['us', 'gb', 'de', 'in'],
     };
 
     var countries = regionCountries[region] || regionCountries.global;
+    var BASE = 'https://verityn-backend-ten.vercel.app';
 
+    // Step 1: Fetch articles from content endpoint for each country
+    var allArticles = [];
+    for (var c = 0; c < countries.length; c++) {
+        try {
+            var r = await fetch(BASE + '/api/content?action=news&country=' + countries[c] + '&max=10&sessionId=newsletter-' + Date.now());
+            var d = await r.json();
+            if (d.articles && Array.isArray(d.articles)) {
+                allArticles = allArticles.concat(d.articles);
+            }
+        } catch (e) { }
+    }
+
+    if (allArticles.length < 3) return null;
+
+    // Step 2: Pass articles to briefing endpoint for curation + why-lines
     try {
-        var r = await fetch('https://verityn-backend-ten.vercel.app/api/briefing', {
+        var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                articles: allArticles,
                 countries: countries,
                 interests: ['world', 'finance', 'tech', 'politics'],
                 location: region === 'india' ? 'in' : region === 'us' ? 'us' : 'de',
@@ -183,9 +199,9 @@ async function generateFreshBriefing(supabase, region) {
                 sessionId: 'newsletter-' + region + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
-        var d = await r.json();
-        if (d.stories && d.stories.length >= 3) {
-            return d.stories;
+        var d2 = await r2.json();
+        if (d2.stories && d2.stories.length >= 3) {
+            return d2.stories;
         }
     } catch (e) { }
 
