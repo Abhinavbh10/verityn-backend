@@ -3,6 +3,9 @@
   "functions": {
     "api/newsletter.js": {
       "maxDuration": 60
+    },
+    "api/briefing.js": {
+      "maxDuration": 60
     }
   },
   "crons": [
