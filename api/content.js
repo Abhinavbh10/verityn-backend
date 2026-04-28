@@ -2,6 +2,14 @@
 // FILE: api/content.js
 // REPLACES: news.js, rss.js, search.js, image.js
 // ROUTE via: ?action=news | rss | search | image
+//
+// CHANGE (2026-04-28): RSS feeds whose country key ends in
+// `_local` (e.g. `de_local`) bypass the English-only filter.
+// They are intended to be translated downstream by newsletter.js.
+// Without this bypass, German headlines containing 2+ common
+// words (der/die/das/und/ist/...) were being dropped at line ~409
+// before they ever reached the translator. Result: zero local
+// German news in the daily newsletter.
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
@@ -47,9 +55,11 @@ function cleanText(text) {
 }
 
 // ── RSS feeds per country ─────────────────────────────────────
-// Germany: English-only sources (DW English, The Local Germany, Spiegel International,
-// Euronews, DW Business English, Politico Europe). Dropped German-language feeds:
-// handelsblatt.com, faz.net.
+// `de` — English-only feeds (DW English, The Local, Spiegel International,
+//        Euronews, Politico EU, Google News English-in-Germany search)
+// `de_local` — German-language feeds (translated downstream by newsletter.js).
+//        Bypasses isEnglishHeadline on purpose. Country keys ending `_local`
+//        are reserved for this pattern.
 const COUNTRY_FEEDS = {
   in: [
     // Google News India (English) — top Indian stories
@@ -104,7 +114,8 @@ const COUNTRY_FEEDS = {
     'https://www.politico.eu/feed/',                    // Politico EU
   ],
   de_local: [
-    // German-language feeds — will be translated to English by newsletter pipeline
+    // German-language feeds — will be translated to English by newsletter pipeline.
+    // BYPASSES isEnglishHeadline filter (see RSS handler below).
     'https://www.tagesschau.de/index~rss2.xml',          // Tagesschau — main public TV news
     'https://www.tagesspiegel.de/contentexport/feed/home', // Tagesspiegel — Berlin focused
     'https://rss.sueddeutsche.de/rss/Topthemen',          // Süddeutsche Zeitung — top stories
@@ -139,13 +150,6 @@ const COUNTRY_FEEDS = {
     'https://asia.nikkei.com/rss/feed/nar',
     'https://japannews.yomiuri.co.jp/feed/',
   ],
-  ca: ['https://www.theglobeandmail.com/arc/outboundfeeds/rss/'],
-  fr: [
-    'https://www.france24.com/en/rss',
-    'https://www.euronews.com/rss?format=mrss&level=theme&name=news',
-  ],
-  za: ['https://www.dailymaverick.co.za/feed/'],
-  br: ['https://www.bbc.com/portuguese/topics/c2lef194ex8t'],
 };
 
 const BAD_SOURCES = ['news', 'unknown', 'feedburner', ''];
@@ -363,11 +367,15 @@ module.exports = async function handler(req, res) {
     const { country = 'us', max = '15' } = req.query;
     const feeds = COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
 
+    // Country keys ending in `_local` are local-language feeds. Skip the
+    // English-only filter for these — they're translated downstream.
+    const isLocalLanguageFeed = /_local$/.test(country);
+
     try {
       const results = await Promise.all(
         feeds.map(url =>
-          fetch(url, { 
-            headers: { 
+          fetch(url, {
+            headers: {
               'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
               'Accept': 'application/rss+xml, application/xml, text/xml, */*',
               'Accept-Language': 'en-US,en;q=0.9',
@@ -405,8 +413,11 @@ module.exports = async function handler(req, res) {
           if (!title || title.length < 15) continue;
           if (/<[a-z]/i.test(title)) continue;
           if (BAD_SOURCES.includes(sourceName.toLowerCase().trim())) continue;
-          // English-only defence — drop non-English headlines even if feed is supposed to be English
-          if (!isEnglishHeadline(title)) continue;
+          // English-only defence — BUT skip for `_local` feeds (translated downstream).
+          // Without this bypass, Tagesschau/FAZ/SZ headlines like
+          // "Die Koalition streitet über das Bürgergeld" would get dropped here
+          // (2+ German marker hits) and never reach the translator.
+          if (!isLocalLanguageFeed && !isEnglishHeadline(title)) continue;
           const pub = pubDate ? new Date(pubDate) : new Date();
           if (isNaN(pub.getTime())) continue;
           const ageHours = (Date.now() - pub) / 3600000;
@@ -480,8 +491,8 @@ module.exports = async function handler(req, res) {
       // Fetch all feeds in parallel
       const feedResults = await Promise.all(
         allFeeds.map(url =>
-          fetch(url, { 
-            headers: { 
+          fetch(url, {
+            headers: {
               'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
               'Accept': 'application/rss+xml, application/xml, text/xml, */*',
               'Accept-Language': 'en-US,en;q=0.9',
