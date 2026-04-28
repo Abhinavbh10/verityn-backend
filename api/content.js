@@ -52,6 +52,8 @@ function cleanText(text) {
 // handelsblatt.com, faz.net.
 const COUNTRY_FEEDS = {
   in: [
+    // Google News India (English) — top Indian stories
+    'https://news.google.com/rss?hl=en&gl=IN&ceid=IN:en',
     // General news
     'https://indianexpress.com/feed/',
     'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
@@ -71,6 +73,7 @@ const COUNTRY_FEEDS = {
     'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml',
   ],
   us: [
+    'https://news.google.com/rss?hl=en&gl=US&ceid=US:en',
     'https://feeds.npr.org/1001/rss.xml',
     'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
     'https://feeds.washingtonpost.com/rss/national',
@@ -78,6 +81,7 @@ const COUNTRY_FEEDS = {
     'https://feeds.apnews.com/rss/apf-topnews',
   ],
   gb: [
+    'https://news.google.com/rss?hl=en&gl=GB&ceid=GB:en',
     'https://feeds.bbci.co.uk/news/rss.xml',
     'https://www.theguardian.com/world/rss',
     'https://feeds.reuters.com/reuters/UKTopNews',
@@ -86,8 +90,10 @@ const COUNTRY_FEEDS = {
     'https://www.ft.com/rss/home',
   ],
   de: [
+    // Google News Germany (English) — actual German domestic stories
+    'https://news.google.com/rss?hl=en&gl=DE&ceid=DE:en',
     // Germany-specific DW feeds (English)
-    'https://rss.dw.com/xml/rss-en-ger',              // DW — Germany section specifically
+    'https://rss.dw.com/xml/rss-en-ger',              // DW — Germany section
     'https://rss.dw.com/xml/rss-en-all',               // DW — general
     'https://rss.dw.com/xml/rss-en-bus',               // DW — business
     'https://rss.dw.com/xml/rss-en-eu',                // DW — Europe
@@ -95,7 +101,6 @@ const COUNTRY_FEEDS = {
     'https://www.spiegel.de/international/index.rss',   // Spiegel International
     'https://www.euronews.com/tag/germany/feed',        // Euronews — Germany tag
     'https://www.politico.eu/feed/',                    // Politico EU
-    'https://www.reuters.com/world/europe/rss',         // Reuters Europe
   ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
