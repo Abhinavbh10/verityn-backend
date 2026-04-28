@@ -159,35 +159,32 @@ function buildEmailHTML(stories, recipientName, email) {
         + '</table></td></tr></table></body></html>';
 }
 
-async function getLatestBriefing(supabase) {
-    try {
-        var result = await supabase
-            .from('newsletter_cache')
-            .select('stories, created_at')
-            .order('created_at', { ascending: false })
-            .limit(1);
+async function generateFreshBriefing(supabase, region) {
+    // Country sources weighted by region
+    var regionCountries = {
+        eu: ['gb', 'de', 'fr', 'us', 'in'],
+        us: ['us', 'gb', 'de', 'in'],
+        india: ['in', 'gb', 'us', 'de'],
+        asia: ['in', 'us', 'gb', 'de'],
+        global: ['us', 'gb', 'de', 'in'],
+    };
 
-        if (result.data && result.data.length > 0 && result.data[0].stories && result.data[0].stories.length >= 3) {
-            return result.data[0].stories;
-        }
-    } catch (e) { }
+    var countries = regionCountries[region] || regionCountries.global;
 
-    // Generate fresh briefing if cache empty
     try {
         var r = await fetch('https://verityn-backend-ten.vercel.app/api/briefing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                countries: ['us', 'gb', 'de', 'in'],
+                countries: countries,
                 interests: ['world', 'finance', 'tech', 'politics'],
-                location: 'de',
+                location: region === 'india' ? 'in' : region === 'us' ? 'us' : 'de',
                 profession: 'professional',
-                sessionId: 'newsletter',
+                sessionId: 'newsletter-' + region + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
         var d = await r.json();
         if (d.stories && d.stories.length >= 3) {
-            try { await supabase.from('newsletter_cache').insert({ stories: d.stories }); } catch (e) { }
             return d.stories;
         }
     } catch (e) { }
@@ -302,7 +299,7 @@ module.exports = async function handler(req, res) {
 
         // ── Preview ──
         if (action === 'preview') {
-            var stories = await getLatestBriefing(supabase);
+            var stories = await generateFreshBriefing(supabase, 'global');
             if (!stories) return res.json({ error: 'No briefing available yet.' });
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com'));
@@ -314,7 +311,7 @@ module.exports = async function handler(req, res) {
             if (!testEmail) return res.json({ error: 'Add &email=your@email.com' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
-            var stories2 = await getLatestBriefing(supabase);
+            var stories2 = await generateFreshBriefing(supabase, 'global');
             if (!stories2) return res.json({ error: 'No briefing available yet.' });
 
             var transporter = getTransporter();
@@ -339,9 +336,6 @@ module.exports = async function handler(req, res) {
             if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Set NEWSLETTER_ENABLED=true' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
-            var stories3 = await getLatestBriefing(supabase);
-            if (!stories3) return res.json({ error: 'No briefing available' });
-
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
@@ -353,19 +347,34 @@ module.exports = async function handler(req, res) {
                 groups[reg].push(subscribers[g]);
             }
 
-            // Generate regional why-lines (parallel for speed)
+            // Generate fresh briefing per region (country-weighted + regional why-lines)
             var regions = Object.keys(groups);
             var regionalStories = {};
+            var firstStories = null;
+
             for (var ri = 0; ri < regions.length; ri++) {
                 var rgn = regions[ri];
-                if (rgn === 'global' || rgn === 'asia') {
-                    regionalStories[rgn] = stories3;
+
+                // Generate fresh briefing with region-weighted country sources
+                var stories = await generateFreshBriefing(supabase, rgn);
+                if (!stories) continue;
+
+                if (!firstStories) firstStories = stories;
+
+                // Apply regional why-lines for eu/us/india
+                if (rgn !== 'global' && rgn !== 'asia') {
+                    regionalStories[rgn] = await getRegionalWhyLines(stories, rgn);
                 } else {
-                    regionalStories[rgn] = await getRegionalWhyLines(stories3, rgn);
+                    regionalStories[rgn] = stories;
                 }
             }
 
-            var subject2 = buildSubjectLine(stories3);
+            if (!firstStories) return res.json({ error: 'No briefing available' });
+
+            // Cache today's global version for reference
+            try { await supabase.from('newsletter_cache').insert({ stories: firstStories }); } catch (e) { }
+
+            var subject2 = buildSubjectLine(firstStories);
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
 
@@ -373,6 +382,7 @@ module.exports = async function handler(req, res) {
                 var region = regions[ri2];
                 var subs = groups[region];
                 var regionStories = regionalStories[region];
+                if (!regionStories) continue;
 
                 for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
                     var sub = subs[i];
@@ -397,7 +407,7 @@ module.exports = async function handler(req, res) {
                 await supabase.from('newsletter_log').insert({
                     sent_count: sent, failed_count: failed,
                     errors: errors.length > 0 ? errors : null,
-                    subject: subject2, story_count: stories3.length,
+                    subject: subject2, story_count: firstStories.length,
                 });
             } catch (e) { }
 
