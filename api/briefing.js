@@ -64,17 +64,23 @@ module.exports = async function handler(req, res) {
         var interestStr = (interests.length ? interests.join(', ') : 'world news');
 
         var headlinesList = pool.map(function(a, i) {
-            return (i+1) + '. ' + a.headline + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
+            return (i+1) + '. [' + (a.country || '??') + '] ' + a.headline + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
         }).join('\n');
 
         var prompt = 'Pick exactly ' + pickCount + ' stories for a '
             + (professionStr || 'professional') + ' in ' + locationStr
             + ', interested in ' + interestStr + '.\n\n'
+            + 'CRITICAL RULE: At least 2 stories MUST be from or directly about ' + locationStr
+            + '. Look for articles with country code ' + location.toUpperCase()
+            + ' or headlines mentioning ' + locationStr + '. If the pool has local stories, pick them. A story about German politics, German economy, or German society counts. Do NOT fill all 7 slots with US or global wire stories when local stories exist in the pool.\n\n'
             + 'For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:\n'
             + 'Sentence 1: The specific impact on YOU living in ' + locationStr
             + (professionStr ? ' working in ' + professionStr : '')
-            + '. Use "your" not "this affects." NEVER restate the headline.\n'
-            + 'Sentence 2: What YOU should watch or do next.\n\n'
+            + '. Use "your" not "this affects." NEVER restate the headline. Be specific about YOUR rent, YOUR commute, YOUR taxes, YOUR grocery bill, YOUR salary.\n'
+            + 'Sentence 2: What YOU should watch or do next. Give a concrete action or timeframe.\n\n'
+            + 'WHY-LINE TONE: Write like a sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
+            + 'WRONG: "Your understanding of democratic developments benefits from monitoring local governance"\n'
+            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in fixed before July."\n\n'
             + 'PREFER articles marked HAS_IMAGE.\n'
             + 'Cover different topics. Max 2 stories from the same source.\n\n'
             + 'Respond ONLY with valid JSON, no markdown:\n'
