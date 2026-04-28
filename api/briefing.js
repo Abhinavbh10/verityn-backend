@@ -39,7 +39,7 @@ module.exports = async function handler(req, res) {
         if (!Array.isArray(countries)) countries = [countries];
 
         // Truncate and clean
-        var pool = articles.slice(0, 50).map(function(a, i) {
+        var pool = articles.slice(0, 30).map(function(a, i) {
             return {
                 headline: (a.headline || '').slice(0, 200),
                 source: (a.source || '').slice(0, 50),
@@ -64,7 +64,7 @@ module.exports = async function handler(req, res) {
         var interestStr = (interests.length ? interests.join(', ') : 'world news');
 
         var headlinesList = pool.map(function(a, i) {
-            var summary = a.summary ? ' — ' + a.summary.slice(0, 80) : '';
+            var summary = a.summary ? ' — ' + a.summary.slice(0, 50) : '';
             return (i+1) + '. [' + (a.country || '??') + '] ' + a.headline + summary + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
         }).join('\n');
 
@@ -114,10 +114,17 @@ module.exports = async function handler(req, res) {
         }
 
         var rawText = (data.content && data.content[0] && data.content[0].text) || '';
+        var stopReason = data.stop_reason || 'unknown';
+
+        // If response was cut off, increase tokens next time
+        if (stopReason === 'max_tokens') {
+            return res.status(500).json({ error: 'Response truncated — Claude ran out of tokens', stop_reason: stopReason, raw: rawText.slice(-200) });
+        }
+
         var parsed = parseJSON(rawText);
 
         if (!parsed || !parsed.stories || parsed.stories.length === 0) {
-            return res.status(500).json({ error: 'Parse failed', storiesFound: parsed ? (parsed.stories ? parsed.stories.length : 0) : 0, raw: rawText.slice(0, 300) });
+            return res.status(500).json({ error: 'Parse failed', stop_reason: stopReason, storiesFound: parsed ? (parsed.stories ? parsed.stories.length : 0) : 0, raw: rawText.slice(0, 500) });
         }
 
         // Map why-lines back to articles
