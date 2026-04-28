@@ -174,14 +174,14 @@ function buildSubjectLine(stories) {
 }
 
 function buildEmailHTML(stories, recipientName, email, extras) {
-    var name = recipientName || 'there';
+    var name = cleanName(recipientName);
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     var hour = new Date().getUTCHours() + 2;
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
 
     var ext = extras || {};
-    var weather = ext.weather || '';
+    var weather = ext.weather || { line1: '', details: '' };
     var didYouKnow = ext.did_you_know || '';
     var watching = ext.watching || '';
 
@@ -250,7 +250,8 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         // ── Greeting + Weather ──
         + '<tr><td style="background-color:#FFFFFF;padding:20px 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-family:Georgia,serif;font-size:20px;font-weight:700;color:#111111;padding-bottom:6px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
-        + (weather ? '<tr><td style="font-size:14px;color:#666666;padding-bottom:6px">' + weather + '</td></tr>' : '')
+        + (weather.line1 ? '<tr><td style="font-size:15px;color:#444444;padding-bottom:4px">' + weather.line1 + '</td></tr>' : '')
+        + (weather.details ? '<tr><td style="font-size:12px;color:#999999;padding-bottom:6px">' + weather.details + '</td></tr>' : '')
         + '<tr><td style="font-size:12px;color:#AAAAAA">We read 100+ articles this morning. You get 7.</td></tr>'
         + '</table></td></tr>'
 
@@ -301,7 +302,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
 }
 
 async function getWeather(region) {
-    // Open-Meteo free API, no key needed
     var coords = {
         eu: { lat: 52.52, lon: 13.41, city: 'Berlin' },
         us: { lat: 40.71, lon: -74.01, city: 'New York' },
@@ -311,15 +311,41 @@ async function getWeather(region) {
     };
     var c = coords[region] || coords.global;
     try {
-        var r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m,weather_code&timezone=auto');
+        var r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&timezone=auto&forecast_days=1');
         var d = await r.json();
         var temp = Math.round(d.current.temperature_2m);
         var code = d.current.weather_code;
         var icon = code <= 1 ? '☀️' : code <= 3 ? '⛅' : code <= 48 ? '🌫️' : code <= 67 ? '🌧️' : code <= 77 ? '❄️' : '⛈️';
-        return icon + ' ' + c.city + ' · ' + temp + '°C';
+        var high = d.daily && d.daily.temperature_2m_max ? Math.round(d.daily.temperature_2m_max[0]) : null;
+        var low = d.daily && d.daily.temperature_2m_min ? Math.round(d.daily.temperature_2m_min[0]) : null;
+        var rain = d.daily && d.daily.precipitation_probability_max ? d.daily.precipitation_probability_max[0] : null;
+        var sunrise = d.daily && d.daily.sunrise ? d.daily.sunrise[0].slice(11, 16) : null;
+        var sunset = d.daily && d.daily.sunset ? d.daily.sunset[0].slice(11, 16) : null;
+
+        var line1 = icon + ' ' + c.city + ' · ' + temp + '°C';
+        var details = [];
+        if (high !== null && low !== null) details.push('High ' + high + '° / Low ' + low + '°');
+        if (rain !== null) details.push('Rain ' + rain + '%');
+        if (sunrise && sunset) details.push('☀ ' + sunrise + ' – ' + sunset);
+
+        return { line1: line1, details: details.join(' · ') };
     } catch (e) {
-        return '';
+        return { line1: '', details: '' };
     }
+}
+
+function cleanName(raw) {
+    if (!raw) return 'there';
+    // If it looks like an email prefix, capitalize first letter
+    var name = raw.trim();
+    if (name.indexOf('@') > -1) name = name.split('@')[0];
+    // Remove numbers at end
+    name = name.replace(/[\d]+$/g, '');
+    // Replace dots/underscores/hyphens with space
+    name = name.replace(/[._-]/g, ' ');
+    // Capitalize first letter of each word
+    name = name.replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+    return name || 'there';
 }
 
 async function generateExtras(stories, region) {
