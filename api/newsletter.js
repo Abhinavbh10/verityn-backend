@@ -393,7 +393,7 @@ async function generateExtras(stories, region) {
 async function translateArticles(articles) {
     if (!articles || !articles.length) return [];
 
-    var toTranslate = articles.slice(0, 12).map(function(a, i) {
+    var toTranslate = articles.slice(0, 8).map(function(a, i) {
         return (i + 1) + '. HEADLINE: ' + (a.headline || '') + '\n   SUMMARY: ' + (a.summary || '').slice(0, 150);
     }).join('\n\n');
 
@@ -419,8 +419,8 @@ async function translateArticles(articles) {
         var clean = text.replace(/```json|```/g, '').trim();
         var translated = JSON.parse(clean);
 
-        if (Array.isArray(translated) && translated.length === Math.min(articles.length, 12)) {
-            return articles.slice(0, 12).map(function(a, i) {
+        if (Array.isArray(translated) && translated.length === Math.min(articles.length, 8)) {
+            return articles.slice(0, 8).map(function(a, i) {
                 return Object.assign({}, a, {
                     headline: translated[i].headline || a.headline,
                     summary: translated[i].summary || a.summary,
@@ -442,7 +442,6 @@ async function generateFreshBriefing(supabase, region) {
         global: ['us', 'gb', 'de', 'in'],
     };
 
-    // Regions that have local-language feeds to translate
     var localFeedRegions = {
         eu: 'de_local',
     };
@@ -451,50 +450,65 @@ async function generateFreshBriefing(supabase, region) {
     var BASE = 'https://verityn-backend-ten.vercel.app';
     var sid = 'newsletter-' + Date.now();
 
-    // Step 1: Fetch English articles from GNews + RSS
-    var allArticles = [];
+    // Step 1: Fetch ALL content in parallel
+    var fetchPromises = [];
     for (var c = 0; c < countries.length; c++) {
         var country = countries[c];
-        try {
-            var r1 = await fetch(BASE + '/api/content?action=news&country=' + country + '&max=15&sessionId=' + sid);
-            var d1 = await r1.json();
-            if (d1.articles && Array.isArray(d1.articles)) {
-                allArticles = allArticles.concat(d1.articles);
-            }
-        } catch (e) { }
-        try {
-            var r2 = await fetch(BASE + '/api/content?action=rss&country=' + country + '&max=15&sessionId=' + sid);
-            var d2 = await r2.json();
-            if (d2.articles && Array.isArray(d2.articles)) {
-                allArticles = allArticles.concat(d2.articles);
-            }
-        } catch (e) { }
+        fetchPromises.push(
+            fetch(BASE + '/api/content?action=news&country=' + country + '&max=10&sessionId=' + sid)
+                .then(function(r) { return r.json(); })
+                .catch(function() { return { articles: [] }; })
+        );
+        fetchPromises.push(
+            fetch(BASE + '/api/content?action=rss&country=' + country + '&max=10&sessionId=' + sid)
+                .then(function(r) { return r.json(); })
+                .catch(function() { return { articles: [] }; })
+        );
     }
 
-    // Step 2: Fetch and translate local-language articles
+    // Also fetch local-language feeds in parallel
     var localKey = localFeedRegions[region];
     if (localKey) {
-        try {
-            var r3 = await fetch(BASE + '/api/content?action=rss&country=' + localKey + '&max=12&sessionId=' + sid);
-            var d3 = await r3.json();
-            if (d3.articles && Array.isArray(d3.articles) && d3.articles.length > 0) {
-                var translated = await translateArticles(d3.articles);
-                if (translated.length > 0) {
-                    // Mark as local German news
-                    translated = translated.map(function(a) {
-                        return Object.assign({}, a, { country: 'DE', isLocal: true });
-                    });
-                    allArticles = allArticles.concat(translated);
-                }
+        fetchPromises.push(
+            fetch(BASE + '/api/content?action=rss&country=' + localKey + '&max=10&sessionId=' + sid)
+                .then(function(r) { return r.json(); })
+                .catch(function() { return { articles: [] }; })
+        );
+    }
+
+    var results = await Promise.all(fetchPromises);
+
+    // Collect English articles
+    var allArticles = [];
+    var localArticles = [];
+    for (var r = 0; r < results.length; r++) {
+        var d = results[r];
+        if (d.articles && Array.isArray(d.articles)) {
+            // Last result is local if localKey exists
+            if (localKey && r === results.length - 1) {
+                localArticles = d.articles;
+            } else {
+                allArticles = allArticles.concat(d.articles);
             }
-        } catch (e) { }
+        }
+    }
+
+    // Step 2: Translate local articles if we have them
+    if (localArticles.length > 0) {
+        var translated = await translateArticles(localArticles);
+        if (translated.length > 0) {
+            translated = translated.map(function(a) {
+                return Object.assign({}, a, { country: 'DE', isLocal: true });
+            });
+            allArticles = allArticles.concat(translated);
+        }
     }
 
     if (allArticles.length < 3) return null;
 
     // Step 3: Pass combined pool to briefing
     try {
-        var r4 = await fetch(BASE + '/api/briefing', {
+        var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -506,9 +520,9 @@ async function generateFreshBriefing(supabase, region) {
                 sessionId: 'newsletter-' + region + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
-        var d4 = await r4.json();
-        if (d4.stories && d4.stories.length >= 3) {
-            return d4.stories;
+        var d2 = await r2.json();
+        if (d2.stories && d2.stories.length >= 3) {
+            return d2.stories;
         }
     } catch (e) { }
 
