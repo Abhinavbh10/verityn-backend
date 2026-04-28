@@ -1,25 +1,23 @@
 // api/newsletter.js — Verityn daily brief newsletter
 // Actions: subscribe | unsubscribe | preview | test | send | feedback
 //
-// CHANGES (2026-04-28, second pass):
-// 1. cleanSource regex now strips country TLDs (.de .fr .eu .at .ch etc).
-//    Was producing "TAGESSPIEGEL.DE" and "SPIEGEL.DE" in source labels.
-// 2. New capPerSource() applied to allArticles before sending to briefing
-//    endpoint. Caps each source at 3 articles in the pool. Combined with the
-//    "max 2 picks per source" hard rule in briefing.js, guarantees the final
-//    email never has 3+ stories from the same publisher.
-// 3. enrichStories prompt rewritten:
-//    - Removed verbatim "more background than action" template that was
-//      getting parroted into real why-lines
-//    - Banned that phrase + similar parrot-bait in the NEVER list
-//    - Removed em dashes from RIGHT examples (humanizer skill)
-//    - Varied example sentence rhythm so Claude has a shape to follow
-//      without specific words to copy
+// CHANGES (2026-04-28, third pass):
+// - Removed the "be honest, say it doesn't touch daily life" escape valve
+//   from enrichStories prompt. That escape was producing why-lines like
+//   "Russian politics story that doesn't affect your Berlin commute. Skip
+//   unless you follow Eastern European developments." — which is the
+//   model giving up on its job. Replaced with: every story has an angle,
+//   find it.
+// - Banned give-up phrases ("skip unless you follow", "doesn't affect your
+//   daily life", "mostly a political ethics story", "more background than
+//   action") in the NEVER list so Claude can't reach for them as a
+//   fallback shape.
 //
-// Earlier changes (still in effect):
-// - translateArticles cap raised to 12
-// - de_local fetch raised to max=15
-// - translated articles front-loaded into allArticles
+// Earlier changes still in effect:
+// - cleanSource strips country TLDs (.de .fr .eu .at .ch etc)
+// - capPerSource caps each source at 3 in the pool
+// - translateArticles cap raised to 12, de_local fetch raised to max=15
+// - Translated articles front-loaded into allArticles
 // - Logging at three checkpoints
 
 var FROM_EMAIL = 'hello@verityn.news';
@@ -47,8 +45,6 @@ function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Strip leading subdomains and trailing TLD (including country TLDs).
-// Was missing .de .fr .eu etc which produced "TAGESSPIEGEL.DE" labels.
 function cleanSource(raw) {
     if (!raw) return 'NEWS';
     var s = raw.toUpperCase()
@@ -109,8 +105,6 @@ function cleanSource(raw) {
     return map[s] || s.replace(/[-_]/g, ' ');
 }
 
-// Cap each source at N articles in a pool. Folds source-string variants
-// together using the same normalisation as briefing.js post-audit.
 function capPerSource(articles, capN) {
     if (!Array.isArray(articles)) return [];
     var counts = {};
@@ -508,16 +502,11 @@ async function generateFreshBriefing(supabase, region) {
             translated = translated.map(function(a) {
                 return Object.assign({}, a, { country: 'DE', isLocal: true });
             });
-            // Front-load translated articles so they survive briefing.js's slice
             allArticles = translated.concat(allArticles);
             translatedCount = translated.length;
         }
     }
 
-    // Cap each source at 3 in the pool. Combined with "max 2 picks per source"
-    // in briefing.js, this guarantees the email never has 3+ from one publisher.
-    // Front-loading above means translated local articles get processed first
-    // and dominate their cap quota before English duplicates fill in.
     var beforeCap = allArticles.length;
     allArticles = capPerSource(allArticles, 3);
     console.log('[newsletter] region=' + region + ' translated=' + translatedCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
@@ -587,26 +576,28 @@ async function enrichStories(stories, region) {
                     role: 'user',
                     content: 'You write for Verityn, a morning news email for ' + context + '\n\nFor each story below, write two things:\n\n'
                         + '1. "body": A 2-3 sentence news paragraph that synthesises the story. Cite the source name naturally inline ("According to Reuters..." or "...the Guardian reports."). If you can, mention a second angle or source. Be factual and specific. Use numbers, names, dates.\n\n'
-                        + '2. "why": A 1-2 sentence why-line explaining how the story touches the reader\'s daily life.\n\n'
-                        + 'WHY-LINE RULES:\n'
+                        + '2. "why": A 1-2 sentence why-line explaining how the story touches the reader\'s life. EVERY story has an angle. Find it.\n\n'
+                        + 'CORE RULE: Every story made it into this briefing because it matters to this reader. Your job is to find and explain the angle, not to flag when there isn\'t one. There always is. The angle might be obvious (a German tax change hits their paycheck directly). It might be one step removed (a Russia story affects their gas bill, a Fed move affects their Euribor mortgage, a Japan trade story affects German exports and the Berlin job market). Either way: write the angle. Do not give up.\n\n'
+                        + 'WHY-LINE STYLE:\n'
                         + '- Sound like a sharp friend telling you something over coffee. Not a textbook. Not a press release.\n'
-                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, kids, weekend plans, neighborhood.\n'
+                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, salary, kids, weekend plans, neighborhood, jobs, mortgages, banking.\n'
                         + '- Do NOT assume the reader owns stocks, has a corporate travel budget, works in finance, or has defense investments.\n'
-                        + '- Be specific. Use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass").\n'
-                        + '- If a story really does NOT touch daily life, say so plainly. Name what it actually affects (an industry, a region, a debate) and stop. Do not invent rent or grocery angles that are not there. Find your own honest phrasing each time. Do not use a template.\n'
-                        + '- NEVER use these phrases: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments", "more background than action", "but worth knowing if you follow", "broader landscape", "evolving landscape", "this development affects". These are tells. Replace them with concrete language about specific consequences.\n'
-                        + '- NEVER write generic lines like "Your understanding of X benefits from Y" or "This development affects the broader landscape".\n'
-                        + '- Avoid em dashes. Use periods or commas. Two short sentences read better than one long sentence with a dash.\n\n'
+                        + '- Be specific. Use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass", "your Krankenkasse deduction").\n'
+                        + '- Avoid em dashes. Use periods or commas.\n\n'
+                        + 'NEVER use these phrases or anything close to them. They are tells of give-up writing:\n'
+                        + '"could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments", "more background than action", "but worth knowing if you follow", "skip unless you follow", "doesn\'t affect your daily life", "mostly a political ethics story", "broader landscape", "evolving landscape", "this development affects", "no direct impact on your daily life", "interesting tech development but".\n'
+                        + 'If you find yourself reaching for one of these, STOP. Re-read the story. There is an angle. A Russia internet story affects German VPN providers and tech jobs in Berlin. A foreign election affects German trade exposure. A tech announcement in Japan affects German auto suppliers. Find the angle and write THAT.\n\n'
                         + 'EXAMPLES of WRONG (do not write like this):\n'
-                        + '"Your defense contractor stocks and NATO-related investments face volatility"\n'
-                        + '"Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
-                        + '"Coalition changes typically affect your taxes, energy policy, and housing regulations"\n\n'
-                        + 'EXAMPLES of RIGHT (note the variety in shape, no template):\n'
+                        + '"Russian politics story that doesn\'t affect your Berlin commute, rent, or grocery bills. Skip unless you follow Eastern European developments."\n'
+                        + '"Mostly a political ethics story that doesn\'t change your daily costs or services."\n'
+                        + '"This one is more background than action but worth knowing if you follow finance."\n'
+                        + '"Your defense contractor stocks and NATO-related investments face volatility."\n\n'
+                        + 'EXAMPLES of RIGHT (variety of shapes, real angles, no give-up):\n'
                         + '"Fill up your car this week. Berlin pump prices follow Brent crude with a 3-week delay, so expect 8 to 10 cents more per liter by mid-May."\n'
-                        + '"Sparkasse savings rates stay flat for now. If you are waiting to lock a Baufinanzierung, rates won\'t move before September."\n'
-                        + '"Mostly affects auto manufacturers in Stuttgart, not Berlin renters. Skip if you are not in the industry."\n'
+                        + '"Direct hit on your paycheck if you earn above 69,300 euros annually. Expect higher Krankenkasse deductions starting next year, or weigh the switch to private coverage now."\n'
                         + '"Watch the Bundestag vote next Thursday. The new sugar tax adds about 20 cents to a bottle of cola from 2028."\n'
-                        + '"Direct hit on your Krankenkasse contributions. Expect a 0.3 to 0.5 percent rise in the deduction on your December payslip."\n\n'
+                        + '"Russia\'s internet fight touches your VPN cost and Berlin\'s small Russian-speaking tech scene. ProtonVPN and Mullvad have already raised prices once this year."\n'
+                        + '"Lobbying access scandals shape who actually writes the next housing law. If your Mietendeckel renewal hangs on it, watch which committee takes the bill in June."\n\n'
                         + 'Stories:\n' + storyData + '\n\n'
                         + 'Respond with ONLY a JSON array of objects, each with "body" and "why" keys. Same order as input. No markdown, no backticks.',
                 }],
@@ -774,7 +765,6 @@ module.exports = async function handler(req, res) {
                 });
                 try { transporter.close(); } catch (e) { }
                 var localCount = stories2.filter(function(s) { return s.isLocal; }).length;
-                // Source-count snapshot for the test response
                 var srcCounts = {};
                 for (var sci = 0; sci < stories2.length; sci++) {
                     var sk = (stories2[sci].source || '').toLowerCase()
