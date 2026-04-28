@@ -409,7 +409,7 @@ async function generateFreshBriefing(supabase, region) {
         var country = countries[c];
         // GNews
         try {
-            var r1 = await fetch(BASE + '/api/content?action=news&country=' + country + '&max=10&sessionId=' + sid);
+            var r1 = await fetch(BASE + '/api/content?action=news&country=' + country + '&max=15&sessionId=' + sid);
             var d1 = await r1.json();
             if (d1.articles && Array.isArray(d1.articles)) {
                 allArticles = allArticles.concat(d1.articles);
@@ -417,7 +417,7 @@ async function generateFreshBriefing(supabase, region) {
         } catch (e) { }
         // RSS local feeds
         try {
-            var r2 = await fetch(BASE + '/api/content?action=rss&country=' + country + '&max=10&sessionId=' + sid);
+            var r2 = await fetch(BASE + '/api/content?action=rss&country=' + country + '&max=15&sessionId=' + sid);
             var d2 = await r2.json();
             if (d2.articles && Array.isArray(d2.articles)) {
                 allArticles = allArticles.concat(d2.articles);
