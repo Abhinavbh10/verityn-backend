@@ -656,10 +656,14 @@ module.exports = async function handler(req, res) {
 
         // ── Preview ──
         if (action === 'preview') {
-            var stories = await generateFreshBriefing(supabase, 'global');
+            var previewRegion = req.query.region || 'eu';
+            var stories = await generateFreshBriefing(supabase, previewRegion);
             if (!stories) return res.json({ error: 'No briefing available yet.' });
-            var extras = await generateExtras(stories, 'eu');
-            extras.weather = await getWeather('eu');
+            if (previewRegion !== 'global' && previewRegion !== 'asia') {
+                stories = await enrichStories(stories, previewRegion);
+            }
+            var extras = await generateExtras(stories, previewRegion);
+            extras.weather = await getWeather(previewRegion);
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
         }
@@ -670,11 +674,30 @@ module.exports = async function handler(req, res) {
             if (!testEmail) return res.json({ error: 'Add &email=your@email.com' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
-            var stories2 = await generateFreshBriefing(supabase, 'global');
+            // Look up subscriber to get their name and region
+            var testName = testEmail.split('@')[0];
+            var testRegion = 'eu'; // default
+            try {
+                var lookup = await supabase.from('waitlist').select('name, region').eq('email', testEmail.toLowerCase()).limit(1);
+                if (lookup.data && lookup.data.length > 0) {
+                    testName = lookup.data[0].name || testName;
+                    testRegion = lookup.data[0].region || 'eu';
+                }
+            } catch (e) { }
+
+            // Use subscriber's actual region for full pipeline
+            var stories2 = await generateFreshBriefing(supabase, testRegion);
             if (!stories2) return res.json({ error: 'No briefing available yet.' });
 
-            var opener2 = await generateExtras(stories2, 'eu');
-            opener2.weather = await getWeather('eu');
+            // Enrich with body text + better why-lines
+            if (testRegion !== 'global' && testRegion !== 'asia') {
+                stories2 = await enrichStories(stories2, testRegion);
+            }
+
+            // Generate extras (did you know, watching) + weather
+            var extras2 = await generateExtras(stories2, testRegion);
+            extras2.weather = await getWeather(testRegion);
+
             var transporter = getTransporter();
             var subject = buildSubjectLine(stories2);
             try {
@@ -682,10 +705,10 @@ module.exports = async function handler(req, res) {
                     from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                     to: testEmail,
                     subject: subject,
-                    html: buildEmailHTML(stories2, testEmail.split('@')[0], testEmail, opener2),
+                    html: buildEmailHTML(stories2, testName, testEmail, extras2),
                 });
                 try { transporter.close(); } catch (e) { }
-                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail });
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
