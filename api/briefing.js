@@ -39,7 +39,7 @@ module.exports = async function handler(req, res) {
         if (!Array.isArray(countries)) countries = [countries];
 
         // Truncate and clean
-        var pool = articles.slice(0, 30).map(function(a, i) {
+        var pool = articles.slice(0, 50).map(function(a, i) {
             return {
                 headline: (a.headline || '').slice(0, 200),
                 source: (a.source || '').slice(0, 50),
@@ -64,15 +64,17 @@ module.exports = async function handler(req, res) {
         var interestStr = (interests.length ? interests.join(', ') : 'world news');
 
         var headlinesList = pool.map(function(a, i) {
-            return (i+1) + '. [' + (a.country || '??') + '] ' + a.headline + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
+            var summary = a.summary ? ' — ' + a.summary.slice(0, 80) : '';
+            return (i+1) + '. [' + (a.country || '??') + '] ' + a.headline + summary + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
         }).join('\n');
 
         var prompt = 'Pick exactly ' + pickCount + ' stories for a '
             + (professionStr || 'professional') + ' in ' + locationStr
             + ', interested in ' + interestStr + '.\n\n'
-            + 'CRITICAL RULE: At least 2 stories MUST be from or directly about ' + locationStr
-            + '. Look for articles with country code ' + location.toUpperCase()
-            + ' or headlines mentioning ' + locationStr + '. If the pool has local stories, pick them. A story about German politics, German economy, or German society counts. Do NOT fill all 7 slots with US or global wire stories when local stories exist in the pool.\n\n'
+            + 'LOCAL NEWS RULE: At least 2 stories must be ABOUT ' + locationStr
+            + ' or directly affect people living there. A story is local if the HEADLINE mentions '
+            + locationStr + ', or cities/institutions in that country (e.g. Berlin, Bundestag, BVG, Lufthansa, Deutsche Bank for Germany; Mumbai, RBI, Sensex for India; Congress, Fed, Wall Street for US). '
+            + 'WARNING: Articles tagged [' + location.toUpperCase() + '] are from publishers based in that country but may NOT be about that country. A [DE] article about Mexican cartels is NOT a German story. Read the headline, not just the tag.\n\n'
             + 'For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:\n'
             + 'Sentence 1: The specific impact on YOU living in ' + locationStr
             + (professionStr ? ' working in ' + professionStr : '')
@@ -80,9 +82,12 @@ module.exports = async function handler(req, res) {
             + 'Sentence 2: What YOU should watch or do next. Give a concrete action or timeframe.\n\n'
             + 'WHY-LINE TONE: Write like a sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
             + 'WRONG: "Your understanding of democratic developments benefits from monitoring local governance"\n'
-            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in fixed before July."\n\n'
+            + 'WRONG: "Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
+            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in fixed before July."\n'
+            + 'RIGHT: "Fuel surcharges on Lufthansa go up next month. If you fly for work, book Q3 trips now while fares are locked."\n\n'
             + 'PREFER articles marked HAS_IMAGE.\n'
-            + 'Cover different topics. Max 2 stories from the same source.\n\n'
+            + 'Cover different topics. Max 2 stories from the same source.\n'
+            + 'If fewer than 2 truly local stories exist, pick stories that have the strongest real impact on someone in ' + locationStr + '.\n\n'
             + 'Respond ONLY with valid JSON, no markdown:\n'
             + '{"mood":"one sentence","stories":[{"index":1,"why":"2-sentence why-line"}]}\n\n'
             + 'Articles:\n' + headlinesList;
@@ -96,7 +101,7 @@ module.exports = async function handler(req, res) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 800,
+                max_tokens: 1200,
                 system: 'You are a news editor creating a personalised briefing. Use plain, direct English. No predictions. No financial advice. Respond with JSON only.',
                 messages: [{ role: 'user', content: prompt }],
             }),
