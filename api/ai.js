@@ -27,6 +27,53 @@ const COUNTRY_NAMES = {
   ae: 'UAE', jp: 'Japan',
 };
 
+// ── aisearch helpers ─────────────────────────────────────────
+const SEARCH_STOPWORDS = new Set([
+  'what','is','are','was','were','the','a','an','of','in','on','at','to','for',
+  'with','about','from','by','as','and','or','but','if','so','than','then',
+  'happening','happens','happen','going','doing','tell','me','how','why','when',
+  'where','who','whom','which','this','that','these','those','do','does','did',
+  'can','could','would','should','will','shall','may','might','must','have',
+  'has','had','be','been','being','just','now','today','recently','currently',
+  'latest','news','update','updates','new','some','any','there','their','our',
+  'your','his','her','its','it','they','them','we','i','you'
+]);
+
+function simplifyQuery(query) {
+  const cleaned = (query || '')
+    .toLowerCase()
+    .replace(/[?!.,;:'"()[\]{}]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const meaningful = cleaned.filter(w => w.length > 2 && !SEARCH_STOPWORDS.has(w));
+  return meaningful.join(' ').trim();
+}
+
+function buildFallbackQueries(rawQuery) {
+  const simplified = simplifyQuery(rawQuery);
+  const words = simplified.split(/\s+/).filter(Boolean);
+  const queries = [];
+
+  // Layer 0: original query (if short enough that GNews can handle it)
+  if (rawQuery && rawQuery.trim().split(/\s+/).length <= 4) {
+    queries.push(rawQuery.trim());
+  }
+  // Layer 1: full simplified query
+  if (simplified && !queries.includes(simplified)) queries.push(simplified);
+  // Layer 2: first 3 meaningful words
+  if (words.length > 3) queries.push(words.slice(0, 3).join(' '));
+  // Layer 3: first 2 meaningful words
+  if (words.length > 2) queries.push(words.slice(0, 2).join(' '));
+  // Layer 4: longest single word (most specific noun usually)
+  if (words.length > 1) {
+    const longest = [...words].sort((a, b) => b.length - a.length)[0];
+    if (longest) queries.push(longest);
+  }
+
+  // Dedupe, preserve order
+  return [...new Set(queries)].filter(Boolean);
+}
+
 async function callClaude(apiKey, system, userMsg, maxTokens = 1000) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -528,35 +575,92 @@ ${headlinesList}`;
     const countriesArr = Array.isArray(countries) ? countries : [countries];
     const locationStr  = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
 
-    let articles = [];
-    try {
-      const fetches = [
-        ...countriesArr.map(c =>
-          fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(query)}&country=${c}&max=8`)
-            .then(r => r.json()).then(d => d.articles || []).catch(() => [])
-        ),
-      ];
-      if (GNEWS_KEY) {
-        fetches.push(
-          fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(query)}&lang=en&max=10&apikey=${GNEWS_KEY}`)
-            .then(r => r.json())
-            .then(d => (d.articles || []).map(a => ({
-              headline: a.title, summary: a.description,
-              source: a.source?.name, sourceUrl: a.url, publishedAt: a.publishedAt,
-            }))).catch(() => [])
-        );
+    // Reusable searcher — hits internal content endpoint + GNews, dedupes
+    async function runSearch(q) {
+      try {
+        const fetches = [
+          ...countriesArr.map(c =>
+            fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(q)}&country=${c}&max=8`)
+              .then(r => r.json()).then(d => d.articles || []).catch(() => [])
+          ),
+        ];
+        if (GNEWS_KEY) {
+          fetches.push(
+            fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=10&apikey=${GNEWS_KEY}`)
+              .then(r => r.json())
+              .then(d => (d.articles || []).map(a => ({
+                headline: a.title, summary: a.description,
+                source: a.source?.name, sourceUrl: a.url, publishedAt: a.publishedAt,
+              }))).catch(() => [])
+          );
+        }
+        const all = (await Promise.all(fetches)).flat();
+        const seen = new Set();
+        return all.filter(a => {
+          const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (!k || seen.has(k)) return false;
+          seen.add(k); return true;
+        }).slice(0, 15);
+      } catch (e) {
+        return [];
       }
-      const all = (await Promise.all(fetches)).flat();
-      const seen = new Set();
-      articles = all.filter(a => {
-        const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (!k || seen.has(k)) return false;
-        seen.add(k); return true;
-      }).slice(0, 15);
-    } catch (e) {}
+    }
 
+    // Cascading fallback: try original → simplified → noun phrases → single keyword
+    const fallbackQueries = buildFallbackQueries(query);
+    let articles = [];
+    let usedQuery = null;
+    let attempts = [];
+
+    for (const q of fallbackQueries) {
+      const found = await runSearch(q);
+      attempts.push({ q, count: found.length });
+      if (found.length >= 3) {
+        articles = found;
+        usedQuery = q;
+        break;
+      }
+      // Keep best partial result in case all queries underperform
+      if (found.length > articles.length) {
+        articles = found;
+        usedQuery = q;
+      }
+    }
+
+    // Last-resort: fetch latest news from user's country, framed as soft answer
+    let usedLastResort = false;
     if (articles.length === 0) {
-      return res.status(200).json({ success: true, synthesis: null, articles: [], query });
+      try {
+        const latestFetches = countriesArr.map(c =>
+          fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&max=8`)
+            .then(r => r.json()).then(d => d.articles || []).catch(() => [])
+        );
+        const all = (await Promise.all(latestFetches)).flat();
+        const seen = new Set();
+        articles = all.filter(a => {
+          const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (!k || seen.has(k)) return false;
+          seen.add(k); return true;
+        }).slice(0, 8);
+        usedLastResort = articles.length > 0;
+      } catch (e) {}
+    }
+
+    // True last resort: even latest news failed → return graceful empty
+    if (articles.length === 0) {
+      await logError(supabase, {
+        endpoint: 'ai', action: 'aisearch',
+        error: 'All fallbacks exhausted, no articles found',
+        context: { query, attempts, countries: countriesArr },
+        sessionId,
+      });
+      return res.status(200).json({
+        success: true,
+        synthesis: `No recent stories matched "${query}" in your selected regions. Try a shorter query, or check the Today tab for the latest briefing.`,
+        confidence: 'low',
+        articles: [],
+        query,
+      });
     }
 
     const articlesList = articles.map((a, i) =>
@@ -564,7 +668,20 @@ ${headlinesList}`;
     ).join('\n');
 
     const system = `You are a personal intelligence analyst for someone following ${locationStr}. Synthesise news into clear, balanced answers. Be specific. No fluff.`;
-    const prompt = `User query: "${query}"
+
+    const prompt = usedLastResort
+      ? `User query: "${query}"
+
+We did not find articles directly matching this query. Below are today's most relevant general headlines for someone in ${locationStr}. Acknowledge the gap honestly, then synthesise what IS in the news that may be tangentially relevant. Keep the tone calm and helpful, not apologetic.
+
+Articles available:
+${articlesList}
+
+Write 60-90 words. End with one line suggesting a sharper query the user could try.
+
+Respond ONLY with JSON:
+{"synthesis":"your answer here","sourceIndices":[1,3,5],"confidence":"low"}`
+      : `User query: "${query}"
 
 Articles found:
 ${articlesList}
@@ -583,12 +700,18 @@ Respond ONLY with JSON:
       return res.status(200).json({
         success: true, query,
         synthesis:  parsed?.synthesis  || null,
-        confidence: parsed?.confidence || 'medium',
+        confidence: parsed?.confidence || (usedLastResort ? 'low' : 'medium'),
         articles:   sourced,
         allArticles: articles,
+        // diagnostic — useful in logs, harmless to client
+        usedQuery, usedLastResort, attempts,
       });
     } catch (e) {
-      return res.status(200).json({ success: true, query, synthesis: null, articles, error: e.message });
+      return res.status(200).json({
+        success: true, query, synthesis: null,
+        articles, error: e.message,
+        usedQuery, usedLastResort, attempts,
+      });
     }
   }
 
