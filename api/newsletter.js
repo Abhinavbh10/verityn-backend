@@ -103,18 +103,41 @@ function buildStoryCard(s, i) {
 
 function buildSubjectLine(stories) {
     if (!stories || !stories.length) return 'Your 7 stories are ready';
-    var top = stories[0];
-    var headline = (top.headline || '').replace(/\s+/g, ' ').trim();
-    if (headline.length > 55) headline = headline.substring(0, 52) + '...';
-    return headline;
+
+    // Extract short hooks from top 3 why-lines
+    var hooks = [];
+    for (var i = 0; i < Math.min(3, stories.length); i++) {
+        var why = (stories[i].why || stories[i].headline || '').replace(/\s+/g, ' ').trim();
+        // Take first sentence or first clause
+        var hook = why.split(/\.\s/)[0].split(/,\s/)[0];
+        // Keep it short
+        if (hook.length > 35) hook = hook.substring(0, 32) + '...';
+        if (hook.length > 5) hooks.push(hook);
+    }
+
+    if (hooks.length >= 2) {
+        return hooks.slice(0, 3).join(', ');
+    }
+
+    // Fallback to headline
+    var hl = (stories[0].headline || '').replace(/\s+/g, ' ').trim();
+    if (hl.length > 55) hl = hl.substring(0, 52) + '...';
+    return hl;
 }
 
-function buildEmailHTML(stories, recipientName, email) {
+function buildEmailHTML(stories, recipientName, email, opener) {
     var name = recipientName || 'there';
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     var hour = new Date().getUTCHours() + 2; // rough CET
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
+
+    var openerHtml = '';
+    if (opener) {
+        openerHtml = '<tr><td style="padding:0 0 18px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+            + '<tr><td style="font-size:14px;color:#444444;line-height:1.65;font-style:italic;border-left:3px solid #C0392B;padding-left:14px">' + escapeHtml(opener) + '</td></tr>'
+            + '</table></td></tr>';
+    }
 
     var storyCards = '';
     for (var i = 0; i < stories.length; i++) {
@@ -141,6 +164,8 @@ function buildEmailHTML(stories, recipientName, email) {
         + '<tr><td style="font-family:Georgia,serif;font-size:16px;font-weight:700;color:#111111;padding-bottom:2px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
         + '<tr><td style="font-size:12px;color:#999999">4 min &middot; 7 stories &middot; why they matter to you</td></tr>'
         + '</table></td></tr>'
+        // Opener
+        + openerHtml
         // Stories
         + storyCards
         // Caught up
@@ -157,6 +182,38 @@ function buildEmailHTML(stories, recipientName, email) {
         + '<a href="https://verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">verityn.news</a></td></tr>'
         + '</table></td></tr></table></td></tr>'
         + '</table></td></tr></table></body></html>';
+}
+
+async function generateOpener(stories) {
+    if (!stories || stories.length < 3) return '';
+
+    var headlines = stories.slice(0, 7).map(function(s, i) {
+        return (i + 1) + '. ' + s.headline + (s.why ? ' — ' + s.why : '');
+    }).join('\n');
+
+    try {
+        var r = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 150,
+                messages: [{
+                    role: 'user',
+                    content: 'You write the daily opener for Verityn, a 7-story morning news briefing. Based on today\'s stories below, write exactly 2 sentences that tease what\'s in today\'s edition. Be direct, confident, slightly conversational. Not promotional. Not excited. Think sharp editor, not marketing copy. No emojis. No "let\'s dive in." No "here\'s what you need to know." Just tell them what happened and hint at why it matters.\n\nToday\'s stories:\n' + headlines + '\n\nRespond with ONLY the 2 sentences. Nothing else.',
+                }],
+            }),
+        });
+        var data = await r.json();
+        var text = (data.content && data.content[0] && data.content[0].text) || '';
+        return text.trim();
+    } catch (e) {
+        return '';
+    }
 }
 
 async function generateFreshBriefing(supabase, region) {
@@ -213,12 +270,19 @@ async function getRegionalWhyLines(stories, region) {
     if (region === 'global') return stories;
 
     var regionContext = {
-        eu: 'a professional living in Europe (Germany/EU). Reference European regulations, ECB policy, euro currency, EU housing markets, European job markets, Schengen implications.',
-        us: 'a professional living in the United States. Reference Fed policy, US dollar, American housing markets, US job markets, 401k/retirement, US healthcare costs, state-level impacts.',
-        india: 'a professional living in India. Reference RBI policy, Indian rupee, Indian stock markets, EMI/home loans, IT sector impacts, startup ecosystem, cost of living in Indian cities.',
+        eu: 'a professional living in Europe (Germany/EU)',
+        us: 'a professional living in the United States',
+        india: 'a professional living in India',
+    };
+
+    var regionDetails = {
+        eu: 'Reference ECB policy, euro, EU regulations, housing markets, job markets, Schengen where relevant.',
+        us: 'Reference Fed policy, US dollar, 401k, healthcare costs, housing, job markets where relevant.',
+        india: 'Reference RBI policy, rupee, EMIs, stock markets, IT sector, startup ecosystem where relevant.',
     };
 
     var context = regionContext[region];
+    var details = regionDetails[region];
     if (!context) return stories;
 
     var headlines = stories.map(function(s, i) {
@@ -235,10 +299,10 @@ async function getRegionalWhyLines(stories, region) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 1000,
+                max_tokens: 1200,
                 messages: [{
                     role: 'user',
-                    content: 'For each headline below, write a short why-line (1-2 sentences) explaining why this news matters to ' + context + '\n\nHeadlines:\n' + headlines + '\n\nRespond with ONLY a JSON array of strings, one why-line per headline, in the same order. No markdown, no backticks, just the JSON array.',
+                    content: 'You write why-lines for Verityn, a daily news briefing. A why-line is 1-2 sentences that tell the reader why a news story matters to THEM personally.\n\nWrite for ' + context + '. ' + details + '\n\nTone rules:\n- Sound like a sharp colleague explaining news over coffee, not a textbook\n- Be specific: use numbers, timeframes, concrete actions when possible\n- Say "your" not "the reader\'s"\n- Avoid hedging words: "could", "might", "may potentially"\n- Lead with the impact, not the event\n- No emojis, no exclamation marks\n- Wrong: "This policy may affect European housing markets"\n- Right: "That rate hold hits your mortgage in about 6 weeks. If you\'re on variable, this is your window to lock in fixed before July."\n\nHeadlines:\n' + headlines + '\n\nRespond with ONLY a JSON array of strings, one why-line per headline, in the same order. No markdown, no backticks, just the JSON array.',
                 }],
             }),
         });
@@ -317,8 +381,9 @@ module.exports = async function handler(req, res) {
         if (action === 'preview') {
             var stories = await generateFreshBriefing(supabase, 'global');
             if (!stories) return res.json({ error: 'No briefing available yet.' });
+            var opener = await generateOpener(stories);
             res.setHeader('Content-Type', 'text/html');
-            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com'));
+            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', opener));
         }
 
         // ── Test ──
@@ -330,6 +395,7 @@ module.exports = async function handler(req, res) {
             var stories2 = await generateFreshBriefing(supabase, 'global');
             if (!stories2) return res.json({ error: 'No briefing available yet.' });
 
+            var opener2 = await generateOpener(stories2);
             var transporter = getTransporter();
             var subject = buildSubjectLine(stories2);
             try {
@@ -337,7 +403,7 @@ module.exports = async function handler(req, res) {
                     from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                     to: testEmail,
                     subject: subject,
-                    html: buildEmailHTML(stories2, testEmail.split('@')[0], testEmail),
+                    html: buildEmailHTML(stories2, testEmail.split('@')[0], testEmail, opener2),
                 });
                 try { transporter.close(); } catch (e) { }
                 return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail });
@@ -390,6 +456,15 @@ module.exports = async function handler(req, res) {
             // Cache today's global version for reference
             try { await supabase.from('newsletter_cache').insert({ stories: firstStories }); } catch (e) { }
 
+            // Generate opener per region
+            var regionalOpeners = {};
+            for (var oi = 0; oi < regions.length; oi++) {
+                var oRgn = regions[oi];
+                if (regionalStories[oRgn]) {
+                    regionalOpeners[oRgn] = await generateOpener(regionalStories[oRgn]);
+                }
+            }
+
             var subject2 = buildSubjectLine(firstStories);
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
@@ -398,6 +473,7 @@ module.exports = async function handler(req, res) {
                 var region = regions[ri2];
                 var subs = groups[region];
                 var regionStories = regionalStories[region];
+                var regionOpener = regionalOpeners[region] || '';
                 if (!regionStories) continue;
 
                 for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
@@ -407,7 +483,7 @@ module.exports = async function handler(req, res) {
                             from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                             to: sub.email,
                             subject: subject2,
-                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email),
+                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email, regionOpener),
                         });
                         sent++;
                     } catch (e) {
