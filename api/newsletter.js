@@ -1,14 +1,26 @@
 // api/newsletter.js — Verityn daily brief newsletter
 // Actions: subscribe | unsubscribe | preview | test | send | feedback
 //
-// CHANGES (2026-04-28):
-// 1. translateArticles cap raised 8 → 12 so we have a real chance of getting
-//    3-4 local stories into the briefing pool, not just 1-2.
-// 2. Translated local articles are now FRONT-loaded into allArticles
-//    (translated.concat(allArticles), not allArticles.concat(translated)).
-//    Without this, briefing.js's slice(0,30) was cutting them off.
-// 3. Logging added around the German pipeline so the next failure is visible
-//    in Vercel logs instead of silent.
+// CHANGES (2026-04-28, second pass):
+// 1. cleanSource regex now strips country TLDs (.de .fr .eu .at .ch etc).
+//    Was producing "TAGESSPIEGEL.DE" and "SPIEGEL.DE" in source labels.
+// 2. New capPerSource() applied to allArticles before sending to briefing
+//    endpoint. Caps each source at 3 articles in the pool. Combined with the
+//    "max 2 picks per source" hard rule in briefing.js, guarantees the final
+//    email never has 3+ stories from the same publisher.
+// 3. enrichStories prompt rewritten:
+//    - Removed verbatim "more background than action" template that was
+//      getting parroted into real why-lines
+//    - Banned that phrase + similar parrot-bait in the NEVER list
+//    - Removed em dashes from RIGHT examples (humanizer skill)
+//    - Varied example sentence rhythm so Claude has a shape to follow
+//      without specific words to copy
+//
+// Earlier changes (still in effect):
+// - translateArticles cap raised to 12
+// - de_local fetch raised to max=15
+// - translated articles front-loaded into allArticles
+// - Logging at three checkpoints
 
 var FROM_EMAIL = 'hello@verityn.news';
 var FROM_NAME = 'Verityn';
@@ -35,9 +47,13 @@ function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Strip leading subdomains and trailing TLD (including country TLDs).
+// Was missing .de .fr .eu etc which produced "TAGESSPIEGEL.DE" labels.
 function cleanSource(raw) {
     if (!raw) return 'NEWS';
-    var s = raw.toUpperCase().replace(/^(WWW\.|FEEDS\.|RSS\.|NEWS\.)/, '').replace(/\.(COM|ORG|NET|CO\.UK|CO|IO)$/i, '');
+    var s = raw.toUpperCase()
+        .replace(/^(WWW\.|FEEDS\.|RSS\.|NEWS\.)/, '')
+        .replace(/\.(COM|ORG|NET|CO\.UK|CO|IO|DE|FR|EU|UK|IN|AT|CH|JP|AU|SG|AE|ES|IT|NL)$/i, '');
     var map = {
         'NYTIMES': 'NEW YORK TIMES',
         'NYT': 'NEW YORK TIMES',
@@ -84,12 +100,32 @@ function cleanSource(raw) {
         'TAGESSCHAU': 'TAGESSCHAU',
         'TAGESSPIEGEL': 'TAGESSPIEGEL',
         'SUEDDEUTSCHE': 'SÜDDEUTSCHE ZEITUNG',
+        'SZ': 'SÜDDEUTSCHE ZEITUNG',
         'FAZ': 'FAZ',
         'HANDELSBLATT': 'HANDELSBLATT',
         'BERLINER-ZEITUNG': 'BERLINER ZEITUNG',
+        'BERLINERZEITUNG': 'BERLINER ZEITUNG',
     };
-    var clean = s.replace(/\.(COM|ORG|NET|CO\.UK|CO|IO)$/i, '');
-    return map[clean] || map[s] || s.replace(/[-_]/g, ' ');
+    return map[s] || s.replace(/[-_]/g, ' ');
+}
+
+// Cap each source at N articles in a pool. Folds source-string variants
+// together using the same normalisation as briefing.js post-audit.
+function capPerSource(articles, capN) {
+    if (!Array.isArray(articles)) return [];
+    var counts = {};
+    var kept = [];
+    for (var i = 0; i < articles.length; i++) {
+        var a = articles[i];
+        var key = (a.source || 'unknown').toLowerCase()
+            .replace(/^(www\.|feeds\.|rss\.|news\.)/, '')
+            .replace(/\.(com|org|net|co\.uk|co|io|de|fr|eu|uk|in|at|ch|jp|au|sg|ae|es|it|nl)$/, '')
+            .replace(/[-_\s]+/g, '')
+            .trim();
+        counts[key] = (counts[key] || 0) + 1;
+        if (counts[key] <= capN) kept.push(a);
+    }
+    return kept;
 }
 
 function buildStoryCard(s, i, size) {
@@ -101,7 +137,6 @@ function buildStoryCard(s, i, size) {
     var url = s.sourceUrl || 'https://verityn.news';
     var image = s.image || '';
 
-    // Quick hit — compact for stories 6-7
     if (size === 'small') {
         return '<tr><td style="padding-bottom:6px">'
             + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
@@ -118,7 +153,6 @@ function buildStoryCard(s, i, size) {
     var cardBg = size === 'large' ? '#FAF8F4' : '#FAFAFA';
     var cardBorder = size === 'large' ? '2px solid rgba(192,57,43,0.15)' : '1px solid rgba(0,0,0,0.05)';
 
-    // Image block (if available)
     var imgHtml = '';
     if (image && size === 'large') {
         imgHtml = '<tr><td style="padding-bottom:12px"><img src="' + image + '" alt="" style="width:100%;border-radius:10px;display:block;max-height:200px;object-fit:cover" /></td></tr>';
@@ -126,13 +160,11 @@ function buildStoryCard(s, i, size) {
         imgHtml = '<tr><td style="padding-bottom:10px"><img src="' + image + '" alt="" style="width:100%;border-radius:8px;display:block;max-height:160px;object-fit:cover" /></td></tr>';
     }
 
-    // Body block (multi-source synthesis)
     var bodyHtml = '';
     if (body) {
         bodyHtml = '<tr><td style="font-size:' + bodySize + ';color:#444444;line-height:1.6;padding-bottom:10px">' + body + '</td></tr>';
     }
 
-    // Forward CTA only on lead story
     var forwardHtml = '';
     if (i === 0) {
         forwardHtml = '<td style="padding-left:12px;font-size:11px;color:#C0392B;font-weight:600"><a href="mailto:?subject=You%20should%20read%20this&body=Check%20out%20Verityn%20-%20verityn.news" style="color:#C0392B;text-decoration:underline">Forward this</a></td>';
@@ -141,22 +173,16 @@ function buildStoryCard(s, i, size) {
     return '<tr><td style="padding-bottom:12px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:' + cardBg + ';border-radius:12px;border:' + cardBorder + '"><tr><td style="padding:18px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        // Badge + source
         + '<tr><td style="padding-bottom:10px"><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="width:24px;height:24px;background-color:#C0392B;border-radius:12px;text-align:center;vertical-align:middle;font-size:12px;font-weight:900;color:#FFFFFF">' + num + '</td>'
         + '<td style="padding-left:8px;font-size:11px;font-weight:600;color:#AAAAAA;letter-spacing:0.3px">' + source + '</td>'
         + '</tr></table></td></tr>'
-        // Image
         + imgHtml
-        // Headline
         + '<tr><td style="font-family:Georgia,serif;font-size:' + headlineSize + ';font-weight:700;line-height:1.25;color:#111111;padding-bottom:10px">' + headline + '</td></tr>'
-        // Body
         + bodyHtml
-        // Why-line
         + '<tr><td style="padding-bottom:12px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(192,57,43,0.05);border-left:3px solid #C0392B;border-radius:0 8px 8px 0"><tr>'
         + '<td style="padding:12px 14px"><span style="display:block;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#C0392B;margin-bottom:4px">Why this matters</span><span style="font-size:' + whySize + ';color:#5C3A1E;line-height:1.5">' + why + '</span></td>'
         + '</tr></table></td></tr>'
-        // Read + Forward
         + '<tr><td><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="background-color:#111111;border-radius:14px;padding:6px 16px"><a href="' + url + '" style="font-size:12px;font-weight:700;color:#FFFFFF;text-decoration:none">Read &#8250;</a></td>'
         + forwardHtml
@@ -167,13 +193,10 @@ function buildStoryCard(s, i, size) {
 function buildSubjectLine(stories) {
     if (!stories || !stories.length) return 'Your 7 stories are ready';
 
-    // Extract short hooks from top 3 why-lines
     var hooks = [];
     for (var i = 0; i < Math.min(3, stories.length); i++) {
         var why = (stories[i].why || stories[i].headline || '').replace(/\s+/g, ' ').trim();
-        // Take first sentence or first clause
         var hook = why.split(/\.\s/)[0].split(/,\s/)[0];
-        // Keep it short
         if (hook.length > 35) hook = hook.substring(0, 32) + '...';
         if (hook.length > 5) hooks.push(hook);
     }
@@ -182,7 +205,6 @@ function buildSubjectLine(stories) {
         return hooks.slice(0, 3).join(', ');
     }
 
-    // Fallback to headline
     var hl = (stories[0].headline || '').replace(/\s+/g, ' ').trim();
     if (hl.length > 55) hl = hl.substring(0, 52) + '...';
     return hl;
@@ -200,7 +222,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
     var didYouKnow = ext.did_you_know || '';
     var watching = ext.watching || '';
 
-    // Story cards with visual hierarchy
     var storyCards = '';
     for (var i2 = 0; i2 < stories.length; i2++) {
         if (i2 === 5 && stories.length > 5) {
@@ -214,7 +235,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         storyCards += buildStoryCard(stories[i2], i2, sz);
     }
 
-    // Did you know — fun city fact
     var numberHtml = '';
     if (didYouKnow) {
         numberHtml = '<tr><td style="padding:6px 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:12px"><tr>'
@@ -224,7 +244,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
             + '</table></td></tr></table></td></tr>';
     }
 
-    // Watching this week
     var watchHtml = '';
     if (watching) {
         watchHtml = '<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(192,57,43,0.05);border-radius:10px"><tr>'
@@ -234,7 +253,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
             + '</table></td></tr></table></td></tr>';
     }
 
-    // Feedback poll
     var feedbackBase = 'https://verityn-backend-ten.vercel.app/api/newsletter?action=feedback&email=' + encodeURIComponent(email || '') + '&rating=';
     var feedbackHtml = '<tr><td style="padding:8px 0 16px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-size:12px;color:#999999;padding-bottom:10px;text-align:center">How was today\'s briefing?</td></tr>'
@@ -254,56 +272,33 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F2EDE5">'
         + '<tr><td align="center" style="padding:24px 16px">'
         + '<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">'
-
-        // ── Header with red top bar ──
         + '<tr><td style="background-color:#C0392B;height:4px;border-radius:12px 12px 0 0;font-size:0"></td></tr>'
         + '<tr><td style="background-color:#FFFFFF;padding:20px 24px;border-bottom:1px solid rgba(0,0,0,0.06)"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="vertical-align:middle"><span style="font-family:Georgia,serif;font-size:26px;font-weight:700;color:#C0392B">V</span><span style="font-size:20px;font-weight:800;color:#111111">erityn</span></td>'
         + '<td style="text-align:right;vertical-align:middle"><span style="font-size:12px;color:#999999">' + today + '</span></td>'
         + '</tr></table></td></tr>'
-
-        // ── Greeting + Weather ──
         + '<tr><td style="background-color:#FFFFFF;padding:20px 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="font-family:Georgia,serif;font-size:20px;font-weight:700;color:#111111;padding-bottom:6px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
         + (weather.line1 ? '<tr><td style="font-size:15px;color:#444444;padding-bottom:4px">' + weather.line1 + '</td></tr>' : '')
         + (weather.details ? '<tr><td style="font-size:12px;color:#999999;padding-bottom:6px">' + weather.details + '</td></tr>' : '')
         + '<tr><td style="font-size:12px;color:#AAAAAA">We read 100+ articles this morning. You get 7.</td></tr>'
         + '</table></td></tr>'
-
-        // ── Divider ──
         + '<tr><td style="background-color:#FFFFFF;padding:0 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-bottom:1px solid rgba(0,0,0,0.06)"></td></tr></table></td></tr>'
-
-        // ── Stories section ──
         + '<tr><td style="background-color:#FFFFFF;padding:16px 24px 8px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + storyCards
         + '</table></td></tr>'
-
-        // ── Caught up ──
         + '<tr><td style="background-color:#FFFFFF;padding:10px 24px 16px;text-align:center">'
         + '<span style="font-family:Georgia,serif;font-size:15px;font-weight:700;color:#111111">You\'re caught up. &#9996;</span>'
         + '</td></tr>'
-
-        // ── Bottom sections on cream ──
         + '<tr><td style="padding:16px 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-
-        // The Number
         + numberHtml
-
-        // Watching
         + watchHtml
-
-        // Feedback
         + feedbackHtml
-
         + '</table></td></tr>'
-
-        // ── App promo ──
         + '<tr><td style="padding:0 0 14px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(0,0,0,0.03);border-radius:10px"><tr>'
         + '<td style="padding:14px 16px;text-align:center;font-size:12px;color:#999999">Want Deep Dive, AI Search, and Topics? <a href="https://verityn.news" style="color:#C0392B;font-weight:600;text-decoration:none">Get the app &#8250;</a></td>'
         + '</tr></table></td></tr>'
-
-        // ── Footer ──
         + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:0 0 12px 12px">'
         + '<tr><td style="padding:20px 24px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
         + '<tr><td style="text-align:center;padding-bottom:8px"><span style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#C0392B">V</span><span style="font-size:12px;font-weight:800;color:rgba(245,240,232,0.6)">erityn</span></td></tr>'
@@ -312,7 +307,6 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '<a href="https://verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">verityn.news</a> &middot; '
         + '<a href="https://instagram.com/verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">Instagram</a></td></tr>'
         + '</table></td></tr></table></td></tr>'
-
         + '</table></td></tr></table></body></html>';
 }
 
@@ -351,14 +345,10 @@ async function getWeather(region) {
 
 function cleanName(raw) {
     if (!raw) return 'there';
-    // If it looks like an email prefix, capitalize first letter
     var name = raw.trim();
     if (name.indexOf('@') > -1) name = name.split('@')[0];
-    // Remove numbers at end
     name = name.replace(/[\d]+$/g, '');
-    // Replace dots/underscores/hyphens with space
     name = name.replace(/[._-]/g, ' ');
-    // Capitalize first letter of each word
     name = name.replace(/\b\w/g, function(c) { return c.toUpperCase(); });
     return name || 'there';
 }
@@ -405,8 +395,6 @@ async function generateExtras(stories, region) {
     }
 }
 
-// Translate up to 12 German articles per send. Was 8 — raised so we have a
-// real chance of getting 3-4 truly local stories into the briefing pool.
 var TRANSLATE_LIMIT = 12;
 
 async function translateArticles(articles) {
@@ -472,7 +460,6 @@ async function generateFreshBriefing(supabase, region) {
     var BASE = 'https://verityn-backend-ten.vercel.app';
     var sid = 'newsletter-' + Date.now();
 
-    // Step 1: Fetch ALL content in parallel
     var fetchPromises = [];
     for (var c = 0; c < countries.length; c++) {
         var country = countries[c];
@@ -488,7 +475,6 @@ async function generateFreshBriefing(supabase, region) {
         );
     }
 
-    // Also fetch local-language feeds in parallel
     var localKey = localFeedRegions[region];
     if (localKey) {
         fetchPromises.push(
@@ -500,13 +486,11 @@ async function generateFreshBriefing(supabase, region) {
 
     var results = await Promise.all(fetchPromises);
 
-    // Collect English articles
     var allArticles = [];
     var localArticles = [];
     for (var r = 0; r < results.length; r++) {
         var d = results[r];
         if (d.articles && Array.isArray(d.articles)) {
-            // Last result is local if localKey exists
             if (localKey && r === results.length - 1) {
                 localArticles = d.articles;
             } else {
@@ -517,7 +501,6 @@ async function generateFreshBriefing(supabase, region) {
 
     console.log('[newsletter] region=' + region + ' englishArticles=' + allArticles.length + ' localArticles=' + localArticles.length);
 
-    // Step 2: Translate local articles if we have them
     var translatedCount = 0;
     if (localArticles.length > 0) {
         var translated = await translateArticles(localArticles);
@@ -525,19 +508,22 @@ async function generateFreshBriefing(supabase, region) {
             translated = translated.map(function(a) {
                 return Object.assign({}, a, { country: 'DE', isLocal: true });
             });
-            // FRONT-LOAD translated articles. They MUST survive briefing.js's
-            // slice(0,30). Without this, with 30+ English articles already in
-            // the pool, German translations end up at index 30+ and get cut.
+            // Front-load translated articles so they survive briefing.js's slice
             allArticles = translated.concat(allArticles);
             translatedCount = translated.length;
         }
     }
 
-    console.log('[newsletter] region=' + region + ' translated=' + translatedCount + ' poolTotal=' + allArticles.length);
+    // Cap each source at 3 in the pool. Combined with "max 2 picks per source"
+    // in briefing.js, this guarantees the email never has 3+ from one publisher.
+    // Front-loading above means translated local articles get processed first
+    // and dominate their cap quota before English duplicates fill in.
+    var beforeCap = allArticles.length;
+    allArticles = capPerSource(allArticles, 3);
+    console.log('[newsletter] region=' + region + ' translated=' + translatedCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
-    // Step 3: Pass combined pool to briefing
     try {
         var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
@@ -553,9 +539,8 @@ async function generateFreshBriefing(supabase, region) {
         });
         var d2 = await r2.json();
         if (d2.stories && d2.stories.length >= 3) {
-            // Log local-story count in the chosen briefing for visibility
             var localPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
-            console.log('[newsletter] region=' + region + ' briefingStories=' + d2.stories.length + ' localPicked=' + localPicked);
+            console.log('[newsletter] region=' + region + ' briefingStories=' + d2.stories.length + ' localPicked=' + localPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
             return d2.stories;
         } else if (d2.error) {
             console.log('[newsletter] briefing error: ' + d2.error);
@@ -601,21 +586,27 @@ async function enrichStories(stories, region) {
                 messages: [{
                     role: 'user',
                     content: 'You write for Verityn, a morning news email for ' + context + '\n\nFor each story below, write two things:\n\n'
-                        + '1. "body": A 2-3 sentence news paragraph that synthesizes the story. Cite the source name naturally inline, e.g. "According to Reuters..." or "...the Guardian reports." If possible, mention a second angle or source. Be factual and specific. Use numbers, names, dates.\n\n'
-                        + '2. "why": A 1-2 sentence why-line explaining how this story touches the reader\'s daily life.\n\n'
-                        + 'WHY-LINE RULES (critical):\n'
-                        + '- Sound like a sharp friend telling you something over coffee, not a textbook\n'
-                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, kids, weekend plans, neighborhood\n'
-                        + '- Do NOT assume the reader owns stocks, has a corporate travel budget, works in finance, or has defense investments\n'
-                        + '- Be specific: use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass")\n'
-                        + '- If a story GENUINELY does not affect daily life, be honest. Say something like "This one is more background than action — but worth knowing if you follow [topic]." That is better than inventing fake relevance.\n'
-                        + '- NEVER use: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments"\n'
-                        + '- NEVER write generic lines like "Your understanding of X benefits from Y" or "This development affects the broader landscape"\n'
-                        + '- WRONG: "Your defense contractor stocks and NATO-related investments face volatility"\n'
-                        + '- WRONG: "Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
-                        + '- RIGHT: "Fill up your car this week. Berlin pump prices follow Brent crude with a 3-week delay — expect 8-10 cents more per liter by mid-May."\n'
-                        + '- RIGHT: "Your Sparkasse savings rate stays flat for now. If you are waiting to lock a Baufinanzierung, rates won\'t move before September."\n'
-                        + '- RIGHT: "No direct impact on your daily life, but worth knowing — Germany\'s digital regulation debate picks up again in the Bundestag this June."\n\n'
+                        + '1. "body": A 2-3 sentence news paragraph that synthesises the story. Cite the source name naturally inline ("According to Reuters..." or "...the Guardian reports."). If you can, mention a second angle or source. Be factual and specific. Use numbers, names, dates.\n\n'
+                        + '2. "why": A 1-2 sentence why-line explaining how the story touches the reader\'s daily life.\n\n'
+                        + 'WHY-LINE RULES:\n'
+                        + '- Sound like a sharp friend telling you something over coffee. Not a textbook. Not a press release.\n'
+                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, kids, weekend plans, neighborhood.\n'
+                        + '- Do NOT assume the reader owns stocks, has a corporate travel budget, works in finance, or has defense investments.\n'
+                        + '- Be specific. Use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass").\n'
+                        + '- If a story really does NOT touch daily life, say so plainly. Name what it actually affects (an industry, a region, a debate) and stop. Do not invent rent or grocery angles that are not there. Find your own honest phrasing each time. Do not use a template.\n'
+                        + '- NEVER use these phrases: "could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments", "more background than action", "but worth knowing if you follow", "broader landscape", "evolving landscape", "this development affects". These are tells. Replace them with concrete language about specific consequences.\n'
+                        + '- NEVER write generic lines like "Your understanding of X benefits from Y" or "This development affects the broader landscape".\n'
+                        + '- Avoid em dashes. Use periods or commas. Two short sentences read better than one long sentence with a dash.\n\n'
+                        + 'EXAMPLES of WRONG (do not write like this):\n'
+                        + '"Your defense contractor stocks and NATO-related investments face volatility"\n'
+                        + '"Your business travel budget takes a hit as airline costs rise, potentially affecting your company\'s mobility policies"\n'
+                        + '"Coalition changes typically affect your taxes, energy policy, and housing regulations"\n\n'
+                        + 'EXAMPLES of RIGHT (note the variety in shape, no template):\n'
+                        + '"Fill up your car this week. Berlin pump prices follow Brent crude with a 3-week delay, so expect 8 to 10 cents more per liter by mid-May."\n'
+                        + '"Sparkasse savings rates stay flat for now. If you are waiting to lock a Baufinanzierung, rates won\'t move before September."\n'
+                        + '"Mostly affects auto manufacturers in Stuttgart, not Berlin renters. Skip if you are not in the industry."\n'
+                        + '"Watch the Bundestag vote next Thursday. The new sugar tax adds about 20 cents to a bottle of cola from 2028."\n'
+                        + '"Direct hit on your Krankenkasse contributions. Expect a 0.3 to 0.5 percent rise in the deduction on your December payslip."\n\n'
                         + 'Stories:\n' + storyData + '\n\n'
                         + 'Respond with ONLY a JSON array of objects, each with "body" and "why" keys. Same order as input. No markdown, no backticks.',
                 }],
@@ -659,7 +650,6 @@ module.exports = async function handler(req, res) {
         var supabase = getSupabase();
         var action = req.query.action || (req.body && req.body.action);
 
-        // ── Subscribe ──
         if (action === 'subscribe') {
             var body = req.body || {};
             var email = (body.email || '').trim().toLowerCase();
@@ -669,7 +659,6 @@ module.exports = async function handler(req, res) {
             var timezone = body.timezone || '';
             var region = body.region || 'global';
 
-            // Check if already exists
             var existing = await supabase.from('waitlist').select('id, unsubscribed').eq('email', email).limit(1);
             if (existing.data && existing.data.length > 0) {
                 if (existing.data[0].unsubscribed) {
@@ -684,7 +673,6 @@ module.exports = async function handler(req, res) {
             return res.json({ ok: true, subscribed: true });
         }
 
-        // ── Feedback ──
         if (action === 'feedback') {
             var fbEmail = (req.query.email || '').trim();
             var rating = (req.query.rating || '').trim();
@@ -700,7 +688,6 @@ module.exports = async function handler(req, res) {
             return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#FAF8F4"><h2>Thanks for the feedback!</h2><p style="color:#777;margin-top:8px">See you tomorrow morning.</p></body></html>');
         }
 
-        // ── Unsubscribe ──
         if (action === 'unsubscribe') {
             var email2 = (req.query.email || (req.body && req.body.email) || '').trim().toLowerCase();
             if (!email2) return res.status(400).json({ error: 'Email required' });
@@ -709,7 +696,6 @@ module.exports = async function handler(req, res) {
             return res.json({ ok: true, unsubscribed: true });
         }
 
-        // ── Preview ──
         if (action === 'preview') {
             var previewRegion = req.query.region || 'eu';
             var stories = await generateFreshBriefing(supabase, previewRegion);
@@ -723,15 +709,13 @@ module.exports = async function handler(req, res) {
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
         }
 
-        // ── Test ──
         if (action === 'test') {
             var testEmail = req.query.email;
             if (!testEmail) return res.json({ error: 'Add &email=your@email.com' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
-            // Look up subscriber to get their name and region
             var testName = testEmail.split('@')[0];
-            var testRegion = 'eu'; // default
+            var testRegion = 'eu';
             try {
                 var lookup = await supabase.from('waitlist').select('name, region').eq('email', testEmail.toLowerCase()).limit(1);
                 if (lookup.data && lookup.data.length > 0) {
@@ -740,10 +724,8 @@ module.exports = async function handler(req, res) {
                 }
             } catch (e) { }
 
-            // Use subscriber's actual region for full pipeline
             var stories2 = await generateFreshBriefing(supabase, testRegion);
             if (!stories2) {
-                // Debug: try without translation to isolate the issue
                 var debugStories = null;
                 try {
                     var BASE = 'https://verityn-backend-ten.vercel.app';
@@ -774,12 +756,10 @@ module.exports = async function handler(req, res) {
                 }
             }
 
-            // Enrich with body text + better why-lines
             if (testRegion !== 'global' && testRegion !== 'asia') {
                 stories2 = await enrichStories(stories2, testRegion);
             }
 
-            // Generate extras (did you know, watching) + weather
             var extras2 = await generateExtras(stories2, testRegion);
             extras2.weather = await getWeather(testRegion);
 
@@ -794,14 +774,22 @@ module.exports = async function handler(req, res) {
                 });
                 try { transporter.close(); } catch (e) { }
                 var localCount = stories2.filter(function(s) { return s.isLocal; }).length;
-                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length, localStories: localCount });
+                // Source-count snapshot for the test response
+                var srcCounts = {};
+                for (var sci = 0; sci < stories2.length; sci++) {
+                    var sk = (stories2[sci].source || '').toLowerCase()
+                        .replace(/^(www\.|feeds\.|rss\.|news\.)/, '')
+                        .replace(/\.(com|org|net|co\.uk|co|io|de|fr|eu|uk|in|at|ch|jp|au|sg|ae|es|it|nl)$/, '')
+                        .replace(/[-_\s]+/g, '').trim();
+                    srcCounts[sk] = (srcCounts[sk] || 0) + 1;
+                }
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length, localStories: localCount, sourceCounts: srcCounts });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
             }
         }
 
-        // ── Send to all ──
         if (action === 'send') {
             if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Set NEWSLETTER_ENABLED=true' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
@@ -809,7 +797,6 @@ module.exports = async function handler(req, res) {
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
-            // Group subscribers by region
             var groups = {};
             for (var g = 0; g < subscribers.length; g++) {
                 var reg = subscribers[g].region || 'global';
@@ -817,7 +804,6 @@ module.exports = async function handler(req, res) {
                 groups[reg].push(subscribers[g]);
             }
 
-            // Generate fresh briefing per region (country-weighted + regional why-lines)
             var regions = Object.keys(groups);
             var regionalStories = {};
             var firstStories = null;
@@ -825,13 +811,11 @@ module.exports = async function handler(req, res) {
             for (var ri = 0; ri < regions.length; ri++) {
                 var rgn = regions[ri];
 
-                // Generate fresh briefing with region-weighted country sources
                 var stories = await generateFreshBriefing(supabase, rgn);
                 if (!stories) continue;
 
                 if (!firstStories) firstStories = stories;
 
-                // Apply regional why-lines for eu/us/india
                 if (rgn !== 'global' && rgn !== 'asia') {
                     regionalStories[rgn] = await enrichStories(stories, rgn);
                 } else {
@@ -841,10 +825,8 @@ module.exports = async function handler(req, res) {
 
             if (!firstStories) return res.json({ error: 'No briefing available' });
 
-            // Cache today's global version for reference
             try { await supabase.from('newsletter_cache').insert({ stories: firstStories }); } catch (e) { }
 
-            // Generate extras (fun fact, watching) + weather per region
             var regionalExtras = {};
             for (var oi = 0; oi < regions.length; oi++) {
                 var oRgn = regions[oi];
