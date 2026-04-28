@@ -86,13 +86,16 @@ const COUNTRY_FEEDS = {
     'https://www.ft.com/rss/home',
   ],
   de: [
-    // English-only sources covering Germany
-    'https://rss.dw.com/xml/rss-en-all',           // Deutsche Welle — general
-    'https://rss.dw.com/xml/rss-en-business',       // Deutsche Welle — business
-    'https://www.thelocal.de/feed/',                // The Local — expat/daily life
-    'https://www.spiegel.de/international/index.rss', // Der Spiegel International (English)
-    'https://www.euronews.com/rss?format=mrss&level=theme&name=news', // Euronews (English)
-    'https://www.politico.eu/feed/',                // Politico Europe — EU/Germany policy
+    // Germany-specific DW feeds (English)
+    'https://rss.dw.com/xml/rss-en-ger',              // DW — Germany section specifically
+    'https://rss.dw.com/xml/rss-en-all',               // DW — general
+    'https://rss.dw.com/xml/rss-en-bus',               // DW — business
+    'https://rss.dw.com/xml/rss-en-eu',                // DW — Europe
+    'https://www.thelocal.de/feed/',                    // The Local — expat/daily life Germany
+    'https://www.spiegel.de/international/index.rss',   // Spiegel International
+    'https://www.euronews.com/tag/germany/feed',        // Euronews — Germany tag
+    'https://www.politico.eu/feed/',                    // Politico EU
+    'https://www.reuters.com/world/europe/rss',         // Reuters Europe
   ],
   au: [
     'https://www.abc.net.au/news/feed/51120/rss.xml',
