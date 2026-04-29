@@ -44,6 +44,13 @@ function getRelativeTime(d) {
 function cleanText(text) {
   if (!text) return '';
   return text
+    // Strip CDATA artifacts that leak through malformed feed wrapping.
+    // Some Indian RSS feeds (Economic Times, others) embed CDATA in odd
+    // positions and the title regex can leave behind dangling `]]>` or
+    // `<![CDATA[`. These artifacts then break Claude's JSON output when
+    // the headline goes into a prompt.
+    .replace(/<!\[CDATA\[/g, '')
+    .replace(/\]\]>/g, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&apos;/g, "'").replace(/&#x27;/g, "'")
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
