@@ -12,10 +12,6 @@
     {
       "path": "/api/cron",
       "schedule": "0 5 * * *"
-    },
-    {
-      "path": "/api/newsletter?action=send",
-      "schedule": "0 5 * * *"
     }
   ],
   "headers": [
