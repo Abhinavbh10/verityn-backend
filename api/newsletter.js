@@ -1,23 +1,17 @@
-    // api/newsletter.js — Verityn daily brief newsletter
+// api/newsletter.js — Verityn daily brief newsletter
 // Actions: subscribe | unsubscribe | preview | test | send | feedback
 //
-// CHANGES (2026-04-28, third pass):
-// - Removed the "be honest, say it doesn't touch daily life" escape valve
-//   from enrichStories prompt. That escape was producing why-lines like
-//   "Russian politics story that doesn't affect your Berlin commute. Skip
-//   unless you follow Eastern European developments." — which is the
-//   model giving up on its job. Replaced with: every story has an angle,
-//   find it.
-// - Banned give-up phrases ("skip unless you follow", "doesn't affect your
-//   daily life", "mostly a political ethics story", "more background than
-//   action") in the NEVER list so Claude can't reach for them as a
-//   fallback shape.
+// CHANGES (2026-04-28, fourth pass):
+// - Removed "Forward this" mailto link from story 1. The link opened a
+//   generic email body with no story context, so it was clutter without
+//   utility. Story 1 now shows just the Read button like the other cards.
 //
 // Earlier changes still in effect:
 // - cleanSource strips country TLDs (.de .fr .eu .at .ch etc)
 // - capPerSource caps each source at 3 in the pool
 // - translateArticles cap raised to 12, de_local fetch raised to max=15
 // - Translated articles front-loaded into allArticles
+// - enrichStories prompt: every story has an angle, find it; banned give-up phrases
 // - Logging at three checkpoints
 
 var FROM_EMAIL = 'hello@verityn.news';
@@ -159,11 +153,6 @@ function buildStoryCard(s, i, size) {
         bodyHtml = '<tr><td style="font-size:' + bodySize + ';color:#444444;line-height:1.6;padding-bottom:10px">' + body + '</td></tr>';
     }
 
-    var forwardHtml = '';
-    if (i === 0) {
-        forwardHtml = '<td style="padding-left:12px;font-size:11px;color:#C0392B;font-weight:600"><a href="mailto:?subject=You%20should%20read%20this&body=Check%20out%20Verityn%20-%20verityn.news" style="color:#C0392B;text-decoration:underline">Forward this</a></td>';
-    }
-
     return '<tr><td style="padding-bottom:12px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:' + cardBg + ';border-radius:12px;border:' + cardBorder + '"><tr><td style="padding:18px">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
@@ -179,7 +168,6 @@ function buildStoryCard(s, i, size) {
         + '</tr></table></td></tr>'
         + '<tr><td><table role="presentation" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="background-color:#111111;border-radius:14px;padding:6px 16px"><a href="' + url + '" style="font-size:12px;font-weight:700;color:#FFFFFF;text-decoration:none">Read &#8250;</a></td>'
-        + forwardHtml
         + '</tr></table></td></tr>'
         + '</table></td></tr></table></td></tr>';
 }
@@ -308,7 +296,7 @@ async function getWeather(region) {
     var coords = {
         eu: { lat: 52.52, lon: 13.41, city: 'Berlin' },
         us: { lat: 40.71, lon: -74.01, city: 'New York' },
-        india: { lat: 19.07, lon: 72.87, city: 'Mumbai' },
+        india: { lat: 28.61, lon: 77.21, city: 'Delhi' },
         asia: { lat: 1.35, lon: 103.81, city: 'Singapore' },
         global: { lat: 51.50, lon: -0.12, city: 'London' },
     };
@@ -357,7 +345,7 @@ async function generateExtras(stories, region) {
     var regionCity = {
         eu: 'Berlin or Germany or Europe',
         us: 'New York or the United States',
-        india: 'Delhi or Mumbai or India',
+        india: 'Delhi or India',
         asia: 'Asia',
         global: 'the world',
     };
@@ -547,7 +535,7 @@ async function enrichStories(stories, region) {
     var regionContext = {
         eu: 'someone who lives and works in Berlin, Germany. They care about: their rent (Miete), their energy bills (Strom/Gas), their grocery prices, their commute (BVG, S-Bahn, U-Bahn), their health insurance (Krankenkasse), their kids\' school or Kita, their weekend plans, their neighborhood (Kiez), their taxes (Steuererklärung), their savings at Sparkasse or Deutsche Bank. They may or may not own stocks. They may or may not fly for work. Don\'t assume wealth or corporate lifestyle. Assume a normal person living a normal life in Berlin.',
         us: 'someone who lives and works in New York City. They care about: their rent, their subway commute (MTA), their grocery bill, their health insurance premiums, their 401k, their student loans, their Con Ed electricity bill, their kids\' school, their weekend plans, their neighborhood. Don\'t assume Wall Street or tech. Assume a normal person living a normal life in NYC.',
-        india: 'someone who lives and works in Mumbai, India. They care about: their rent, their EMI payments, their auto/Uber commute, their grocery prices (dal, atta, vegetables), their kids\' school fees, their LIC premiums, their FD rates, their local train commute, their weekend plans, their society maintenance. Don\'t assume IT professional or startup founder. Assume a normal person living a normal life in Mumbai.',
+        india: 'someone who lives and works in Delhi, India. They care about: their rent, their EMI payments, their auto/Uber/Ola commute, their grocery prices (dal, atta, vegetables, sabzi mandi rates), their kids\' school fees, their LIC premiums, their FD rates, their Delhi Metro commute, their DTC bus, their weekend plans, their society maintenance, their power cuts and DERC tariffs in summer, their air quality (AQI) and pollution, their water supply. Don\'t assume IT professional or startup founder. Assume a normal person living a normal life in Delhi.',
         global: 'someone who reads international news and wants to understand how it affects daily life',
         asia: 'someone who lives in Asia and wants to understand how news affects their daily life',
     };
