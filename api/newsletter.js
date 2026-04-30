@@ -349,19 +349,20 @@ function cleanName(raw) {
 async function generateExtras(stories, region) {
     if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
 
+    // Did You Know is now sourced from a curated fact list per region (see _facts.js).
+    // Removes the hallucination risk of asking Claude to generate "fun facts about Berlin" —
+    // which produced repeating 177-anchored facts and invented specific numbers.
+    var facts = require('./_facts.js');
+    var didYouKnow = facts.getRandomFact(region);
+
+    // "What we're watching" is still Claude-generated since it's news-derived
+    // and benefits from real-time context. Tightened the prompt to push for
+    // forward-looking content (was recapping top stories).
     var headlines = stories.slice(0, 7).map(function(s, i) {
         return (i + 1) + '. ' + s.headline;
     }).join('\n');
 
-    var regionCity = {
-        eu: 'Berlin or Germany or Europe',
-        us: 'New York or the United States',
-        india: 'Delhi or India',
-        asia: 'Asia',
-        global: 'the world',
-    };
-    var city = regionCity[region] || regionCity.global;
-
+    var watching = '';
     try {
         var r = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -372,20 +373,30 @@ async function generateExtras(stories, region) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 300,
+                max_tokens: 150,
                 messages: [{
                     role: 'user',
-                    content: 'Generate 2 things as JSON for a morning newsletter for readers in ' + city + ':\n\n1. "did_you_know": A fun, surprising, non-news fact about ' + city + '. Not from today\'s news. A cultural, historical, geographic, or quirky city/country fact. Format: "NUMBER — explanation." Examples: "42 — the number of lakes you can swim in within Berlin city limits." "1,247 — the number of bridges in Hamburg, more than Venice and Amsterdam combined." "23 — the official languages in India, not counting the 100+ unofficial ones." Make it the kind of thing people screenshot and send to friends. Avoid anything that sounds like a textbook. Pick something weird, delightful, or mildly absurd.\n\n2. "watching": One sentence about an ongoing story or scheduled event to watch this week. Based on these headlines:\n' + headlines + '\nDon\'t predict. Just say what\'s developing. E.g. "The ECB rate debate continues this week as inflation data drops Thursday."\n\nRespond with ONLY a JSON object with keys "did_you_know" and "watching". No markdown, no backticks.',
+                    content: 'Below are 7 news headlines from this morning. Write ONE forward-looking sentence about something developing in the coming days or week. Do NOT recap any of these stories. Point at what to watch NEXT.\n\n'
+                        + 'WRONG (recap): "Bengal voting Phase 2 continues this week with over 1,000 candidates."\n'
+                        + 'WRONG (recap): "Italian rail company Italo is launching German operations with 26 trains."\n'
+                        + 'RIGHT (forward-looking): "Watch the ECB on Thursday — inflation data lands Wednesday and a rate decision follows."\n'
+                        + 'RIGHT (forward-looking): "Q1 earnings from BASF and Bayer drop this week. Both sit downstream of the Iran-driven chemical cost spike."\n'
+                        + 'RIGHT (forward-looking): "The Bundestag debates the Gebäudemodernisierungsgesetz next Wednesday. Watch how the heating cost split lands."\n\n'
+                        + 'Headlines:\n' + headlines + '\n\n'
+                        + 'Respond with ONLY the one sentence. No JSON, no markdown, no preamble.',
                 }],
             }),
         });
         var data = await r.json();
         var text = (data.content && data.content[0] && data.content[0].text) || '';
-        var clean = text.replace(/```json|```/g, '').trim();
-        return JSON.parse(clean);
+        watching = text.replace(/```/g, '').trim();
+        // Strip any leading "What we're watching:" or quote marks the model might add
+        watching = watching.replace(/^["'\s]*(what.*?watching\s*[:\-–—]?\s*)?["']?/i, '').replace(/["']\s*$/, '').trim();
     } catch (e) {
-        return { did_you_know: '', watching: '' };
+        watching = '';
     }
+
+    return { did_you_know: didYouKnow, watching: watching };
 }
 
 var TRANSLATE_LIMIT = 12;
