@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/newsletter.js": {
-      "maxDuration": 60
+      "maxDuration": 300
     },
     "api/briefing.js": {
       "maxDuration": 60
