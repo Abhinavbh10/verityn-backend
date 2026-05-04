@@ -124,7 +124,8 @@ const COUNTRY_FEEDS = {
     // German-language feeds — will be translated to English by newsletter pipeline.
     // BYPASSES isEnglishHeadline filter (see RSS handler below).
     'https://www.tagesschau.de/index~rss2.xml',          // Tagesschau — main public TV news
-    'https://www.tagesspiegel.de/contentexport/feed/home', // Tagesspiegel — Berlin focused
+    'https://www.tagesspiegel.de/contentexport/feed/home', // Tagesspiegel — main mixed feed
+    'https://www.tagesspiegel.de/contentexport/feed/berlin', // Tagesspiegel — Berlin hyperlocal (Lichtenberg, Spandau, Görlitzer, etc.)
     'https://rss.sueddeutsche.de/rss/Topthemen',          // Süddeutsche Zeitung — top stories
     'https://www.faz.net/rss/aktuell/',                    // FAZ — general
     'https://www.handelsblatt.com/contentexport/feed/top', // Handelsblatt — business
