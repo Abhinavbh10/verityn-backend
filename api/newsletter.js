@@ -791,6 +791,50 @@ module.exports = async function handler(req, res) {
         }
 
         if (action === 'send') {
+            // GUARD 1: POST-only. Browsers do not auto-retry POSTs, do not prefetch
+            // POSTs, do not restore them from history. Eliminates the class of bug
+            // where a slow GET request gets duplicated by browser retry mid-flight.
+            // Hit with: curl -X POST .../api/newsletter?action=send  (or browser
+            // dev tools fetch with method=POST). NOT a regular browser URL hit.
+            if (req.method !== 'POST') {
+                return res.status(405).json({
+                    error: 'send action requires POST method',
+                    hint: 'curl -X POST "<url>/api/newsletter?action=send"',
+                });
+            }
+
+            // GUARD 2: Idempotency — has a newsletter already been sent today?
+            // Today is computed in UTC since newsletter_log.created_at is UTC.
+            // Any send that completed on the same UTC calendar day blocks subsequent sends.
+            // To override (e.g. for a verified rebroadcast), pass &force=1 — explicit opt-in only.
+            try {
+                var todayUtc = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+                var force = req.query.force === '1' || (req.body && req.body.force === '1');
+                if (!force) {
+                    var { data: existingSends } = await supabase
+                        .from('newsletter_log')
+                        .select('created_at, sent_count, subject')
+                        .gte('created_at', todayUtc + 'T00:00:00.000Z')
+                        .lt('created_at', todayUtc + 'T23:59:59.999Z')
+                        .gt('sent_count', 0)
+                        .limit(1);
+                    if (existingSends && existingSends.length > 0) {
+                        return res.status(409).json({
+                            ok: false,
+                            alreadySent: true,
+                            reason: 'Newsletter already sent today (UTC)',
+                            previous: existingSends[0],
+                            hint: 'To rebroadcast, pass &force=1 — explicit opt-in only.',
+                        });
+                    }
+                }
+            } catch (e) {
+                // Don't fail the send if the idempotency check itself errors.
+                // Better to risk a duplicate than to block a legitimate send because the
+                // log table is unreachable. Log to errors and continue.
+                console.error('[newsletter] idempotency check failed:', e.message);
+            }
+
             if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Set NEWSLETTER_ENABLED=true' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
