@@ -880,9 +880,13 @@ module.exports = async function handler(req, res) {
                 }
             }
 
-            var subject2 = buildSubjectLine(firstStories);
+            // Subject line is now built PER REGION from that region's stories.
+            // Previously used firstStories which leaked Berlin subjects into India
+            // emails (and vice versa) when the email body was correctly regional.
+            // Subscribers got Berlin subject + Delhi body, which is misleading.
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
+            var subjectsByRegion = {}; // capture for the log row
 
             for (var ri2 = 0; ri2 < regions.length; ri2++) {
                 var region = regions[ri2];
@@ -891,13 +895,16 @@ module.exports = async function handler(req, res) {
                 var regionExtras = regionalExtras[region] || {};
                 if (!regionStories) continue;
 
+                var regionSubject = buildSubjectLine(regionStories);
+                subjectsByRegion[region] = regionSubject;
+
                 for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
                     var sub = subs[i];
                     try {
                         await transporter2.sendMail({
                             from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                             to: sub.email,
-                            subject: subject2,
+                            subject: regionSubject,
                             html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email, regionExtras),
                         });
                         sent++;
@@ -909,16 +916,22 @@ module.exports = async function handler(req, res) {
                 }
             }
 
+            // Build a combined subject summary for the log table (so newsletter_log
+            // shows BOTH regional subjects when multi-region was sent).
+            var loggedSubject = Object.keys(subjectsByRegion)
+                .map(function(r) { return '[' + r + '] ' + subjectsByRegion[r]; })
+                .join(' | ');
+
             try { transporter2.close(); } catch (e) { }
             try {
                 await supabase.from('newsletter_log').insert({
                     sent_count: sent, failed_count: failed,
                     errors: errors.length > 0 ? errors : null,
-                    subject: subject2, story_count: firstStories.length,
+                    subject: loggedSubject, story_count: firstStories.length,
                 });
             } catch (e) { }
 
-            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject2, regions: regions });
+            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subjects: subjectsByRegion, regions: regions });
         }
 
         return res.json({ actions: 'subscribe, unsubscribe, preview, test, send' });
