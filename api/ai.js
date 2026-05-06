@@ -101,6 +101,39 @@ function parseJSON(raw) {
   return null;
 }
 
+// Fix #23: enforce why-line word cap server-side. Claude sometimes ignores
+// the 25-35 word constraint or self-truncates with "...". This function:
+// 1. Strips trailing "..." or "…" sequences
+// 2. If over MAX_WORDS, truncates at the nearest sentence boundary in the
+//    last 40% of the text, otherwise hard-caps at MAX_WORDS with a period
+// 3. Ensures terminal punctuation
+function trimWhy(text, maxWords = 38) {
+  if (!text) return text;
+  let t = String(text).trim();
+  // Strip trailing ellipsis (any form) plus any preceding partial fragment punctuation
+  t = t.replace(/[\s,;:]*(?:\.{2,}|…)\s*$/g, '');
+  if (!t) return t;
+
+  const words = t.split(/\s+/);
+  if (words.length <= maxWords) {
+    if (!/[.!?]$/.test(t)) t += '.';
+    return t;
+  }
+
+  // Try to truncate at a sentence boundary in the last portion of allowed words
+  const truncated = words.slice(0, maxWords).join(' ');
+  const lastTerminal = Math.max(
+    truncated.lastIndexOf('.'),
+    truncated.lastIndexOf('?'),
+    truncated.lastIndexOf('!')
+  );
+  if (lastTerminal > truncated.length * 0.55) {
+    return truncated.slice(0, lastTerminal + 1).trim();
+  }
+  // No good sentence break — hard cap, strip trailing fragment punctuation, end with period
+  return truncated.replace(/[,;:]\s*$/, '').replace(/\s+$/, '') + '.';
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -303,7 +336,10 @@ Articles:
 ${headlinesList}`;
 
     try {
-      const raw  = await callClaude(ANTHROPIC_KEY, system, prompt, 800);
+      // Fix #23: bumped from 800 to 1500 — at 800 Claude was self-truncating
+      // why-lines mid-word with "..." when 7 stories' worth of text + JSON
+      // structure approached the budget
+      const raw  = await callClaude(ANTHROPIC_KEY, system, prompt, 1500);
       const parsed = parseJSON(raw);
       if (!parsed?.stories || parsed.stories.length < 7) {
         await logError(supabase, { endpoint: 'ai', action: 'briefing', error: 'Insufficient stories returned', context: { storiesCount: parsed?.stories?.length }, sessionId });
@@ -313,7 +349,9 @@ ${headlinesList}`;
         .filter(s => s.index >= 1 && s.index <= pool.length && s.why)
         .map(s => ({
           ...pool[s.index - 1],
-          why:  s.why,
+          // Fix #23: trimWhy enforces 25-38 word cap, strips trailing "..."
+          // truncation, and ensures clean sentence-boundary endings
+          why:  trimWhy(s.why),
         }))
         .filter(s => s && s.headline);
 
