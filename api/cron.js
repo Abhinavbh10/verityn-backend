@@ -2,12 +2,17 @@
 // FILE: api/cron.js
 // PURPOSE: Cache warming + topic thread generation + cleanup
 // Runs: GitHub Actions every 3h + Vercel cron 5am UTC daily
+//
+// GERMANY-ONLY: Verityn is now focused on news for English speakers
+// living in Germany. Multi-country fetching has been removed.
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 const { cleanupRateLimits, logError } = require('./_helpers');
 
-const COUNTRIES = ['in', 'us', 'gb', 'de', 'au', 'sg', 'ae', 'jp'];
+// Single-country product. Kept as array for code-shape compatibility with
+// existing /api/content?country=de calls.
+const COUNTRIES = ['de'];
 
 // Fix #23: Defensive VERCEL_URL — strip protocol if accidentally included
 const rawUrl = process.env.VERCEL_URL || 'verityn-backend-ten.vercel.app';
@@ -30,8 +35,100 @@ function isEnglishHeadline(title) {
   return true;
 }
 
+// ── Germany-relevance filter ────────────────────────────────
+// Drops articles that are clearly about another country with no German angle.
+// Applied before clustering to keep topic_threads focused on Germany expat life.
+const GERMANY_KEYWORDS = /\b(germany|german|berlin|munich|münchen|hamburg|frankfurt|cologne|köln|stuttgart|düsseldorf|leipzig|dresden|bremen|hannover|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grünen|gruene|greens|afd|merz|scholz|habeck|lindner|baerbock|wagenknecht|weidel|söder|soeder|deutsche bahn|lufthansa|volkswagen|bmw|mercedes|siemens|sap|bayer|allianz|dax|krankenkasse|bürgergeld|buergergeld|mietpreisbremse|heizungsgesetz|energiewende|tagesschau|tagesspiegel|spiegel|faz|sueddeutsche|süddeutsche|the local|dw|deutsche welle|euro|ezb|ecb|european central bank|eu|european union|brussels|strasbourg)\b/i;
+const STRONG_FOREIGN = /\b(india|indian|delhi|mumbai|bangalore|chennai|kolkata|sensex|nifty|rupee|modi|bjp|china|chinese|beijing|shanghai|xi jinping|japan|japanese|tokyo|nikkei|yen|korea|korean|seoul|saudi arabia|riyadh|dubai|abu dhabi|emirates|brazil|brazilian|mexico|mexican|argentina|chile|nigeria|kenya|south africa|australia|sydney|melbourne|asx|new zealand|wellington)\b/i;
+
+function isGermanyRelevant(title, summary) {
+  const text = ((title || '') + ' ' + (summary || '')).toLowerCase();
+  // Strong Germany/EU signal — keep
+  if (GERMANY_KEYWORDS.test(text)) return true;
+  // Otherwise check if it's primarily about a foreign country
+  if (STRONG_FOREIGN.test(text)) return false;
+  // Generic global stories (Trump, Iran, war, climate, AI, Ukraine, Russia, US Fed, Israel, Gaza, NATO)
+  // — pass through; clustering will pair them with Germany-relevant entities if they have one
+  return true;
+}
+
 // ── Entity map for topic clustering ──────────────────────────
 const ENTITY_MAP = {
+  // ── German political institutions ──
+  'bundestag':'bundestag','bundesrat':'bundesrat',
+  'bundesregierung':'germany','bundeskanzler':'germany','chancellor':'germany',
+  'bundeswehr':'bundeswehr',
+
+  // ── German parties ──
+  'cdu':'cdu','csu':'csu','spd':'spd','fdp':'fdp',
+  'grünen':'greens','greens':'greens','gruene':'greens',
+  'afd':'afd','linke':'linke','die linke':'linke','bsw':'bsw',
+
+  // ── German politicians ──
+  'merz':'merz','scholz':'scholz','habeck':'habeck','lindner':'lindner',
+  'baerbock':'baerbock','wagenknecht':'wagenknecht','weidel':'weidel',
+  'söder':'soeder','soeder':'soeder','steinmeier':'steinmeier',
+
+  // ── German policy / law ──
+  'bürgergeld':'buergergeld','buergergeld':'buergergeld',
+  'mietpreisbremse':'housing-policy','mietendeckel':'housing-policy',
+  'heizungsgesetz':'heizungsgesetz','wärmepumpe':'energy','waermepumpe':'energy',
+  'energiewende':'energy','klimageld':'climate-policy',
+  'mindestlohn':'mindestlohn','tarifvertrag':'tarif','tarif':'tarif',
+  'kurzarbeit':'kurzarbeit','elterngeld':'elterngeld','kindergeld':'kindergeld',
+
+  // ── Bureaucracy / paperwork ──
+  'anmeldung':'anmeldung','bürgeramt':'buergeramt','buergeramt':'buergeramt',
+  'krankenkasse':'krankenkasse','krankenversicherung':'krankenkasse',
+  'gkv':'krankenkasse','tk':'krankenkasse','aok':'krankenkasse','barmer':'krankenkasse',
+  'rentenversicherung':'rente','rente':'rente','altersvorsorge':'rente',
+  'finanzamt':'tax','steuer':'tax','steuererklärung':'tax','steuererklaerung':'tax',
+  'gez':'gez','rundfunkbeitrag':'gez',
+
+  // ── Visa / residency ──
+  'aufenthaltstitel':'visa','niederlassungserlaubnis':'visa','niederlassung':'visa',
+  'einbürgerung':'visa','einbuergerung':'visa','naturalization':'visa',
+  'aufenthalt':'visa','arbeitserlaubnis':'visa',
+
+  // ── German cities ──
+  'berlin':'berlin','münchen':'munich','munich':'munich','muenchen':'munich',
+  'hamburg':'hamburg','frankfurt':'frankfurt',
+  'köln':'cologne','cologne':'cologne','koeln':'cologne',
+  'stuttgart':'stuttgart','düsseldorf':'duesseldorf','duesseldorf':'duesseldorf',
+  'leipzig':'leipzig','dresden':'dresden','bremen':'bremen','hannover':'hannover',
+  'nürnberg':'nuremberg','nuremberg':'nuremberg',
+
+  // ── German transport ──
+  'bahn':'db','autobahn':'autobahn',
+  'bvg':'bvg','s-bahn':'s-bahn','u-bahn':'u-bahn',
+  'lufthansa':'lufthansa','flixbus':'flixbus',
+
+  // ── German unions / strikes ──
+  'verdi':'verdi','ver.di':'verdi',
+  'ig metall':'ig-metall','igmetall':'ig-metall',
+  'streik':'strike','strike':'strike','gdl':'gdl',
+
+  // ── German companies ──
+  'volkswagen':'volkswagen','vw':'volkswagen',
+  'bmw':'bmw','mercedes':'mercedes','mercedes-benz':'mercedes',
+  'siemens':'siemens','sap':'sap','bayer':'bayer',
+  'allianz':'allianz','deutsche bank':'deutsche-bank','commerzbank':'commerzbank',
+  'porsche':'porsche','adidas':'adidas','puma':'puma',
+
+  // ── German economy terms ──
+  'dax':'dax','mittelstand':'mittelstand','bundesbank':'bundesbank',
+
+  // ── EU ──
+  'eu':'eu','european union':'eu','europäische union':'eu',
+  'ezb':'ecb','ecb':'ecb','european central bank':'ecb',
+  'european commission':'eu-commission','european parliament':'eu-parliament',
+  'brussels':'eu','strasbourg':'eu',
+
+  // ── Bundesliga / football clubs ──
+  'bundesliga':'bundesliga','bayern':'bayern','dortmund':'dortmund','bvb':'dortmund',
+  'leverkusen':'leverkusen','schalke':'schalke','rb leipzig':'leipzig-fc',
+
+  // ── Existing global entities (kept — they pair with German entities) ──
   'iran':'iran','iranian':'iran','irans':'iran',
   'israel':'israel','israeli':'israel','israelis':'israel',
   'ukraine':'ukraine','ukrainian':'ukraine',
@@ -42,25 +139,20 @@ const ENTITY_MAP = {
   'france':'france','french':'france',
   'america':'america','american':'america','us':'america',
   'britain':'uk','british':'uk','england':'uk',
-  'australia':'australia','australian':'australia',
   'japan':'japan','japanese':'japan',
-  'korea':'korea','korean':'korea',
-  'taiwan':'taiwan','taiwanese':'taiwan',
   'pakistan':'pakistan','saudi':'saudi',
   'europe':'europe','european':'europe',
   'nato':'nato','gaza':'gaza','hamas':'hamas',
-  'trump':'trump','biden':'biden','modi':'modi','putin':'putin',
-  'zelensky':'zelensky','netanyahu':'netanyahu','xi':'xi',
-  'macron':'macron','scholz':'scholz','merz':'merz',
+  'trump':'trump','biden':'biden','putin':'putin','zelensky':'zelensky',
+  'netanyahu':'netanyahu','xi':'xi','macron':'macron',
   'congress':'congress','parliament':'parliament','senate':'senate',
   'election':'election','elections':'election',
-  'fed':'fed','rbi':'rbi','ecb':'ecb',
-  'inflation':'inflation','inflationary':'inflation',
-  'recession':'recession','gdp':'gdp',
+  'fed':'fed',
+  'inflation':'inflation','recession':'recession','gdp':'gdp',
   'oil':'oil','opec':'opec','crude':'oil',
   'rate':'rates','rates':'rates','interest':'rates',
   'market':'markets','markets':'markets','stocks':'stocks',
-  'dollar':'dollar','rupee':'rupee','euro':'euro',
+  'dollar':'dollar','euro':'euro',
   'bank':'banking','banking':'banking',
   'tariff':'tariffs','tariffs':'tariffs','trade':'trade',
   'ai':'ai','artificial':'ai',
@@ -72,46 +164,87 @@ const ENTITY_MAP = {
   'energy':'energy','solar':'energy','renewable':'energy',
   'war':'war','conflict':'conflict','ceasefire':'ceasefire',
   'sanctions':'sanctions','nuclear':'nuclear',
-  'strait':'hormuz','hormuz':'hormuz',
-  // Companies / specific named entities — extend as needed
-  'lufthansa':'lufthansa','ryanair':'ryanair',
-  'volkswagen':'volkswagen','vw':'volkswagen',
-  'bmw':'bmw','mercedes':'mercedes','siemens':'siemens',
   'tesla':'tesla','spacex':'spacex','amazon':'amazon',
+  'ryanair':'ryanair',
 };
 
 // ── Entities too broad to stand alone — must be paired with a secondary ──
+// Includes country-only entities (germany, france, etc.) and very generic
+// concepts (markets, banking) — these need a specific secondary entity to
+// form a meaningful topic cluster.
 const BROAD_ENTITIES = new Set([
-  'germany','france','india','china','japan','korea','taiwan','saudi',
+  'germany','france','india','china','japan','korea','saudi',
   'australia','uk','europe','america','pakistan','russia',
-  'markets','banking',
+  'markets','banking','europe','eu',
 ]);
 
 function getEntities(headline) {
-  const words = (headline || '').toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/);
-  return [...new Set(words.map(w => ENTITY_MAP[w]).filter(Boolean))].sort();
+  const text = (headline || '').toLowerCase();
+  const found = new Set();
+
+  // Multi-word entities checked first (e.g. "deutsche bahn", "ig metall")
+  // before single-word tokenization so they're not split apart.
+  for (const [key, val] of Object.entries(ENTITY_MAP)) {
+    if (key.includes(' ') || key.includes('-') || key.includes('.')) {
+      if (text.includes(key)) found.add(val);
+    }
+  }
+
+  // Single-word matches via tokenization
+  const words = text.replace(/[^a-zäöüß0-9\s]/g, ' ').split(/\s+/);
+  for (const w of words) {
+    if (ENTITY_MAP[w]) found.add(ENTITY_MAP[w]);
+  }
+
+  return [...found].sort();
 }
 
 function makeTopicLabel(entities) {
   const labelMap = {
+    // German labels
+    'bundestag':'Bundestag','bundesrat':'Bundesrat','bundeswehr':'Bundeswehr',
+    'cdu':'CDU','csu':'CSU','spd':'SPD','fdp':'FDP',
+    'greens':'Grüne','afd':'AfD','linke':'Die Linke','bsw':'BSW',
+    'merz':'Merz','scholz':'Scholz','habeck':'Habeck','lindner':'Lindner',
+    'baerbock':'Baerbock','wagenknecht':'Wagenknecht','weidel':'Weidel',
+    'soeder':'Söder','steinmeier':'Steinmeier',
+    'buergergeld':'Bürgergeld','housing-policy':'Rent Cap',
+    'heizungsgesetz':'Heating Law','energy':'Energy',
+    'mindestlohn':'Minimum Wage','tarif':'Wage Talks','kurzarbeit':'Kurzarbeit',
+    'elterngeld':'Elterngeld','kindergeld':'Kindergeld',
+    'anmeldung':'Anmeldung','buergeramt':'Bürgeramt',
+    'krankenkasse':'Krankenkasse','rente':'Pension','tax':'Tax & Finanzamt','gez':'Rundfunkbeitrag',
+    'visa':'Visa & Residency',
+    'berlin':'Berlin','munich':'Munich','hamburg':'Hamburg','frankfurt':'Frankfurt',
+    'cologne':'Cologne','stuttgart':'Stuttgart','duesseldorf':'Düsseldorf',
+    'leipzig':'Leipzig','dresden':'Dresden','bremen':'Bremen','hannover':'Hannover','nuremberg':'Nuremberg',
+    'db':'Deutsche Bahn','autobahn':'Autobahn','bvg':'BVG','s-bahn':'S-Bahn','u-bahn':'U-Bahn',
+    'lufthansa':'Lufthansa','flixbus':'FlixBus',
+    'verdi':'Verdi','ig-metall':'IG Metall','strike':'Strike','gdl':'GDL',
+    'volkswagen':'Volkswagen','bmw':'BMW','mercedes':'Mercedes','siemens':'Siemens',
+    'sap':'SAP','bayer':'Bayer','allianz':'Allianz','porsche':'Porsche',
+    'deutsche-bank':'Deutsche Bank','commerzbank':'Commerzbank','adidas':'Adidas','puma':'Puma',
+    'dax':'DAX','mittelstand':'Mittelstand','bundesbank':'Bundesbank',
+    'eu':'EU','ecb':'ECB','eu-commission':'EU Commission','eu-parliament':'EU Parliament',
+    'bundesliga':'Bundesliga','bayern':'Bayern Munich','dortmund':'Dortmund',
+    'leverkusen':'Leverkusen','schalke':'Schalke','leipzig-fc':'RB Leipzig',
+    'climate-policy':'Climate Policy',
+
+    // Global (kept)
     'iran':'Iran','israel':'Israel','ukraine':'Ukraine','russia':'Russia',
     'china':'China','india':'India','germany':'Germany','france':'France',
-    'america':'United States','trump':'Trump','biden':'Biden','modi':'Modi',
-    'putin':'Putin','nato':'NATO','gaza':'Gaza','hamas':'Hamas',
-    'pakistan':'Pakistan','uk':'UK','oil':'Oil Prices','rates':'Interest Rates',
-    'markets':'Markets','chips':'Semiconductors','ai':'Artificial Intelligence',
-    'climate':'Climate','trade':'Trade','tariffs':'Tariffs','hormuz':'Strait of Hormuz',
-    'ceasefire':'Ceasefire Talks','nuclear':'Nuclear','sanctions':'Sanctions',
-    'banking':'Banking','dollar':'US Dollar','google':'Google','nvidia':'Nvidia',
-    'openai':'OpenAI','microsoft':'Microsoft','cyber':'Cybersecurity','energy':'Energy',
-    'election':'Elections','zelensky':'Zelensky','netanyahu':'Netanyahu',
-    'saudi':'Saudi Arabia','australia':'Australia','europe':'Europe',
-    'japan':'Japan','korea':'Korea','taiwan':'Taiwan','inflation':'Inflation',
-    'fed':'Federal Reserve','rbi':'RBI','merz':'Merz','scholz':'Scholz',
-    'lufthansa':'Lufthansa','ryanair':'Ryanair','volkswagen':'Volkswagen',
-    'bmw':'BMW','mercedes':'Mercedes','siemens':'Siemens',
-    'tesla':'Tesla','spacex':'SpaceX','amazon':'Amazon',
+    'america':'United States','trump':'Trump','biden':'Biden','putin':'Putin',
+    'nato':'NATO','gaza':'Gaza','hamas':'Hamas','pakistan':'Pakistan','uk':'UK',
+    'oil':'Oil Prices','rates':'Interest Rates','markets':'Markets',
+    'chips':'Semiconductors','ai':'Artificial Intelligence','climate':'Climate',
+    'trade':'Trade','tariffs':'Tariffs','ceasefire':'Ceasefire','nuclear':'Nuclear',
+    'sanctions':'Sanctions','banking':'Banking','dollar':'US Dollar','euro':'Euro',
+    'google':'Google','nvidia':'Nvidia','openai':'OpenAI','microsoft':'Microsoft',
+    'apple':'Apple','meta':'Meta','tesla':'Tesla','amazon':'Amazon','ryanair':'Ryanair',
+    'cyber':'Cybersecurity','election':'Elections','zelensky':'Zelensky','netanyahu':'Netanyahu',
+    'saudi':'Saudi Arabia','europe':'Europe','japan':'Japan','korea':'Korea',
+    'inflation':'Inflation','fed':'Federal Reserve','recession':'Recession','gdp':'GDP',
+    'macron':'Macron','xi':'Xi','war':'War','conflict':'Conflict','spacex':'SpaceX',
   };
   return entities.slice(0, 3)
     .map(e => labelMap[e] || e.charAt(0).toUpperCase() + e.slice(1))
@@ -121,16 +254,32 @@ function makeTopicLabel(entities) {
 // ── Cluster articles by entity-pair signature ────────────────
 // Broad entities (countries, "markets") MUST be paired with a specific
 // secondary entity, otherwise the article is dropped from clustering.
-// This prevents "germany" from sweeping in unrelated German stories.
 function clusterArticles(articles) {
   const ENTITY_PRIORITY = [
+    // Germany-specific (highest priority — these are the stories we want)
+    'buergergeld','housing-policy','heizungsgesetz','energy','mindestlohn',
+    'krankenkasse','visa','strike','tax','rente','anmeldung','tarif',
+    'bundestag','bundesrat','cdu','spd','fdp','greens','afd','linke','bsw',
+    'merz','scholz','habeck','lindner','weidel','soeder','wagenknecht',
+    // Cities (specific city-level stories)
+    'berlin','munich','hamburg','frankfurt','cologne','stuttgart','leipzig',
+    'duesseldorf','dresden','bremen','hannover',
+    // German transport
+    'db','bvg','s-bahn','lufthansa','verdi','ig-metall','gdl',
+    // German companies
+    'volkswagen','bmw','mercedes','siemens','sap','bayer','allianz','porsche',
+    'deutsche-bank','adidas',
+    // German football
+    'bundesliga','bayern','dortmund','leverkusen','leipzig-fc',
+    // EU
+    'eu','ecb','eu-commission',
+    // Existing global priorities (lower)
     'iran','israel','ukraine','russia','china','india','germany','france',
-    'trump','putin','modi','zelensky','netanyahu','merz','scholz',
+    'trump','putin','modi','zelensky','netanyahu',
     'fed','oil','ai','chips','markets','rates','inflation','tariffs','trade',
-    'nato','nuclear','sanctions','war','ceasefire','hormuz',
-    'climate','energy','election','congress','america','uk','australia','japan','korea',
-    'lufthansa','ryanair','volkswagen','bmw','mercedes','siemens',
-    'tesla','spacex','nvidia','openai','google','apple','microsoft','meta','amazon',
+    'nato','nuclear','sanctions','war','ceasefire',
+    'climate','election','congress','america','uk','japan','korea',
+    'tesla','spacex','nvidia','openai','google','apple','microsoft','meta','amazon','ryanair',
   ];
 
   function rankedTop(entities, n) {
@@ -192,18 +341,21 @@ function parseRssHeadlines(xml, sourceName) {
   const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
   return items.slice(0, 15).map(item => {
     const title = (item.match(/<title[^>]*>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/title>/) || [])[1] || '';
-    return { headline: title.trim(), source: sourceName, url: '' };
+    const desc = (item.match(/<description[^>]*>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/description>/) || [])[1] || '';
+    return {
+      headline: title.trim(),
+      summary: desc.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
+      source: sourceName,
+      url: '',
+    };
   }).filter(a => a.headline.length > 10);
 }
 
 // ── Detect "while X while Y" fusion in generated text ────────
-// If Claude produces a fused sentence despite instructions, reject it.
 function isFusedSentence(text) {
   if (!text) return false;
-  // Two or more "while" occurrences = fused sentence
   const whileCount = (text.match(/\bwhile\b/gi) || []).length;
   if (whileCount >= 2) return true;
-  // "while" + "as" within 12 words of each other = also fused
   if (/\bwhile\b[\s\S]{1,80}\bas\b/i.test(text) && /\bwhile\b/i.test(text)) {
     const words = text.split(/\s+/);
     const whileIdx = words.findIndex(w => /while/i.test(w));
@@ -234,15 +386,14 @@ module.exports = async function handler(request, response) {
 
   const results = { cacheWarmed: [], threadsGenerated: [], threadsSkipped: [], errors: [], debug: {} };
 
-  // ── Step 0: Cleanup old rate limits (Fix #17) ──────────────
+  // ── Step 0: Cleanup old rate limits ────────────────────────
   try {
     await cleanupRateLimits(supabase);
   } catch (e) {
     results.errors.push('rate-limit-cleanup: ' + e.message);
   }
 
-  // ── Step 1: Cache warming ─────────────────────────────────
-  // Fix #19: Use 'cron' as sessionId so it doesn't compete with user rate limits
+  // ── Step 1: Cache warming (Germany only) ───────────────────
   try {
     for (const country of COUNTRIES) {
       try {
@@ -259,53 +410,94 @@ module.exports = async function handler(request, response) {
   }
 
   // ── Step 2: Topic thread generation ──────────────────────
+  // Sources: Germany-focused English outlets (The Local DE, Berlin Spectator,
+  // POLITICO Europe, DW), plus global wires (NYT/Guardian/Reuters/BBC) where
+  // Germany-relevant stories surface. German-language outlets translated
+  // happen via the newsletter pipeline, not here.
   try {
-    const countries = ['us', 'gb', 'in', 'de', 'au', 'sg', 'ae'];
-
     const headlineFetches = [
-      ...countries.map(c =>
-        fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=${c}&max=10&apikey=${GNEWS_KEY}`)
-          .then(r => r.json())
-          .then(d => (d.articles || []).map(a => ({
-            headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
-            source: a.source?.name || 'Unknown', url: a.url,
-          }))).catch(() => [])
-      ),
-      ...(NYT_KEY ? ['world', 'politics', 'business', 'technology'].map(section =>
+      // GNews — Germany-specific English headlines
+      fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
+        .then(r => r.json())
+        .then(d => (d.articles || []).map(a => ({
+          headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
+          summary: (a.description || '').replace(/<[^>]+>/g, '').trim().slice(0, 300),
+          source: a.source?.name || 'Unknown', url: a.url,
+        }))).catch(() => []),
+
+      // NYT Europe section + general world (for Germany-relevant global stories)
+      ...(NYT_KEY ? ['world', 'business'].map(section =>
         fetch(`https://api.nytimes.com/svc/topstories/v2/${section}.json?api-key=${NYT_KEY}`)
           .then(r => r.json())
           .then(d => (d.results || []).slice(0, 15).map(a => ({
             headline: (a.title || '').trim(),
+            summary: (a.abstract || '').trim().slice(0, 300),
             source: 'New York Times', url: a.url,
           }))).catch(() => [])
       ) : []),
-      ...(GUARDIAN_KEY ? ['world', 'politics', 'business', 'technology'].map(section =>
+
+      // Guardian Europe + business
+      ...(GUARDIAN_KEY ? ['world', 'business'].map(section =>
         fetch(`https://content.guardianapis.com/${section}?api-key=${GUARDIAN_KEY}&page-size=15`)
           .then(r => r.json())
           .then(d => (d.response?.results || []).map(a => ({
             headline: (a.webTitle || '').trim(),
+            summary: '',
             source: 'The Guardian', url: a.webUrl,
           }))).catch(() => [])
       ) : []),
-      fetch('https://feeds.bbci.co.uk/news/world/rss.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(8000) })
-        .then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC')).catch(() => []),
-      fetch('https://rss.dw.com/xml/rss-en-all', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(8000) })
-        .then(r => r.text()).then(x => parseRssHeadlines(x, 'DW')).catch(() => []),
-      fetch('https://www.aljazeera.com/xml/rss/all.xml', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(8000) })
-        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Al Jazeera')).catch(() => []),
-      fetch('https://feeds.reuters.com/reuters/topNews', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(8000) })
-        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
-      fetch('https://economictimes.indiatimes.com/rssfeedstopstories.cms', { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' }, signal: AbortSignal.timeout(8000) })
-        .then(r => r.text()).then(x => parseRssHeadlines(x, 'Economic Times')).catch(() => []),
+
+      // BBC Europe RSS — better Germany coverage than BBC World
+      fetch('https://feeds.bbci.co.uk/news/world/europe/rss.xml', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC')).catch(() => []),
+
+      // DW (Deutsche Welle) English — flagship German news in English
+      fetch('https://rss.dw.com/xml/rss-en-all', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle')).catch(() => []),
+
+      // The Local DE — direct expat-life coverage in English
+      fetch('https://feeds.thelocal.de/rss/de', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local')).catch(() => []),
+
+      // Berlin Spectator — English-language Berlin & Germany news
+      fetch('https://berlinspectator.com/feed/', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Berlin Spectator')).catch(() => []),
+
+      // POLITICO Europe — EU politics and policy that affects Germany
+      fetch('https://www.politico.eu/feed/', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'POLITICO Europe')).catch(() => []),
+
+      // Reuters Top News — global wire with Germany stories
+      fetch('https://feeds.reuters.com/reuters/topNews', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
     ];
 
     const allResults = await Promise.all(headlineFetches);
     let allArticles = allResults.flat();
 
-    // Fix #20: Filter non-English headlines before clustering
+    // Filter non-English headlines
     allArticles = allArticles.filter(a => isEnglishHeadline(a.headline));
 
-    results.debug.sourceCounts = { total: allArticles.length };
+    // Filter for Germany-relevance — drop articles primarily about other countries
+    const beforeRelevance = allArticles.length;
+    allArticles = allArticles.filter(a => isGermanyRelevant(a.headline, a.summary));
+
+    results.debug.sourceCounts = {
+      total: allArticles.length,
+      droppedNonGermany: beforeRelevance - allArticles.length,
+    };
 
     const seen = new Set();
     const unique = allArticles.filter(a => {
@@ -324,7 +516,7 @@ module.exports = async function handler(request, response) {
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    // Pre-fetch yesterday's threads in one query so we can dedup against them
+    // Pre-fetch yesterday's threads for dedup context
     const yesterdayMap = {};
     try {
       const { data: yesterdayThreads } = await supabase
@@ -334,12 +526,11 @@ module.exports = async function handler(request, response) {
         yesterdayMap[t.topic_key] = t.event_text;
       }
     } catch (e) {
-      // non-fatal — proceed without dedup context
+      // non-fatal
     }
 
     for (const cluster of clusters.slice(0, 20)) {
       try {
-        // Skip if today's entry already exists for this cluster
         let existing = null;
         try {
           const { data } = await supabase
@@ -356,13 +547,13 @@ module.exports = async function handler(request, response) {
 
         const yesterdayText = yesterdayMap[cluster.key] || null;
 
-        // ── Stronger prompt: forbids "while" fusion, allows SKIP ──
-        const systemPrompt = `You write one crisp past-tense sentence about a specific news story. Under 20 words. Specific facts.
+        const systemPrompt = `You write one crisp past-tense sentence about a specific news story affecting people living in Germany. Under 22 words. Specific facts.
 
 CRITICAL RULES:
 - The sentence describes ONE event only. NEVER fuse two unrelated events with "while", "as", or "and".
 - If the headlines cover multiple unrelated stories, pick the single most important one and ignore the rest.
 - If today's headlines don't materially advance the story (i.e. they restate yesterday's news), respond with exactly: SKIP
+- Frame the event for someone living in Germany. If a global story (e.g. Iran, Trump, China), make the German angle clear if there is one — otherwise skip.
 
 Output the sentence directly OR the word SKIP. Nothing else.`;
 
@@ -403,7 +594,6 @@ One sentence on the single most important development:`;
 
         if (!eventText) continue;
 
-        // ── Skip signals ──
         if (eventText === 'SKIP' || /^SKIP[\s.!]/.test(eventText)) {
           results.threadsSkipped.push(`${cluster.label} (no progress)`);
           continue;
@@ -436,8 +626,6 @@ One sentence on the single most important development:`;
     // Clean up entries older than 7 days
     const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     try { await supabase.from('topic_threads').delete().lt('event_date', cutoff); } catch (e) {}
-
-    // Fix #21: Daily summary generation REMOVED — mood bar no longer exists in the app
 
   } catch (e) {
     results.errors.push(`thread-generation: ${e.message}`);
