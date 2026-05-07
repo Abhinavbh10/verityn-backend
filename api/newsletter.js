@@ -184,22 +184,37 @@ function buildStoryCard(s, i, size) {
 }
 
 function buildSubjectLine(stories) {
-    if (!stories || !stories.length) return 'Your 7 stories are ready';
-
-    var hooks = [];
-    for (var i = 0; i < Math.min(3, stories.length); i++) {
-        var why = (stories[i].why || stories[i].headline || '').replace(/\s+/g, ' ').trim();
-        var hook = why.split(/\.\s/)[0].split(/,\s/)[0];
-        if (hook.length > 35) hook = hook.substring(0, 32) + '...';
-        if (hook.length > 5) hooks.push(hook);
-    }
-
-    if (hooks.length >= 2) {
-        return hooks.slice(0, 3).join(', ');
-    }
+    // Subject line discipline (post-Germany pivot, May 2026): lead with ONE
+    // specific headline of the day. Not three truncated ones. See SKILL.md
+    // "Newsletter Operational Spec — Subject line examples" for target shape:
+    //   "Krankenkasse hikes confirmed for January"
+    //   "BVG strikes Tuesday — plan now"
+    //   "Mietpreisbremse extended until 2029"
+    if (!stories || !stories.length) return 'Your morning briefing from Verityn';
 
     var hl = (stories[0].headline || '').replace(/\s+/g, ' ').trim();
-    if (hl.length > 55) hl = hl.substring(0, 52) + '...';
+
+    // Drop common "Source: " prefixes that creep in from RSS titles
+    hl = hl.replace(/^([A-Z][A-Za-z\s]+?\s*[:\-–]\s*)/, '');
+
+    // If headline has a colon, prefer the more specific half. The half BEFORE
+    // the colon is usually the topic ("Coalition agrees:") and the half AFTER
+    // is usually the actual news ("pension increase 4.24 percent").
+    if (hl.indexOf(':') !== -1) {
+        var parts = hl.split(':');
+        var afterColon = parts.slice(1).join(':').trim();
+        if (afterColon.length > 15) hl = afterColon;
+    }
+
+    // Cap length, word-boundary truncation only (no mid-word ellipses).
+    var MAX_LEN = 65;
+    if (hl.length > MAX_LEN) {
+        var trimmed = hl.substring(0, MAX_LEN);
+        var lastSpace = trimmed.lastIndexOf(' ');
+        if (lastSpace > 30) trimmed = trimmed.substring(0, lastSpace);
+        hl = trimmed.replace(/[,;:\-–—\s]+$/, '') + '...';
+    }
+
     return hl;
 }
 
@@ -303,15 +318,11 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '</table></td></tr></table></body></html>';
 }
 
-async function getWeather(region) {
-    var coords = {
-        eu: { lat: 52.52, lon: 13.41, city: 'Berlin' },
-        us: { lat: 40.71, lon: -74.01, city: 'New York' },
-        india: { lat: 28.61, lon: 77.21, city: 'Delhi' },
-        asia: { lat: 1.35, lon: 103.81, city: 'Singapore' },
-        global: { lat: 51.50, lon: -0.12, city: 'London' },
-    };
-    var c = coords[region] || coords.global;
+async function getWeather() {
+    // Germany-only post-pivot. Hardcoded to Berlin since the audience is
+    // English speakers living in Germany. If we ever go regional inside DE
+    // (Munich edition, Hamburg edition), revisit.
+    var c = { lat: 52.52, lon: 13.41, city: 'Berlin' };
     try {
         var r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&timezone=auto&forecast_days=1');
         var d = await r.json();
@@ -346,14 +357,15 @@ function cleanName(raw) {
     return name || 'there';
 }
 
-async function generateExtras(stories, region) {
+async function generateExtras(stories) {
     if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
 
-    // Did You Know is now sourced from a curated fact list per region (see _facts.js).
-    // Removes the hallucination risk of asking Claude to generate "fun facts about Berlin" —
-    // which produced repeating 177-anchored facts and invented specific numbers.
+    // Did You Know pulls from the curated 'eu' pool in _facts.js — Berlin and
+    // Germany facts. Post-Germany pivot the 'eu' label is a legacy key inside
+    // _facts.js; the content is Germany-focused regardless. Could be renamed
+    // to 'de' in a later cleanup.
     var facts = require('./_facts.js');
-    var didYouKnow = facts.getRandomFact(region);
+    var didYouKnow = facts.getRandomFact('eu');
 
     // "What we're watching" is still Claude-generated since it's news-derived
     // and benefits from real-time context. Tightened the prompt to push for
@@ -447,20 +459,11 @@ async function translateArticles(articles) {
     return [];
 }
 
-async function generateFreshBriefing(supabase, region) {
-    var regionCountries = {
-        eu: ['gb', 'de'],
-        us: ['us', 'gb'],
-        india: ['in', 'gb'],
-        asia: ['in', 'us'],
-        global: ['us', 'gb', 'de', 'in'],
-    };
-
-    var localFeedRegions = {
-        eu: 'de_local',
-    };
-
-    var countries = regionCountries[region] || regionCountries.global;
+async function generateFreshBriefing(supabase) {
+    // Germany-only post-pivot (May 2026). Countries fetch English wires from
+    // GB and DE; de_local fetches German-language feeds for translation.
+    // Region branching removed — see SKILL.md "Newsletter Operational Spec".
+    var countries = ['gb', 'de'];
     var BASE = 'https://verityn-backend-ten.vercel.app';
     var sid = 'newsletter-' + Date.now();
 
@@ -479,14 +482,12 @@ async function generateFreshBriefing(supabase, region) {
         );
     }
 
-    var localKey = localFeedRegions[region];
-    if (localKey) {
-        fetchPromises.push(
-            fetch(BASE + '/api/content?action=rss&country=' + localKey + '&max=15&sessionId=' + sid)
-                .then(function(r) { return r.json(); })
-                .catch(function() { return { articles: [] }; })
-        );
-    }
+    // German-language local feed (translated downstream)
+    fetchPromises.push(
+        fetch(BASE + '/api/content?action=rss&country=de_local&max=15&sessionId=' + sid)
+            .then(function(r) { return r.json(); })
+            .catch(function() { return { articles: [] }; })
+    );
 
     var results = await Promise.all(fetchPromises);
 
@@ -495,7 +496,8 @@ async function generateFreshBriefing(supabase, region) {
     for (var r = 0; r < results.length; r++) {
         var d = results[r];
         if (d.articles && Array.isArray(d.articles)) {
-            if (localKey && r === results.length - 1) {
+            // Last fetch promise is always de_local — collect separately for translation
+            if (r === results.length - 1) {
                 localArticles = d.articles;
             } else {
                 allArticles = allArticles.concat(d.articles);
@@ -503,7 +505,7 @@ async function generateFreshBriefing(supabase, region) {
         }
     }
 
-    console.log('[newsletter] region=' + region + ' englishArticles=' + allArticles.length + ' localArticles=' + localArticles.length);
+    console.log('[newsletter] englishArticles=' + allArticles.length + ' localArticles=' + localArticles.length);
 
     var translatedCount = 0;
     if (localArticles.length > 0) {
@@ -519,7 +521,7 @@ async function generateFreshBriefing(supabase, region) {
 
     var beforeCap = allArticles.length;
     allArticles = capPerSource(allArticles, 3);
-    console.log('[newsletter] region=' + region + ' translated=' + translatedCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
+    console.log('[newsletter] translated=' + translatedCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
@@ -531,15 +533,15 @@ async function generateFreshBriefing(supabase, region) {
                 articles: allArticles,
                 countries: countries,
                 interests: ['world', 'finance', 'tech', 'politics'],
-                location: region === 'india' ? 'in' : region === 'us' ? 'us' : 'de',
+                location: 'de',
                 profession: 'professional',
-                sessionId: 'newsletter-' + region + '-' + new Date().toISOString().slice(0, 10),
+                sessionId: 'newsletter-de-' + new Date().toISOString().slice(0, 10),
             }),
         });
         var d2 = await r2.json();
         if (d2.stories && d2.stories.length >= 3) {
             var localPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
-            console.log('[newsletter] region=' + region + ' briefingStories=' + d2.stories.length + ' localPicked=' + localPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
+            console.log('[newsletter] briefingStories=' + d2.stories.length + ' localPicked=' + localPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
             return d2.stories;
         } else if (d2.error) {
             console.log('[newsletter] briefing error: ' + d2.error);
@@ -551,18 +553,17 @@ async function generateFreshBriefing(supabase, region) {
     return null;
 }
 
-async function enrichStories(stories, region) {
+async function enrichStories(stories) {
     if (!stories || !stories.length) return stories;
 
-    var regionContext = {
-        eu: 'someone who lives and works in Berlin, Germany. They care about: their rent (Miete), their energy bills (Strom/Gas), their grocery prices, their commute (BVG, S-Bahn, U-Bahn), their health insurance (Krankenkasse), their kids\' school or Kita, their weekend plans, their neighborhood (Kiez), their taxes (Steuererklärung), their savings at Sparkasse or Deutsche Bank. They may or may not own stocks. They may or may not fly for work. Don\'t assume wealth or corporate lifestyle. Assume a normal person living a normal life in Berlin.',
-        us: 'someone who lives and works in New York City. They care about: their rent, their subway commute (MTA), their grocery bill, their health insurance premiums, their 401k, their student loans, their Con Ed electricity bill, their kids\' school, their weekend plans, their neighborhood. Don\'t assume Wall Street or tech. Assume a normal person living a normal life in NYC.',
-        india: 'someone who lives and works in Delhi, India. They care about: their rent, their grocery bill (sabzi, atta, dal, milk, the kirana around the corner), their commute (Delhi Metro, auto, Ola, Uber, DTC bus), their kids\' school fees, their AQI and the pollution that determines whether they go for a walk, their power bill and the DERC tariff hikes in summer, their water supply, their society maintenance charges, their weekend plans, their neighbourhood (the colony or sector). Financial concerns are real but secondary: rent EMI if they own, FD rates if they have savings, LIC premium if they have a policy. Don\'t assume IT professional, startup founder, or business owner. Don\'t assume they own stocks or have a portfolio. Don\'t write to them like a corporate executive. They are a normal salaried person or freelancer living a normal life in Delhi who reads the news to understand how it affects their grocery bill, their commute, their rent, and their family.',
-        global: 'someone who reads international news and wants to understand how it affects daily life',
-        asia: 'someone who lives in Asia and wants to understand how news affects their daily life',
-    };
-
-    var context = regionContext[region] || regionContext.global;
+    // Germany-only post-pivot. Voice rules from SKILL.md "Brand Voice & Content Guide":
+    //   - 70% service journalism (what changes for you, what to do, by when)
+    //   - 30% intelligent context (history, politics, what non-Germans miss)
+    //   - German terms used directly: Krankenkasse, Bürgergeld, Mietpreisbremse,
+    //     Anmeldung, S-Bahn, U-Bahn, BVG, Bundestag, Bundesrat, Sparkasse,
+    //     Bundesländer, Steuererklärung, Wohngeld, Kita, Mietvertrag, Kiez.
+    //     Do not translate. Reader lives in Germany and recognizes them.
+    var context = 'an English speaker living in Germany — likely Berlin or another major city. They care about: their rent (Miete), their energy bills (Strom/Gas), their grocery prices, their commute (BVG, S-Bahn, U-Bahn), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their kids\' school or Kita, their taxes (Steuererklärung), their savings at Sparkasse or Deutsche Bank, their Mietvertrag, their Anmeldung, their Bürgergeld eligibility (or what reform means for it). Could be expat, international student, remote worker, diplomat, journalist, or English-fluent German. Don\'t assume wealth or corporate lifestyle. Don\'t assume they own stocks. Assume a normal person living a normal life in Germany who reads English and wants to understand how news affects their daily life — practically and intellectually — without slogging through bureaucratic German.';
 
     var storyData = stories.map(function(s, i) {
         return (i + 1) + '. HEADLINE: ' + s.headline
@@ -589,10 +590,13 @@ async function enrichStories(stories, region) {
                         + '2. "why": A 1-2 sentence why-line explaining how the story touches the reader\'s life. EVERY story has an angle. Find it.\n\n'
                         + 'CORE RULE: Every story made it into this briefing because it matters to this reader. Your job is to find and explain the angle, not to flag when there isn\'t one. There always is. The angle might be obvious (a German tax change hits their paycheck directly). It might be one step removed (a Russia story affects their gas bill, a Fed move affects their Euribor mortgage, a Japan trade story affects German exports and the Berlin job market). Either way: write the angle. Do not give up.\n\n'
                         + 'WHY-LINE STYLE:\n'
+                        + '- 70/30 SPLIT: 70% of the why-line is service journalism — what changes for you, what to do, by when. 30% is intelligent context — history, politics, what non-Germans miss. Service first, then context. Not the reverse.\n'
+                        + '- GERMAN TERMS USED DIRECTLY. Do NOT translate these into English: Krankenkasse, Bürgergeld, Mietpreisbremse, Mietendeckel, Anmeldung, Niederlassungserlaubnis, S-Bahn, U-Bahn, BVG, Bundestag, Bundesrat, Bundesländer, Sparkasse, Steuererklärung, Wohngeld, Kita, Mietvertrag, Kiez, Heizungsgesetz, Wärmepumpe, Energiewende, Bürgeramt, Termin. The reader lives in Germany. Translating these signals you don\'t trust them.\n'
                         + '- Sound like a sharp friend telling you something over coffee. Not a textbook. Not a press release.\n'
-                        + '- Connect to DAILY LIFE: rent, energy bills, grocery prices, commute, taxes, savings, salary, kids, weekend plans, neighborhood, jobs, mortgages, banking.\n'
+                        + '- Connect to DAILY LIFE: rent (Miete), energy bills (Strom/Gas), grocery prices, commute (BVG, S-Bahn), taxes (Steuererklärung), savings (Sparkasse), salary, kids, weekend plans, Kiez, jobs, mortgages, banking, visa or Niederlassungserlaubnis status.\n'
                         + '- Do NOT assume the reader owns stocks, has a corporate travel budget, works in finance, or has defense investments.\n'
                         + '- Be specific. Use timeframes ("by July"), amounts ("8-10 cents per liter"), local references ("Berlin pumps", "your Sparkasse rate", "BVG monthly pass", "your Krankenkasse deduction").\n'
+                        + '- Use "your" not "this affects." "Watch your December Krankenkasse letter," not "consumers should monitor their statements."\n'
                         + '- Avoid em dashes. Use periods or commas.\n\n'
                         + 'NEVER use these phrases or anything close to them. They are tells of give-up writing:\n'
                         + '"could potentially", "may impact", "highlights the importance of", "underscores", "it remains to be seen", "this is significant because", "your portfolio", "your investments", "more background than action", "but worth knowing if you follow", "skip unless you follow", "doesn\'t affect your daily life", "mostly a political ethics story", "broader landscape", "evolving landscape", "this development affects", "no direct impact on your daily life", "interesting tech development but".\n'
@@ -658,7 +662,11 @@ module.exports = async function handler(req, res) {
 
             var name = (body.name || email.split('@')[0]).trim();
             var timezone = body.timezone || '';
-            var region = body.region || 'global';
+            // Germany pivot (May 2026): force region='de' regardless of any client input.
+            // The country-tag field has been removed from the subscribe form on
+            // verityn.news, but defensive normalisation is enforced server-side too.
+            // Timezone is still captured for future Bundesland-aware features.
+            var region = 'de';
 
             var existing = await supabase.from('waitlist').select('id, unsubscribed').eq('email', email).limit(1);
             if (existing.data && existing.data.length > 0) {
@@ -698,14 +706,12 @@ module.exports = async function handler(req, res) {
         }
 
         if (action === 'preview') {
-            var previewRegion = req.query.region || 'eu';
-            var stories = await generateFreshBriefing(supabase, previewRegion);
+            // Germany-only post-pivot. Region query param ignored.
+            var stories = await generateFreshBriefing(supabase);
             if (!stories) return res.json({ error: 'No briefing available yet.' });
-            if (previewRegion !== 'global' && previewRegion !== 'asia') {
-                stories = await enrichStories(stories, previewRegion);
-            }
-            var extras = await generateExtras(stories, previewRegion);
-            extras.weather = await getWeather(previewRegion);
+            stories = await enrichStories(stories);
+            var extras = await generateExtras(stories);
+            extras.weather = await getWeather();
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
         }
@@ -716,16 +722,14 @@ module.exports = async function handler(req, res) {
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
             var testName = testEmail.split('@')[0];
-            var testRegion = 'eu';
             try {
-                var lookup = await supabase.from('waitlist').select('name, region').eq('email', testEmail.toLowerCase()).limit(1);
+                var lookup = await supabase.from('waitlist').select('name').eq('email', testEmail.toLowerCase()).limit(1);
                 if (lookup.data && lookup.data.length > 0) {
                     testName = lookup.data[0].name || testName;
-                    testRegion = lookup.data[0].region || 'eu';
                 }
             } catch (e) { }
 
-            var stories2 = await generateFreshBriefing(supabase, testRegion);
+            var stories2 = await generateFreshBriefing(supabase);
             if (!stories2) {
                 var debugStories = null;
                 try {
@@ -757,12 +761,9 @@ module.exports = async function handler(req, res) {
                 }
             }
 
-            if (testRegion !== 'global' && testRegion !== 'asia') {
-                stories2 = await enrichStories(stories2, testRegion);
-            }
-
-            var extras2 = await generateExtras(stories2, testRegion);
-            extras2.weather = await getWeather(testRegion);
+            stories2 = await enrichStories(stories2);
+            var extras2 = await generateExtras(stories2);
+            extras2.weather = await getWeather();
 
             var transporter = getTransporter();
             var subject = buildSubjectLine(stories2);
@@ -783,7 +784,7 @@ module.exports = async function handler(req, res) {
                         .replace(/[-_\s]+/g, '').trim();
                     srcCounts[sk] = (srcCounts[sk] || 0) + 1;
                 }
-                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, region: testRegion, name: testName, stories: stories2.length, localStories: localCount, sourceCounts: srcCounts });
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, name: testName, stories: stories2.length, localStories: localCount, sourceCounts: srcCounts });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
@@ -841,97 +842,49 @@ module.exports = async function handler(req, res) {
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
-            var groups = {};
-            for (var g = 0; g < subscribers.length; g++) {
-                var reg = subscribers[g].region || 'global';
-                if (!groups[reg]) groups[reg] = [];
-                groups[reg].push(subscribers[g]);
-            }
+            // Germany-only post-pivot. All subscribers receive the same edition.
+            // Region grouping removed — see SKILL.md "Newsletter Operational Spec".
+            var stories = await generateFreshBriefing(supabase);
+            if (!stories) return res.json({ error: 'No briefing available' });
 
-            var regions = Object.keys(groups);
-            var regionalStories = {};
-            var firstStories = null;
+            stories = await enrichStories(stories);
 
-            for (var ri = 0; ri < regions.length; ri++) {
-                var rgn = regions[ri];
+            try { await supabase.from('newsletter_cache').insert({ stories: stories }); } catch (e) { }
 
-                var stories = await generateFreshBriefing(supabase, rgn);
-                if (!stories) continue;
+            var extras = await generateExtras(stories);
+            extras.weather = await getWeather();
+            var subject = buildSubjectLine(stories);
 
-                if (!firstStories) firstStories = stories;
-
-                if (rgn !== 'global' && rgn !== 'asia') {
-                    regionalStories[rgn] = await enrichStories(stories, rgn);
-                } else {
-                    regionalStories[rgn] = stories;
-                }
-            }
-
-            if (!firstStories) return res.json({ error: 'No briefing available' });
-
-            try { await supabase.from('newsletter_cache').insert({ stories: firstStories }); } catch (e) { }
-
-            var regionalExtras = {};
-            for (var oi = 0; oi < regions.length; oi++) {
-                var oRgn = regions[oi];
-                if (regionalStories[oRgn]) {
-                    regionalExtras[oRgn] = await generateExtras(regionalStories[oRgn], oRgn);
-                    regionalExtras[oRgn].weather = await getWeather(oRgn);
-                }
-            }
-
-            // Subject line is now built PER REGION from that region's stories.
-            // Previously used firstStories which leaked Berlin subjects into India
-            // emails (and vice versa) when the email body was correctly regional.
-            // Subscribers got Berlin subject + Delhi body, which is misleading.
             var transporter2 = getTransporter();
             var sent = 0, failed = 0, errors = [];
-            var subjectsByRegion = {}; // capture for the log row
 
-            for (var ri2 = 0; ri2 < regions.length; ri2++) {
-                var region = regions[ri2];
-                var subs = groups[region];
-                var regionStories = regionalStories[region];
-                var regionExtras = regionalExtras[region] || {};
-                if (!regionStories) continue;
-
-                var regionSubject = buildSubjectLine(regionStories);
-                subjectsByRegion[region] = regionSubject;
-
-                for (var i = 0; i < Math.min(subs.length, BATCH_SIZE); i++) {
-                    var sub = subs[i];
-                    try {
-                        await transporter2.sendMail({
-                            from: FROM_NAME + ' <' + FROM_EMAIL + '>',
-                            to: sub.email,
-                            subject: regionSubject,
-                            html: buildEmailHTML(regionStories, sub.name || sub.email.split('@')[0], sub.email, regionExtras),
-                        });
-                        sent++;
-                    } catch (e) {
-                        failed++;
-                        errors.push({ email: sub.email, error: e.message });
-                    }
-                    if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
+            for (var i = 0; i < Math.min(subscribers.length, BATCH_SIZE); i++) {
+                var sub = subscribers[i];
+                try {
+                    await transporter2.sendMail({
+                        from: FROM_NAME + ' <' + FROM_EMAIL + '>',
+                        to: sub.email,
+                        subject: subject,
+                        html: buildEmailHTML(stories, sub.name || sub.email.split('@')[0], sub.email, extras),
+                    });
+                    sent++;
+                } catch (e) {
+                    failed++;
+                    errors.push({ email: sub.email, error: e.message });
                 }
+                if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
             }
-
-            // Build a combined subject summary for the log table (so newsletter_log
-            // shows BOTH regional subjects when multi-region was sent).
-            var loggedSubject = Object.keys(subjectsByRegion)
-                .map(function(r) { return '[' + r + '] ' + subjectsByRegion[r]; })
-                .join(' | ');
 
             try { transporter2.close(); } catch (e) { }
             try {
                 await supabase.from('newsletter_log').insert({
                     sent_count: sent, failed_count: failed,
                     errors: errors.length > 0 ? errors : null,
-                    subject: loggedSubject, story_count: firstStories.length,
+                    subject: subject, story_count: stories.length,
                 });
             } catch (e) { }
 
-            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subjects: subjectsByRegion, regions: regions });
+            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject });
         }
 
         return res.json({ actions: 'subscribe, unsubscribe, preview, test, send' });
