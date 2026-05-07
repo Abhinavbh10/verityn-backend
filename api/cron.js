@@ -493,24 +493,34 @@ module.exports = async function handler(request, response) {
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle')).catch(() => []),
 
-      // The Local DE — direct expat-life coverage in English. Note: the main
-      // feed URL is /feed/, not /feeds/...rss/de (v1 had wrong URL). Try both.
-      fetch('https://www.thelocal.de/feed/', {
+      // The Local DE — direct expat-life coverage in English.
+      // Note: feed URL is feeds.thelocal.COM/rss/de (NOT thelocal.de). Two
+      // earlier URLs (feeds.thelocal.de/rss/de and www.thelocal.de/feed/)
+      // returned 0 articles. This one is verified working.
+      fetch('https://feeds.thelocal.com/rss/de', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local')).catch(() => []),
 
-      // The Local DE — Berlin section (specific city coverage)
-      fetch('https://www.thelocal.de/berlin/feed/', {
+      // The Local DE — Berlin section
+      fetch('https://feeds.thelocal.com/rss/de/berlin', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Berlin')).catch(() => []),
 
-      // Berlin Spectator — English-language Berlin & Germany news
-      fetch('https://berlinspectator.com/feed/', {
+      // The Local DE — Politics section (deeper Germany political coverage)
+      fetch('https://feeds.thelocal.com/rss/de/politics', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Berlin Spectator')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Politics')).catch(() => []),
+
+      // IamExpat Germany — English-language news platform for expats in
+      // Germany. Audience match is direct: visa, healthcare, housing, work,
+      // bureaucracy. Highest-relevance source we have.
+      fetch('https://www.iamexpat.de/rss/news-germany', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'IamExpat')).catch(() => []),
 
       // POLITICO Europe — EU politics and policy that affects Germany
       fetch('https://www.politico.eu/feed/', {
