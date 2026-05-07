@@ -35,20 +35,49 @@ function isEnglishHeadline(title) {
   return true;
 }
 
-// ── Germany-relevance filter ────────────────────────────────
-// Drops articles that are clearly about another country with no German angle.
-// Applied before clustering to keep topic_threads focused on Germany expat life.
-const GERMANY_KEYWORDS = /\b(germany|german|berlin|munich|münchen|hamburg|frankfurt|cologne|köln|stuttgart|düsseldorf|leipzig|dresden|bremen|hannover|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grünen|gruene|greens|afd|merz|scholz|habeck|lindner|baerbock|wagenknecht|weidel|söder|soeder|deutsche bahn|lufthansa|volkswagen|bmw|mercedes|siemens|sap|bayer|allianz|dax|krankenkasse|bürgergeld|buergergeld|mietpreisbremse|heizungsgesetz|energiewende|tagesschau|tagesspiegel|spiegel|faz|sueddeutsche|süddeutsche|the local|dw|deutsche welle|euro|ezb|ecb|european central bank|eu|european union|brussels|strasbourg)\b/i;
-const STRONG_FOREIGN = /\b(india|indian|delhi|mumbai|bangalore|chennai|kolkata|sensex|nifty|rupee|modi|bjp|china|chinese|beijing|shanghai|xi jinping|japan|japanese|tokyo|nikkei|yen|korea|korean|seoul|saudi arabia|riyadh|dubai|abu dhabi|emirates|brazil|brazilian|mexico|mexican|argentina|chile|nigeria|kenya|south africa|australia|sydney|melbourne|asx|new zealand|wellington)\b/i;
+// ── Germany-relevance filter (v2 — tighter) ──────────────────
+// Strategy: STRONG_GERMANY keeps. HARD_GLOBAL/UK_DOMESTIC drop unless paired with
+// a German anchor. EU_INSTITUTIONAL keeps (EU policy that affects Germany is
+// directly relevant). Generic articles (climate, AI, science, tech) pass through
+// soft — they'll get scored low by rank but might still surface if no other
+// Germany-specific story crowds them out.
+//
+// v1 mistake: had "eu", "euro", "brussels" in the keep-list, so all EU policy
+// stories passed as "Germany". The pool ended up dominated by Iran/Trump/Ukraine
+// because those passed through "neither STRONG_GERMANY nor STRONG_FOREIGN" as
+// generic — and they cluster heavily because every English wire covers them.
+
+const STRONG_GERMANY = /\b(germany|german|berlin|munich|münchen|muenchen|hamburg|frankfurt|cologne|köln|koeln|stuttgart|düsseldorf|duesseldorf|leipzig|dresden|bremen|hannover|nürnberg|nuremberg|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grünen|gruene|afd|merz|scholz|habeck|lindner|baerbock|wagenknecht|weidel|söder|soeder|steinmeier|deutsche bahn|lufthansa|volkswagen|bmw|mercedes|siemens|sap|bayer|allianz|porsche|adidas|dax|krankenkasse|bürgergeld|buergergeld|mietpreisbremse|heizungsgesetz|energiewende|wärmepumpe|waermepumpe|tagesschau|tagesspiegel|spiegel|faz|sueddeutsche|süddeutsche|bvg|s-bahn|u-bahn|autobahn|verdi|ig metall|gdl|mindestlohn|kurzarbeit|tarifvertrag|bürgeramt|buergeramt|anmeldung|finanzamt|niederlassungserlaubnis|aufenthaltstitel|einbürgerung|einbuergerung)\b/i;
+
+// EU institutions that materially affect Germany (Germany is the EU's largest
+// economy — ECB rates, Commission rules, Brussels rulings hit Berlin first).
+const EU_INSTITUTIONAL = /\b(european central bank|ecb|european commission|european parliament|eurozone|eurogroup|eu council)\b/i;
+
+// Hard global geopolitics — drop these unless STRONG_GERMANY is also present.
+// Iran/Trump/Ukraine/Russia/China stories dominate global English wires; without
+// this rejection they crowd out the actual Germany content.
+const HARD_GLOBAL = /\b(iran|iranian|israel|israeli|gaza|hamas|hezbollah|netanyahu|trump|harris|biden|putin|russia|russian|kremlin|moscow|ukraine|ukrainian|zelensky|kyiv|china|chinese|beijing|shanghai|xi jinping|jinping|modi|delhi|mumbai|bangalore|sensex|nifty|rupee|japan|japanese|tokyo|nikkei|yen|south korea|korean|seoul|saudi arabia|riyadh|dubai|abu dhabi|emirates|qatar|brazil|brazilian|mexico|mexican|argentina|chile|nigeria|kenya|south africa|sydney|melbourne|asx|new zealand|wellington|venezuela|colombia|peru|pakistan|pakistani|islamabad|afghanistan|kabul|taliban|syria|syrian|libya|egypt|cairo|turkey|turkish|ankara|erdogan)\b/i;
+
+// UK-domestic — post-Brexit, UK is a separate political/economic story.
+// Keep if has Germany anchor; drop otherwise.
+const UK_DOMESTIC = /\b(britain|british|england|sunak|starmer|labour party|tory party|tories|conservative party|downing street|westminster|whitehall|brexit|chancellor of the exchequer)\b/i;
 
 function isGermanyRelevant(title, summary) {
   const text = ((title || '') + ' ' + (summary || '')).toLowerCase();
-  // Strong Germany/EU signal — keep
-  if (GERMANY_KEYWORDS.test(text)) return true;
-  // Otherwise check if it's primarily about a foreign country
-  if (STRONG_FOREIGN.test(text)) return false;
-  // Generic global stories (Trump, Iran, war, climate, AI, Ukraine, Russia, US Fed, Israel, Gaza, NATO)
-  // — pass through; clustering will pair them with Germany-relevant entities if they have one
+
+  // Strong Germany signal — always keep
+  if (STRONG_GERMANY.test(text)) return true;
+
+  // EU institutional with implicit Germany impact — keep
+  if (EU_INSTITUTIONAL.test(text)) return true;
+
+  // Hard global without Germany anchor — drop
+  if (HARD_GLOBAL.test(text)) return false;
+
+  // UK-domestic without Germany anchor — drop
+  if (UK_DOMESTIC.test(text)) return false;
+
+  // Generic articles (climate, AI, science, tech, EU general) — pass through soft
   return true;
 }
 
@@ -410,13 +439,28 @@ module.exports = async function handler(request, response) {
   }
 
   // ── Step 2: Topic thread generation ──────────────────────
-  // Sources: Germany-focused English outlets (The Local DE, Berlin Spectator,
-  // POLITICO Europe, DW), plus global wires (NYT/Guardian/Reuters/BBC) where
-  // Germany-relevant stories surface. German-language outlets translated
-  // happen via the newsletter pipeline, not here.
+  // Source strategy (v2 — narrower, more Germany-focused):
+  //   - Heavy: GNews country=de + targeted Germany-topic searches (forces
+  //     daily-life specificity instead of relying on top-headline luck)
+  //   - Heavy: Germany-focused English RSS (The Local DE, Berlin Spectator, DW)
+  //   - Medium: BBC Europe (mixed but useful for Germany context)
+  //   - Medium: POLITICO Europe (EU policy that hits Germany)
+  //   - Removed: NYT World/Business, Guardian World/Business, Reuters Top News
+  //     (too global — they were drowning Germany content with Iran/Trump/Ukraine)
   try {
+    // GNews search queries — force Germany-specific topic coverage. Each query
+    // targets a different facet of expat life; together they push the pool
+    // toward Germany content even when global wires would otherwise dominate.
+    const GERMANY_SEARCH_QUERIES = [
+      'Germany Bundestag OR Scholz OR Merz OR Habeck',
+      'Berlin OR Munich OR Frankfurt housing OR rent OR transport',
+      'Germany Bürgergeld OR Krankenkasse OR Mietpreisbremse OR Heizungsgesetz',
+      'Germany visa OR naturalization OR Blue Card OR residence permit',
+      'Bundesliga OR Bayern Munich OR Borussia Dortmund',
+    ];
+
     const headlineFetches = [
-      // GNews — Germany-specific English headlines
+      // GNews country=de top headlines (Germany-published English content)
       fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
         .then(r => r.json())
         .then(d => (d.articles || []).map(a => ({
@@ -425,29 +469,19 @@ module.exports = async function handler(request, response) {
           source: a.source?.name || 'Unknown', url: a.url,
         }))).catch(() => []),
 
-      // NYT Europe section + general world (for Germany-relevant global stories)
-      ...(NYT_KEY ? ['world', 'business'].map(section =>
-        fetch(`https://api.nytimes.com/svc/topstories/v2/${section}.json?api-key=${NYT_KEY}`)
+      // GNews targeted searches — global English coverage of German topics
+      ...(GNEWS_KEY ? GERMANY_SEARCH_QUERIES.map(q =>
+        fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=8&apikey=${GNEWS_KEY}`)
           .then(r => r.json())
-          .then(d => (d.results || []).slice(0, 15).map(a => ({
-            headline: (a.title || '').trim(),
-            summary: (a.abstract || '').trim().slice(0, 300),
-            source: 'New York Times', url: a.url,
+          .then(d => (d.articles || []).map(a => ({
+            headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
+            summary: (a.description || '').replace(/<[^>]+>/g, '').trim().slice(0, 300),
+            source: a.source?.name || 'Unknown', url: a.url,
           }))).catch(() => [])
       ) : []),
 
-      // Guardian Europe + business
-      ...(GUARDIAN_KEY ? ['world', 'business'].map(section =>
-        fetch(`https://content.guardianapis.com/${section}?api-key=${GUARDIAN_KEY}&page-size=15`)
-          .then(r => r.json())
-          .then(d => (d.response?.results || []).map(a => ({
-            headline: (a.webTitle || '').trim(),
-            summary: '',
-            source: 'The Guardian', url: a.webUrl,
-          }))).catch(() => [])
-      ) : []),
-
-      // BBC Europe RSS — better Germany coverage than BBC World
+      // BBC Europe RSS — kept for European policy coverage with Germany
+      // angle. Pre-filter will drop UK-domestic / Iran / Russia stories.
       fetch('https://feeds.bbci.co.uk/news/world/europe/rss.xml', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
@@ -459,11 +493,18 @@ module.exports = async function handler(request, response) {
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle')).catch(() => []),
 
-      // The Local DE — direct expat-life coverage in English
-      fetch('https://feeds.thelocal.de/rss/de', {
+      // The Local DE — direct expat-life coverage in English. Note: the main
+      // feed URL is /feed/, not /feeds/...rss/de (v1 had wrong URL). Try both.
+      fetch('https://www.thelocal.de/feed/', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local')).catch(() => []),
+
+      // The Local DE — Berlin section (specific city coverage)
+      fetch('https://www.thelocal.de/berlin/feed/', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Berlin')).catch(() => []),
 
       // Berlin Spectator — English-language Berlin & Germany news
       fetch('https://berlinspectator.com/feed/', {
@@ -476,27 +517,33 @@ module.exports = async function handler(request, response) {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'POLITICO Europe')).catch(() => []),
-
-      // Reuters Top News — global wire with Germany stories
-      fetch('https://feeds.reuters.com/reuters/topNews', {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Reuters')).catch(() => []),
     ];
 
     const allResults = await Promise.all(headlineFetches);
     let allArticles = allResults.flat();
 
+    // Track per-source counts BEFORE any filtering — useful when debugging
+    // "where are all the articles coming from."
+    const beforeFilters = allArticles.length;
+    const sourceBreakdownPreFilter = {};
+    for (const a of allArticles) {
+      const s = a.source || 'Unknown';
+      sourceBreakdownPreFilter[s] = (sourceBreakdownPreFilter[s] || 0) + 1;
+    }
+
     // Filter non-English headlines
     allArticles = allArticles.filter(a => isEnglishHeadline(a.headline));
+    const afterEnglish = allArticles.length;
 
-    // Filter for Germany-relevance — drop articles primarily about other countries
-    const beforeRelevance = allArticles.length;
+    // Filter for Germany-relevance — v2 filter is stricter
     allArticles = allArticles.filter(a => isGermanyRelevant(a.headline, a.summary));
 
     results.debug.sourceCounts = {
+      fetched: beforeFilters,
+      droppedNonEnglish: beforeFilters - afterEnglish,
+      droppedNonGermany: afterEnglish - allArticles.length,
       total: allArticles.length,
-      droppedNonGermany: beforeRelevance - allArticles.length,
+      sourceBreakdownPreFilter,
     };
 
     const seen = new Set();
