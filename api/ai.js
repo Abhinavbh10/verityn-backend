@@ -2,76 +2,37 @@
 // FILE: api/ai.js
 // ACTIONS: digest | oneliner | briefing | rank | aisearch
 // ============================================================
+// Germany-only since v1.0.2. All country abstractions removed.
+// Audience hardcoded to "English speaker living in Germany".
+// Why-line voice: 70% practical service journalism + 30% intelligent context.
+// ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 const { checkRateLimit, logError } = require('./_helpers');
 
+// Audience constant — used in every prompt. Avoids ambiguity.
+const AUDIENCE = "English speaker living in Germany";
+const LOCATION_LABEL = "Germany";
+
 function inferTopic(headline, description) {
   const text = ((headline || '') + ' ' + (description || '')).toLowerCase();
-  if (/\btech\b|\bai\b|\bsoftware\b|\bdigital\b|\bcyber\b|\bstartup\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bmeta\b|\bopenai\b/.test(text))
-    return { topic: 'tech', label: 'Tech' };
-  if (/\beconomy\b|\bmarket\b|\bbank\b|\binflation\b|\bfinance\b|\btrade\b|\bstock\b|\bgdp\b|\brupee\b|\beuro\b|\bdollar\b|\bfed\b|\brbi\b/.test(text))
-    return { topic: 'finance', label: 'Finance' };
-  if (/\belection\b|\bparliament\b|\bminister\b|\bgovernment\b|\bvote\b|\bpolicy\b|\bpolitical\b|\bpresident\b|\bcongress\b/.test(text))
-    return { topic: 'politics', label: 'Politics' };
-  if (/\bfootball\b|\bcricket\b|\bmatch\b|\bleague\b|\btournament\b|\bsport\b|\bolympic\b|\bipl\b|\bnba\b|\bnfl\b/.test(text))
-    return { topic: 'sports', label: 'Sports' };
-  if (/\bclimate\b|\benergy\b|\brenewable\b|\bemission\b|\benvironment\b|\bsolar\b|\bgreen\b/.test(text))
-    return { topic: 'climate', label: 'Climate' };
-  return { topic: 'world', label: 'World' };
-}
-
-const COUNTRY_NAMES = {
-  in: 'India', us: 'United States', gb: 'United Kingdom',
-  au: 'Australia', de: 'Germany', sg: 'Singapore',
-  ae: 'UAE', jp: 'Japan',
-};
-
-// ── aisearch helpers ─────────────────────────────────────────
-const SEARCH_STOPWORDS = new Set([
-  'what','is','are','was','were','the','a','an','of','in','on','at','to','for',
-  'with','about','from','by','as','and','or','but','if','so','than','then',
-  'happening','happens','happen','going','doing','tell','me','how','why','when',
-  'where','who','whom','which','this','that','these','those','do','does','did',
-  'can','could','would','should','will','shall','may','might','must','have',
-  'has','had','be','been','being','just','now','today','recently','currently',
-  'latest','news','update','updates','new','some','any','there','their','our',
-  'your','his','her','its','it','they','them','we','i','you'
-]);
-
-function simplifyQuery(query) {
-  const cleaned = (query || '')
-    .toLowerCase()
-    .replace(/[?!.,;:'"()[\]{}]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-  const meaningful = cleaned.filter(w => w.length > 2 && !SEARCH_STOPWORDS.has(w));
-  return meaningful.join(' ').trim();
-}
-
-function buildFallbackQueries(rawQuery) {
-  const simplified = simplifyQuery(rawQuery);
-  const words = simplified.split(/\s+/).filter(Boolean);
-  const queries = [];
-
-  // Layer 0: original query (if short enough that GNews can handle it)
-  if (rawQuery && rawQuery.trim().split(/\s+/).length <= 4) {
-    queries.push(rawQuery.trim());
-  }
-  // Layer 1: full simplified query
-  if (simplified && !queries.includes(simplified)) queries.push(simplified);
-  // Layer 2: first 3 meaningful words
-  if (words.length > 3) queries.push(words.slice(0, 3).join(' '));
-  // Layer 3: first 2 meaningful words
-  if (words.length > 2) queries.push(words.slice(0, 2).join(' '));
-  // Layer 4: longest single word (most specific noun usually)
-  if (words.length > 1) {
-    const longest = [...words].sort((a, b) => b.length - a.length)[0];
-    if (longest) queries.push(longest);
-  }
-
-  // Dedupe, preserve order
-  return [...new Set(queries)].filter(Boolean);
+  // Germany-life topic taxonomy. Mirrors the frontend TOPICS in theme.js.
+  if (/\bvisa\b|\baufenthalt|\bblue card\b|\bniederlassung|\beinbürger|\bnaturali|\basyl|\bmigration|\bauslander|\bausländer/.test(text))
+    return { topic: 'visa', label: 'Visa & Bureaucracy' };
+  if (/\bmiete\b|\bhousing\b|\bmietpreisbremse\b|\brent\b|\bnebenkosten\b|\bgaspreis\b|\bstrom\b|\bgroceries|\bsupermarkt/.test(text))
+    return { topic: 'housing', label: 'Housing & Cost' };
+  if (/\bbvg\b|\bs-?bahn\b|\bdeutsche bahn\b|\blufthansa\b|\bryanair\b|\bflixbus\b|\bautobahn\b|\bstreik\b|\bstrike\b|\bverdi\b|\bgdl\b|\bführerschein\b|\bdriver|\bdeutschlandticket\b/.test(text))
+    return { topic: 'transport', label: 'Transport' };
+  if (/\bkrankenkasse\b|\bkrankenversich|\bgesundheit\b|\bhealth\b|\barzt\b|\bdoctor\b|\bkrankenhaus\b|\bhospital\b|\bapotheke\b|\bpharmacy\b|\blauterbach\b/.test(text))
+    return { topic: 'health', label: 'Healthcare' };
+  if (/\bmindestlohn\b|\bbürgergeld\b|\barbeitslos\b|\bunemploy|\bkurzarbeit\b|\btarif|\bdax\b|\bbundesbank\b|\binflation\b|\brezession\b|\brecession\b|\brente\b|\bpension\b|\bvolkswagen\b|\bbmw\b|\bmercedes\b|\bsiemens\b|\bsap\b/.test(text))
+    return { topic: 'work', label: 'Work & Economy' };
+  if (/\bheizungsgesetz\b|\bwärmepumpe\b|\bheat pump\b|\benergiewende\b|\brenewable\b|\bsolar\b|\bwind\b|\bkohle\b|\bcoal\b|\batom\b|\bnuclear\b|\bklima\b|\bclimate\b|\bemission\b/.test(text))
+    return { topic: 'climate', label: 'Climate & Energy' };
+  if (/\bbundesliga\b|\bbayern\b|\bdortmund\b|\boktoberfest\b|\bkarneval\b|\bweihnachts|\bchristmas\b|\bkita\b|\bschule\b|\bschool\b|\buniversi/.test(text))
+    return { topic: 'life', label: 'Daily Life' };
+  // Default — Germany national news, EU context, world events with German angle
+  return { topic: 'germany', label: 'Germany' };
 }
 
 async function callClaude(apiKey, system, userMsg, maxTokens = 1000) {
@@ -101,26 +62,18 @@ function parseJSON(raw) {
   return null;
 }
 
-// Fix #23: enforce why-line word cap server-side. Claude sometimes ignores
-// the 25-35 word constraint or self-truncates with "...". This function:
-// 1. Strips trailing "..." or "…" sequences
-// 2. If over MAX_WORDS, truncates at the nearest sentence boundary in the
-//    last 40% of the text, otherwise hard-caps at MAX_WORDS with a period
-// 3. Ensures terminal punctuation
+// Why-line server-side word cap. Claude sometimes ignores the 25-35 word
+// constraint or self-truncates with "..." — this normalises after parse.
 function trimWhy(text, maxWords = 38) {
   if (!text) return text;
   let t = String(text).trim();
-  // Strip trailing ellipsis (any form) plus any preceding partial fragment punctuation
   t = t.replace(/[\s,;:]*(?:\.{2,}|…)\s*$/g, '');
   if (!t) return t;
-
   const words = t.split(/\s+/);
   if (words.length <= maxWords) {
     if (!/[.!?]$/.test(t)) t += '.';
     return t;
   }
-
-  // Try to truncate at a sentence boundary in the last portion of allowed words
   const truncated = words.slice(0, maxWords).join(' ');
   const lastTerminal = Math.max(
     truncated.lastIndexOf('.'),
@@ -130,8 +83,45 @@ function trimWhy(text, maxWords = 38) {
   if (lastTerminal > truncated.length * 0.55) {
     return truncated.slice(0, lastTerminal + 1).trim();
   }
-  // No good sentence break — hard cap, strip trailing fragment punctuation, end with period
   return truncated.replace(/[,;:]\s*$/, '').replace(/\s+$/, '') + '.';
+}
+
+// ── aisearch helpers ─────────────────────────────────────────
+const SEARCH_STOPWORDS = new Set([
+  'a','an','the','is','are','was','were','be','been','being',
+  'have','has','had','do','does','did','will','would','could','should',
+  'what','when','where','who','why','how','which',
+  'and','or','but','if','then','with','about','on','in','at','to','for','of','from',
+  'happening','going','tell','me','show','find','latest','news',
+  'i','you','we','they','it','this','that','these','those',
+  'german','germany','de',  // strip — every query is implicitly Germany
+]);
+
+function simplifyQuery(query) {
+  const cleaned = (query || '')
+    .toLowerCase()
+    .replace(/[?!.,;:'"()[\]{}]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const meaningful = cleaned.filter(w => w.length > 2 && !SEARCH_STOPWORDS.has(w));
+  return meaningful.join(' ').trim();
+}
+
+function buildFallbackQueries(rawQuery) {
+  const simplified = simplifyQuery(rawQuery);
+  const words = simplified.split(/\s+/).filter(Boolean);
+  const queries = [];
+  if (rawQuery && rawQuery.trim().split(/\s+/).length <= 4) {
+    queries.push(rawQuery.trim());
+  }
+  if (simplified && !queries.includes(simplified)) queries.push(simplified);
+  if (words.length > 3) queries.push(words.slice(0, 3).join(' '));
+  if (words.length > 2) queries.push(words.slice(0, 2).join(' '));
+  if (words.length > 1) {
+    const longest = [...words].sort((a, b) => b.length - a.length)[0];
+    if (longest) queries.push(longest);
+  }
+  return [...new Set(queries)].filter(Boolean);
 }
 
 module.exports = async function handler(req, res) {
@@ -158,12 +148,11 @@ module.exports = async function handler(req, res) {
   if (action === 'oneliner') {
     const rl = await checkRateLimit(supabase, sessionId, 'oneliner');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
-    const { articles = [], countries = ['us'], interests = [], ts } = params;
-    const skipCache    = !!ts;
-    const top4         = (Array.isArray(articles) ? articles : []).slice(0, 4);
+    const { articles = [], interests = [], ts } = params;
+    const skipCache = !!ts;
+    const top4 = (Array.isArray(articles) ? articles : []).slice(0, 4);
     if (!top4.length) return res.status(400).json({ error: 'No articles.' });
 
-    const countriesArr = Array.isArray(countries) ? countries : [countries];
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
 
     function hashStr(s) {
@@ -172,7 +161,7 @@ module.exports = async function handler(req, res) {
       return Math.abs(h).toString(36);
     }
     const headlineHash = hashStr(top4.map(a => a.headline).join('|'));
-    const cacheKey     = `oneliner-${countriesArr.sort().join('-')}-${headlineHash}`.slice(0, 100);
+    const cacheKey = `oneliner-de-${headlineHash}`.slice(0, 100);
 
     if (!skipCache) {
       try {
@@ -184,21 +173,21 @@ module.exports = async function handler(req, res) {
       } catch (e) {}
     }
 
-    const locationStr   = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
-    const interestLabel = interestsArr.length ? interestsArr.join(', ') : 'general news';
+    const interestLabel = interestsArr.length ? interestsArr.join(', ') : 'daily life in Germany';
     const headlinesList = top4.map((a, i) => `${i + 1}. ${a.headline} (${a.source || 'Unknown'})`).join('\n');
 
-    const systemPrompt = `You write sharp intelligence briefs for professionals following ${locationStr}, interested in ${interestLabel}.
+    const systemPrompt = `You write sharp news briefs for an ${AUDIENCE}, interested in ${interestLabel}.
 
 For each headline write EXACTLY 50-60 words across 3 sentences:
 Sentence 1: The specific fact — what happened, with a number, name, or concrete detail.
-Sentence 2: Why it matters to someone in ${locationStr} interested in ${interestLabel}.
+Sentence 2: Why it matters for daily life in Germany or for ${interestLabel}.
 Sentence 3: One forward-looking signal — what to watch or expect next.
 
 Rules:
 - Count words carefully. 50 minimum, 60 maximum. No exceptions.
 - Never use vague phrases like "significant", "notable", "worth noting".
 - Always use specific names, numbers, places.
+- Use German terms naturally where they're standard (Krankenkasse, S-Bahn, Bürgergeld) — don't translate them.
 
 Return ONLY a JSON object: {"1": "50-60 word summary...", "2": "50-60 word summary..."}
 No markdown, no explanation.`;
@@ -216,8 +205,8 @@ No markdown, no explanation.`;
       if (Object.keys(map).length > 0) {
         try {
           await supabase.from('digest_cache').upsert({
-            cache_key:  cacheKey,
-            digest:     map,
+            cache_key: cacheKey,
+            digest: map,
             fetched_at: new Date().toISOString(),
             expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
           }, { onConflict: 'cache_key' });
@@ -236,17 +225,13 @@ No markdown, no explanation.`;
     const rl = await checkRateLimit(supabase, sessionId, 'briefing');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { articles = [], countries = ['us'], interests = [], location, profession, ts } = params;
-    const skipCache    = !!ts;
-    const pool         = (Array.isArray(articles) ? articles : []).slice(0, 40);
-    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const { articles = [], interests = [], profession, ts } = params;
+    const skipCache = !!ts;
+    const pool = (Array.isArray(articles) ? articles : []).slice(0, 40);
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     if (pool.length === 0) return res.status(400).json({ error: 'No articles.' });
 
-    const locationStr  = location
-      ? (COUNTRY_NAMES[location] || location)
-      : countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
-    const interestStr  = interestsArr.length ? interestsArr.join(', ') : 'world news';
+    const interestStr = interestsArr.length ? interestsArr.join(', ') : 'daily life in Germany';
     const professionStr = profession || null;
 
     function hashStr(s) {
@@ -254,7 +239,7 @@ No markdown, no explanation.`;
       for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h = h & h; }
       return Math.abs(h).toString(36);
     }
-    const cacheKey = `briefing-${countriesArr.sort().join('-')}-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}`.slice(0, 100);
+    const cacheKey = `briefing-de-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}-${(interestsArr || []).sort().join('-').slice(0,30)}-${professionStr || 'na'}`.slice(0, 100);
 
     if (!skipCache) {
       try {
@@ -266,69 +251,72 @@ No markdown, no explanation.`;
       } catch (e) {}
     }
 
-    // Tag each article's relevance to help Claude make better selections
-    const COUNTRY_KEYWORDS = {
-      de: 'germany german berlin frankfurt dax bundesbank scholz merz',
-      in: 'india indian delhi mumbai rbi sensex nifty rupee modi',
-      us: 'america american united states washington fed nasdaq trump',
-      gb: 'britain british uk england london ftse sterling pound',
-      au: 'australia australian sydney melbourne asx reserve bank',
-      sg: 'singapore singaporean mas',
-      ae: 'uae dubai abu dhabi emirates gulf',
-      jp: 'japan japanese tokyo nikkei yen',
-    };
-    const GLOBAL_KEYWORDS = /\bwar\b|\bnuclear\b|\bsanctions\b|\bnato\b|\bopec\b|\bg7\b|\bg20\b|\bun\b|\bclimate summit\b|\bglobal\b|\bworld\b/i;
-    const userKeywords = countriesArr.flatMap(c => (COUNTRY_KEYWORDS[c] || '').split(' ')).filter(Boolean);
+    // Tag relevance to help Claude select stories.
+    // RELEVANT = directly Germany. EU = European policy. WORLD = significant
+    // beyond Germany. Anything else: CHECK_RELEVANCE — Claude must justify why-line.
+    const GERMANY_KEYWORDS = /\bgermany\b|\bgerman\b|\bberlin\b|\bmunich\b|\bm[uü]nchen\b|\bhamburg\b|\bfrankfurt\b|\bcologne\b|\bk[oö]ln\b|\bstuttgart\b|\bbundestag\b|\bbundesrat\b|\bscholz\b|\bmerz\b|\bhabeck\b|\bbaerbock\b|\blindner\b|\bdeutsche\b|\bdax\b|\bbundesbank\b|\beuro\b|\bbürgergeld\b|\bb[uü]rgergeld\b|\bkrankenkasse\b|\bmietpreisbremse\b|\bheizungsgesetz\b|\bbvg\b|\bdeutschebahn\b|\bautobahn\b|\bbundesliga\b/i;
+    const EU_KEYWORDS = /\beu\b|\beuropean\b|\beuropäisch\b|\becb\b|\bbrussels\b|\bbr[uü]ssel\b|\bnato\b|\beurope\b/i;
+    const GLOBAL_KEYWORDS = /\bwar\b|\bnuclear\b|\bsanctions\b|\bpandemic\b|\bclimate summit\b|\bg7\b|\bg20\b|\bopec\b|\bun general assembly\b/i;
 
     const headlinesList = pool.map((a, i) => {
       const text = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
-      const matchesUser = userKeywords.some(kw => kw.length > 2 && text.includes(kw));
-      const isGlobal = GLOBAL_KEYWORDS.test(text);
-      const tag = matchesUser ? 'RELEVANT' : isGlobal ? 'GLOBAL' : 'CHECK_RELEVANCE';
+      let tag;
+      if (GERMANY_KEYWORDS.test(text)) tag = 'GERMANY';
+      else if (EU_KEYWORDS.test(text)) tag = 'EU';
+      else if (GLOBAL_KEYWORDS.test(text)) tag = 'WORLD';
+      else tag = 'CHECK_RELEVANCE';
       return `${i + 1}. [${tag}] ${a.headline} | ${a.source || 'Unknown'} | ${a.image ? 'HAS_IMAGE' : 'NO_IMAGE'}`;
     }).join('\n');
 
-    const system = `You are a news editor creating a personalised intelligence briefing. \
-You write as a knowledgeable friend explaining events to a fellow professional — not as a journalist writing for publication. \
-Use plain, direct English. No wire service language. No passive voice. No definitive predictions. \
-When describing professional or financial impact, use likelihood language: "analysts expect", "this typically leads to", "watch for", "historically this has meant". \
-Never state future outcomes as certain facts. Never give financial, legal, or medical advice. \
-Always attribute specific numbers to their source.`;
-    const prompt = `You are editing a personal briefing for a professional living in ${locationStr}, interested in ${interestStr}${professionStr ? `, working in ${professionStr}` : ''}.
+    const system = `You are a news editor briefing an ${AUDIENCE}. \
+You write as a knowledgeable friend explaining what happened — not as a journalist writing for publication. \
+Plain, direct English. Use German terms where they're standard (Bürgergeld, Krankenkasse, S-Bahn, Mietpreisbremse) without translating. \
+Specific facts. No wire-service voice. No definitive predictions. \
+When describing impact, use likelihood language: "this typically affects", "watch for", "historically this has meant". \
+Never give financial, legal, or medical advice.`;
 
-RELEVANCE RULES — follow these strictly:
-1. At least 4 of the 7 stories MUST directly involve or meaningfully affect ${locationStr}. "Meaningfully affect" means the story changes costs, policy, markets, regulations, or daily life there — not just that it happened on the same planet.
-2. The remaining 2-3 stories may be global, BUT each must have a clear, specific connection to ${interestStr} or to the professional context of someone in ${locationStr}. Explain this connection in the why-line.
-3. NEVER include stories primarily about countries or regions the user does not follow, UNLESS the story has direct, concrete impact on ${locationStr} (e.g. a US Fed rate decision affects global markets — that's fine. Nigerian banking regulation does NOT affect someone in ${locationStr} — reject it).
-4. NEVER include celebrity news, sports scores, lifestyle, recipes, entertainment, or health trivia unless the user's interests explicitly include those topics.
+    const prompt = `Editing a personal news briefing for an ${AUDIENCE}, interested in ${interestStr}${professionStr ? `, working in ${professionStr}` : ''}.
 
-Select exactly 7 stories. All 7 carry equal weight — no lead story, no tiers, no hierarchy.
-DIVERSITY RULE: The 7 stories MUST cover at least 3 different topic areas. Never pick 4+ stories on the same topic.
-SOURCE DIVERSITY: Never pick more than 2 stories from the same news source. If 5 articles are from Politico, pick at most 2 — find the rest from other sources.
-STRONGLY PREFER articles marked HAS_IMAGE — the app displays each story with a full-bleed photo. Only pick a NO_IMAGE article if it is significantly more important than all HAS_IMAGE alternatives.
+RELEVANCE RULES:
+1. At least 5 of the 7 stories MUST directly involve Germany or have clear, immediate impact on daily life in Germany. Tagged [GERMANY] articles are best; [EU] articles work if the EU policy specifically affects Germany; [WORLD] articles only if they directly hit German economy, politics, or life.
+2. NEVER include foreign-domestic stories with no German angle (e.g. an Indian state election, a US Supreme Court ruling that doesn't affect Germany, a Japanese product launch).
+3. NEVER include celebrity, royal, lifestyle-fluff, or entertainment-feed news. This is intelligence for adults, not a chaos feed.
+4. Stories tagged [CHECK_RELEVANCE] are higher-risk — only pick if you can write a strong, specific why-line connecting them to life in Germany.
 
-Each article is tagged: [RELEVANT] = directly about the user's location/interests. [GLOBAL] = major world event. [CHECK_RELEVANCE] = may not be relevant — only pick if you can write a strong, specific why-line connecting it to ${locationStr}. When in doubt, skip CHECK_RELEVANCE articles.
+Select exactly 7 stories. All 7 carry equal weight — no lead, no tiers.
+DIVERSITY RULE: 7 stories must cover at least 3 different topic areas (visa/bureaucracy, housing, transport, health, work/economy, climate/energy, politics, daily life). Never 4+ stories on the same topic.
+SOURCE DIVERSITY: Never more than 2 stories from the same source. If 5 articles are from Politico Europe, pick at most 2.
+STRONGLY PREFER articles marked HAS_IMAGE.
 
-Articles are pre-ranked by semantic relevance — article 1 is most relevant. Trust this ranking but apply the relevance rules above.
+Articles are pre-ranked by semantic relevance — article 1 is most relevant. Trust this but apply the relevance rules.
 
-For each story write a "why" — EXACTLY 2 sentences, 25-35 words total:
-Sentence 1: The specific impact on YOU — the reader living in ${locationStr}${professionStr ? ` working in ${professionStr}` : ''}. Use "your" not "this affects." Use a number, timeframe, or concrete consequence. NEVER restate what the headline already says.
-Sentence 2: What YOU should watch or do — a forward-looking signal, date, or decision point. Use "watch your" or "check" not "investors should monitor."
-Never give financial, legal, or investment advice. Never predict outcomes. Attribute specific claims.
+For each story write a "why" — EXACTLY 2 sentences, 25-35 words total. The voice is 70% PRACTICAL SERVICE, 30% INTELLIGENT CONTEXT:
 
-Also write a "mood" sentence (under 20 words) summarising today's news tone. Calm, intelligent, no clichés.
+Sentence 1 (the practical hit — 70% mode): What this concretely changes for an English speaker living in Germany. Use a specific number, deadline, euro amount, or rule change. Use "your" not "this affects." Examples:
+- "If you're applying for permanent residence before March, this shortens your wait by an average of 6 weeks."
+- "Your Krankenkasse premium is likely to rise €18-25/month under this proposal — most plans adjust in January."
+- "BVG night-bus service reduces 22% from Sunday — rethink late routes home."
+
+Sentence 2 (the intelligent angle — 30% mode): Either (a) what to watch / decide / do next, or (b) the historical or political context a non-German might miss. Examples:
+- "Watch the BMI announcement on Tuesday — that's when the timeline becomes concrete."
+- "Germany has historically resisted EU-wide rules here. This vote breaks 30 years of precedent."
+- "The Greens lose this fight every time it reaches the Bundesrat. The amendment dies before passage, usually."
+
+NEVER restate the headline. NEVER give financial, legal, or medical advice. NEVER predict outcomes as certain.
+
+Also write a "mood" sentence (under 20 words) summarising today's news tone for life in Germany.
 
 Respond ONLY with valid JSON — no markdown, no explanation:
 {
   "mood": "one sentence summarising today",
   "stories": [
-    {"index": 1, "why": "2-sentence why-line here"},
-    {"index": 3, "why": "2-sentence why-line here"},
-    {"index": 5, "why": "2-sentence why-line here"},
-    {"index": 7, "why": "2-sentence why-line here"},
-    {"index": 9, "why": "2-sentence why-line here"},
-    {"index": 11, "why": "2-sentence why-line here"},
-    {"index": 12, "why": "2-sentence why-line here"}
+    {"index": 1, "why": "2-sentence why-line"},
+    {"index": 3, "why": "2-sentence why-line"},
+    {"index": 5, "why": "2-sentence why-line"},
+    {"index": 7, "why": "2-sentence why-line"},
+    {"index": 9, "why": "2-sentence why-line"},
+    {"index": 11, "why": "2-sentence why-line"},
+    {"index": 12, "why": "2-sentence why-line"}
   ]
 }
 
@@ -336,10 +324,9 @@ Articles:
 ${headlinesList}`;
 
     try {
-      // Fix #23: bumped from 800 to 1500 — at 800 Claude was self-truncating
-      // why-lines mid-word with "..." when 7 stories' worth of text + JSON
-      // structure approached the budget
-      const raw  = await callClaude(ANTHROPIC_KEY, system, prompt, 1500);
+      // 1500 max_tokens — at 800 Claude was self-truncating why-lines mid-word
+      // when 7 stories of text plus JSON structure approached the budget.
+      const raw = await callClaude(ANTHROPIC_KEY, system, prompt, 1500);
       const parsed = parseJSON(raw);
       if (!parsed?.stories || parsed.stories.length < 7) {
         await logError(supabase, { endpoint: 'ai', action: 'briefing', error: 'Insufficient stories returned', context: { storiesCount: parsed?.stories?.length }, sessionId });
@@ -349,27 +336,20 @@ ${headlinesList}`;
         .filter(s => s.index >= 1 && s.index <= pool.length && s.why)
         .map(s => ({
           ...pool[s.index - 1],
-          // Fix #23: trimWhy enforces 25-38 word cap, strips trailing "..."
-          // truncation, and ensures clean sentence-boundary endings
-          why:  trimWhy(s.why),
+          // trimWhy enforces 38-word cap, strips trailing "...", ensures clean endings
+          why: trimWhy(s.why),
         }))
         .filter(s => s && s.headline);
 
-      // ── #9: Content diversity check ─────────────────────────────
+      // Diversity check
       const topicSet = new Set();
       for (const s of briefingStories) {
-        const t = ((s.headline || '') + ' ' + (s.summary || '')).toLowerCase();
-        if (/\btech\b|\bai\b|\bsoftware\b|\bchip\b|\bgoogle\b|\bapple\b|\bmicrosoft\b|\bnvidia\b|\bopenai\b/.test(t)) topicSet.add('tech');
-        else if (/\bmarket\b|\bbank\b|\binflation\b|\bfed\b|\brbi\b|\becb\b|\bgdp\b|\btrade\b|\btariff\b|\bstock\b|\boil\b/.test(t)) topicSet.add('finance');
-        else if (/\belection\b|\bminister\b|\bparliament\b|\bgovernment\b|\bvote\b|\bpolicy\b|\bsenate\b|\bcongress\b/.test(t)) topicSet.add('politics');
-        else if (/\bclimate\b|\benergy\b|\bsolar\b|\bemission\b|\brenewable\b/.test(t)) topicSet.add('climate');
-        else if (/\bsport\b|\bcricket\b|\bfootball\b|\bnba\b|\bnfl\b|\bolympic\b/.test(t)) topicSet.add('sports');
-        else topicSet.add('world');
+        const t = inferTopic(s.headline, s.summary);
+        topicSet.add(t.topic);
       }
       if (topicSet.size < 3) {
         console.warn('[DIVERSITY WARNING]', JSON.stringify({
-          uniqueTopics: topicSet.size,
-          topics: [...topicSet],
+          uniqueTopics: topicSet.size, topics: [...topicSet],
           headlines: briefingStories.map(s => s.headline?.slice(0, 40)),
         }));
         await logError(supabase, {
@@ -379,29 +359,27 @@ ${headlinesList}`;
         });
       }
 
-      // ── Relevance check — are stories actually about the user's countries? ──
-      const userKws = countriesArr.flatMap(c => (COUNTRY_KEYWORDS[c] || '').split(' ')).filter(k => k.length > 2);
-      let relevantCount = 0;
+      // Germany-relevance check
+      let germanyCount = 0;
       for (const s of briefingStories) {
         const txt = ((s.headline || '') + ' ' + (s.summary || '') + ' ' + (s.why || '')).toLowerCase();
-        if (userKws.some(kw => txt.includes(kw))) relevantCount++;
+        if (GERMANY_KEYWORDS.test(txt) || EU_KEYWORDS.test(txt)) germanyCount++;
       }
-      if (relevantCount < 4) {
-        console.warn('[RELEVANCE WARNING]', JSON.stringify({
-          userCountries: countriesArr, relevantCount,
+      if (germanyCount < 5) {
+        console.warn('[GERMANY RELEVANCE WARNING]', JSON.stringify({
+          germanyCount,
           headlines: briefingStories.map(s => s.headline?.slice(0, 50)),
         }));
         await logError(supabase, {
           endpoint: 'ai', action: 'briefing-relevance',
-          error: `Only ${relevantCount}/7 stories relevant to ${countriesArr.join(',')}`,
-          context: { countries: countriesArr, relevantCount }, sessionId,
+          error: `Only ${germanyCount}/7 stories Germany/EU-relevant`,
+          context: { germanyCount }, sessionId,
         });
       }
 
-      // ── B9: Why-line production monitoring ──────────────────────
+      // Why-line monitoring
       const whyMonitor = {
         ts: new Date().toISOString(),
-        location: locationStr,
         profession: professionStr || 'none',
         storiesReturned: briefingStories.length,
         storiesMissingWhy: briefingStories.filter(s => !s.why).length,
@@ -409,24 +387,17 @@ ${headlinesList}`;
           headline: (s.headline || '').slice(0, 50),
           hasImage: !!s.image,
           words: s.why ? s.why.split(/\s+/).length : 0,
-          hasLocationAngle: s.why ? /daily life|living|commute|housing|cost|local|policy/i.test(s.why) : false,
-          hasProfessionAngle: professionStr
-            ? new RegExp(professionStr, 'i').test(s.why || '')
-              || /analyst|professional|investor|sector|industry|market/i.test(s.why || '')
-            : true,
         })),
       };
-      const outOfRange = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (w.words < 45 || w.words > 70));
-      const missingAngles = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (!w.hasLocationAngle || !w.hasProfessionAngle));
+      const outOfRange = whyMonitor.whyWordCounts.filter(w => w.words > 0 && (w.words < 20 || w.words > 45));
       const missingImages = briefingStories.filter(s => !s.image).length;
-      if (briefingStories.length < 7 || outOfRange.length > 0 || missingAngles.length > 0 || missingImages > 0) {
-        console.warn('[B9 WHY-LINE MONITOR]', JSON.stringify({
+      if (briefingStories.length < 7 || outOfRange.length > 0 || missingImages > 0) {
+        console.warn('[WHY-LINE MONITOR]', JSON.stringify({
           ...whyMonitor,
           issues: {
             insufficientStories: briefingStories.length < 7,
             storiesMissingImages: missingImages,
             outOfWordRange: outOfRange.map(w => `${w.headline}... (${w.words}w)`),
-            missingAngles: missingAngles.map(w => `${w.headline}... (loc:${w.hasLocationAngle},prof:${w.hasProfessionAngle})`),
           },
         }));
       }
@@ -434,7 +405,7 @@ ${headlinesList}`;
       const result = { mood: parsed.mood, stories: briefingStories };
       try {
         await supabase.from('digest_cache').upsert({
-          cache_key:  cacheKey, digest: result,
+          cache_key: cacheKey, digest: result,
           fetched_at: new Date().toISOString(),
           expires_at: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
         }, { onConflict: 'cache_key' });
@@ -447,91 +418,91 @@ ${headlinesList}`;
   }
 
   // ── ACTION: rank ─────────────────────────────────────────────
+  // Germany-relevance ranking. Articles get scored on:
+  //   - semantic similarity to user profile (interests + profession + Germany context)
+  //   - recency
+  //   - Germany / EU keyword density (bonus)
+  //   - foreign-domestic penalty (anything specifically about non-DE/EU country with no German angle)
   if (action === 'rank') {
     const rl = await checkRateLimit(supabase, sessionId, 'rank');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { articles = [], countries = ['us'], interests = [], location, profession } = params;
-    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const { articles = [], interests = [], profession } = params;
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     const pool = (Array.isArray(articles) ? articles : []).slice(0, 60);
     if (pool.length === 0) return res.status(200).json({ success: true, articles: [] });
 
-    const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|movie review|box office|reality tv|news bulletin|midday update|morning update|evening update|daily digest|weekly roundup|newsletter|podcast episode/i;
-    const userWantsSports = interestsArr.includes('sports');
+    const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|movie review|box office|reality tv|news bulletin|midday update|morning update|evening update|daily digest|weekly roundup|newsletter|podcast episode|royal family|prince harry|meghan/i;
     const filtered = pool.filter(a => {
       if (!a.headline || a.headline.length < 15) return false;
       if (NOISE_PATTERNS.test(a.headline)) return false;
-      if (!userWantsSports && /\b(nba|nfl|ipl|premier league|cricket|football score|match result|tournament bracket)\b/i.test(a.headline)) return false;
       return true;
     });
     const candidates = filtered.length >= 10 ? filtered : pool.slice(0, 30);
 
-    const COUNTRY_TERMS = {
-      de: ['germany','german','berlin','frankfurt','munich','hamburg','bundesbank','bundestag','bundesrat','scholz','merz','dax','volkswagen','siemens','bayer','deutsche bank','bundesliga'],
-      in: ['india','indian','delhi','mumbai','bangalore','chennai','kolkata','hyderabad','pune','rbi','sensex','nifty','bse','nse','rupee','inr','modi','bjp','congress','tata','infosys','reliance','adani','wipro','hcl','ola','zomato','sebi','niti'],
-      us: ['america','american','united states','washington','federal reserve','fed','nasdaq','dow jones','trump','senate','congress','pentagon'],
-      gb: ['britain','british','uk','england','london','bank of england','ftse','sterling','pound','sunak','labour','tory','parliament'],
-      au: ['australia','australian','sydney','melbourne','reserve bank','asx','albanese'],
-      sg: ['singapore','singaporean','mas','changi'],
-      ae: ['uae','dubai','abu dhabi','emirates','gulf','dirham','adnoc'],
-      jp: ['japan','japanese','tokyo','bank of japan','nikkei','yen','softbank','toyota'],
-    };
-    const COUNTRY_CONTEXT = {
-      de: 'Germany German economy DAX Bundesbank Berlin Frankfurt European Union ECB euro Scholz CDU SPD Bundestag energy Energiewende BMW Volkswagen Siemens SAP Mittelstand manufacturing export housing',
-      in: 'India Indian economy Sensex Nifty NSE BSE RBI rupee rupee Mumbai Delhi Bangalore Hyderabad startup fintech IT services pharmaceutical manufacturing SEBI budget fiscal',
-      us: 'United States America economy Federal Reserve Wall Street markets',
-      gb: 'United Kingdom Britain England economy Bank of England FTSE London sterling pound City finance treasury gilts mortgage housing NHS Parliament Westminster Chancellor inflation CPI',
-      au: 'Australia economy ASX RBA Reserve Bank Sydney Melbourne Brisbane Perth iron ore mining resources housing property inflation CPI superannuation budget immigration',
-      sg: 'Singapore economy MAS Southeast Asia SGD DBS OCBC UOB fintech banking housing HDB CPF GST trade port technology hub wealth management ASEAN',
-      ae: 'UAE Dubai Abu Dhabi economy Gulf Middle East',
-      jp: 'Japan economy Bank of Japan Tokyo Osaka yen Nikkei Sony Toyota Honda Softbank semiconductor automotive manufacturing aging deflation BOJ LDP Kishida',
-    };
-    const INTEREST_CONTEXT = {
-      finance:  'finance economy markets stocks bonds inflation interest rates banking investment GDP trade',
-      tech:     'technology artificial intelligence software digital innovation startups semiconductor chips cybersecurity',
-      politics: 'politics government elections parliament policy legislation foreign affairs diplomacy',
-      sports:   'sports football cricket tennis athletics competition tournament championship',
-      climate:  'climate change energy renewable sustainability emissions environment carbon green',
-      world:    'global international world affairs geopolitics conflict humanitarian',
-    };
+    // Germany-relevance terms — heavy boost
+    const GERMANY_TERMS = [
+      'germany','german','berlin','munich','münchen','hamburg','frankfurt','cologne','köln',
+      'stuttgart','düsseldorf','leipzig','dresden',
+      'bundestag','bundesrat','scholz','merz','habeck','baerbock','lindner','steinmeier',
+      'cdu','spd','fdp','afd','greens','grüne','linke',
+      'dax','bundesbank','deutsche','volkswagen','vw','bmw','mercedes','porsche','siemens','sap','bayer','basf','bosch',
+      'bvg','deutschebahn','bahn','autobahn','lufthansa','bundesliga',
+      'krankenkasse','bürgergeld','bürgeramt','anmeldung','finanzamt',
+      'mietpreisbremse','heizungsgesetz','energiewende','wärmepumpe',
+      'visa','aufenthalt','niederlassung','einbürgerung','blue card',
+      'mindestlohn','tarif','kurzarbeit','rente',
+    ];
+    // EU terms — moderate boost
+    const EU_TERMS = ['eu','european','europe','ecb','euro','brussels','brüssel','nato','europäisch'];
+    // Foreign-domestic — penalty when no German angle
+    const FOREIGN_TERMS = [
+      'india','indian','delhi','mumbai','bangalore','rbi','sensex','modi',
+      'australia','australian','sydney','melbourne','canberra',
+      'singapore','singaporean','mas',
+      'uae','dubai','abu dhabi',
+      'japan','japanese','tokyo','nikkei',
+      'china','chinese','beijing','shanghai',
+      'us senate','us congress','us president','american','usa',
+      'uk','british','britain','london','sunak','labour',
+    ];
 
-    const userCountryTerms = countriesArr.flatMap(c => COUNTRY_TERMS[c] || [c.toLowerCase()]);
     const PROFESSION_CONTEXT = {
+      tech:     'software engineering AI machine learning startups venture capital tech industry',
       finance:  'investment banking financial markets portfolio management trading economics',
-      tech:     'software engineering product management AI machine learning startups venture capital',
-      business: 'strategy consulting management operations supply chain business development',
-      law:      'legal regulation compliance policy government contracts litigation',
-      medicine: 'healthcare clinical research public health pharmaceutical medical technology',
-      media:    'journalism publishing broadcasting content creative advertising marketing',
-      academia: 'research university science publishing data analysis evidence policy',
+      founder:  'startup founder venture capital business strategy company building',
+      medicine: 'healthcare clinical research public health pharmaceutical medical',
+      academia: 'research university science publishing data analysis policy',
+      student:  'university education student life integration courses',
       other:    'professional career industry work',
     };
 
+    const INTEREST_CONTEXT = {
+      germany:   'Germany national politics economy daily life',
+      visa:      'visa residency immigration naturalization Aufenthaltstitel Blue Card',
+      housing:   'housing rent Mietpreisbremse cost of living utilities',
+      transport: 'transport BVG Deutsche Bahn S-Bahn autobahn strikes Lufthansa',
+      health:    'healthcare Krankenkasse doctors hospitals pharmaceutical',
+      work:      'work economy DAX Bürgergeld minimum wage employment industry',
+      climate:   'climate energy Heizungsgesetz Energiewende renewables emissions',
+      life:      'culture food festivals Bundesliga education kita schools daily life',
+    };
+
     const profileText = [
-      ...countriesArr.map(c => COUNTRY_CONTEXT[c] || c),
+      'Germany life as English speaker',
       ...interestsArr.map(i => INTEREST_CONTEXT[i] || i),
       profession ? (PROFESSION_CONTEXT[profession] || profession) : '',
     ].filter(Boolean).join('. ');
 
     if (!OPENAI_KEY) {
-      const INTEREST_TERMS = {
-        finance: 'finance economy market bank inflation stock gdp trade rupee dollar euro fed rbi',
-        tech: 'technology ai software digital cyber startup chip semiconductor',
-        politics: 'politics election parliament government minister president policy',
-        sports: 'sports football cricket match league tournament',
-        climate: 'climate energy renewable emission environment solar green',
-        world: 'world global international',
-      };
-      const profileTerms = [
-        ...countriesArr.map(c => COUNTRY_CONTEXT[c] || c),
-        ...interestsArr.map(i => INTEREST_TERMS[i] || i),
-      ].join(' ').toLowerCase();
-
+      // Rule-based fallback if no OpenAI key
+      const profileTerms = profileText.toLowerCase();
       const scored = candidates.map(a => {
         const text = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
         let score = 0;
         profileTerms.split(' ').forEach(term => { if (term.length > 2 && text.includes(term)) score++; });
+        const germanyMatches = GERMANY_TERMS.filter(t => text.includes(t)).length;
+        score += Math.min(germanyMatches, 5);
         const hoursOld = (Date.now() - new Date(a.publishedAt)) / 3600000;
         score += Math.max(0, 5 - hoursOld * 0.2);
         return { ...a, relevanceScore: score };
@@ -563,31 +534,29 @@ ${headlinesList}`;
         return dot / (Math.sqrt(magA) * Math.sqrt(magB));
       }
 
-      // Build a set of "foreign" country terms — countries NOT in the user's profile
-      const ALL_COUNTRY_CODES = Object.keys(COUNTRY_TERMS);
-      const foreignTerms = ALL_COUNTRY_CODES
-        .filter(c => !countriesArr.includes(c))
-        .flatMap(c => COUNTRY_TERMS[c] || []);
-
       const scored = candidates.map((a, i) => {
         const similarity = cosineSimilarity(profileEmbedding, articleEmbeddings[i]);
-        const hoursOld   = (Date.now() - new Date(a.publishedAt)) / 3600000;
-        const recency    = Math.max(0, 1 - hoursOld / 48);
+        const hoursOld = (Date.now() - new Date(a.publishedAt)) / 3600000;
+        const recency = Math.max(0, 1 - hoursOld / 48);
         const articleText = ((a.headline || '') + ' ' + (a.summary || '')).toLowerCase();
 
-        // Country relevance: how many user-country terms appear
-        const countryMentions = userCountryTerms.filter(term => articleText.includes(term)).length;
-        const countryBonus = Math.min(0.35, countryMentions * 0.10);
+        // Germany boost
+        const germanyMatches = GERMANY_TERMS.filter(term => articleText.includes(term)).length;
+        const germanyBonus = Math.min(0.40, germanyMatches * 0.10);
 
-        // Foreign penalty: article is primarily about a country the user doesn't follow
-        const foreignMentions = foreignTerms.filter(term => term.length > 3 && articleText.includes(term)).length;
-        const foreignPenalty = (foreignMentions >= 2 && countryMentions === 0) ? -0.20 : 0;
+        // EU boost
+        const euMatches = EU_TERMS.filter(term => articleText.includes(term)).length;
+        const euBonus = Math.min(0.15, euMatches * 0.05);
 
-        // Global significance override: major geopolitical terms get a pass even if "foreign"
-        const isGlobalSignificance = /\bwar\b|\bnuclear\b|\bsanctions\b|\bglobal recession\b|\bpandemic\b|\bclimate summit\b|\bun general assembly\b|\bg7\b|\bg20\b|\bnato\b|\bopec\b/i.test(articleText);
-        const globalOverride = (foreignPenalty < 0 && isGlobalSignificance) ? 0.10 : 0;
+        // Foreign-domestic penalty: foreign terms with NO German anchor
+        const foreignMatches = FOREIGN_TERMS.filter(term => term.length > 3 && articleText.includes(term)).length;
+        const foreignPenalty = (foreignMatches >= 2 && germanyMatches === 0 && euMatches === 0) ? -0.30 : 0;
 
-        const score = (similarity * 0.50) + (recency * 0.15) + countryBonus + foreignPenalty + globalOverride;
+        // Global significance override — major events still get a pass
+        const isGlobalSignificance = /\bwar\b|\bnuclear\b|\bsanctions\b|\bglobal recession\b|\bpandemic\b|\bg7\b|\bg20\b|\bnato\b|\bopec\b/i.test(articleText);
+        const globalOverride = (foreignPenalty < 0 && isGlobalSignificance) ? 0.15 : 0;
+
+        const score = (similarity * 0.45) + (recency * 0.15) + germanyBonus + euBonus + foreignPenalty + globalOverride;
         return { ...a, relevanceScore: Math.round(score * 100) / 100 };
       }).sort((a, b) => b.relevanceScore - a.relevanceScore);
 
@@ -595,7 +564,8 @@ ${headlinesList}`;
     } catch (e) {
       const scored = candidates.map(a => {
         const text = ((a.headline||'')+(a.summary||'')).toLowerCase();
-        const score = countriesArr.filter(c => text.includes(c)).length + interestsArr.filter(i => text.includes(i)).length;
+        const germanyMatches = GERMANY_TERMS.filter(t => text.includes(t)).length;
+        const score = germanyMatches + interestsArr.filter(i => text.includes(i)).length;
         return { ...a, relevanceScore: score };
       }).sort((a, b) => b.relevanceScore - a.relevanceScore);
       return res.status(200).json({ success: true, articles: scored.slice(0, 12), method: 'fallback', error: e.message });
@@ -607,24 +577,29 @@ ${headlinesList}`;
     const rl = await checkRateLimit(supabase, sessionId, 'aisearch');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { query = '', countries = ['us'], interests = [] } = params;
+    const { query = '' } = params;
     if (!query.trim()) return res.status(400).json({ error: 'query required' });
 
-    const countriesArr = Array.isArray(countries) ? countries : [countries];
-    const locationStr  = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
-
-    // Reusable searcher — hits internal content endpoint + GNews, dedupes
+    // Reusable searcher — Germany-only.
     async function runSearch(q) {
       try {
         const fetches = [
-          ...countriesArr.map(c =>
-            fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(q)}&country=${c}&max=8`)
-              .then(r => r.json()).then(d => d.articles || []).catch(() => [])
-          ),
+          fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(q)}&country=de&max=8`)
+            .then(r => r.json()).then(d => d.articles || []).catch(() => []),
         ];
         if (GNEWS_KEY) {
+          // GNews search with Germany country bias
           fetches.push(
-            fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=10&apikey=${GNEWS_KEY}`)
+            fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
+              .then(r => r.json())
+              .then(d => (d.articles || []).map(a => ({
+                headline: a.title, summary: a.description,
+                source: a.source?.name, sourceUrl: a.url, publishedAt: a.publishedAt,
+              }))).catch(() => [])
+          );
+          // Also include EU-wide search since EU policy often matters for German life
+          fetches.push(
+            fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q + ' Germany')}&lang=en&max=8&apikey=${GNEWS_KEY}`)
               .then(r => r.json())
               .then(d => (d.articles || []).map(a => ({
                 headline: a.title, summary: a.description,
@@ -644,7 +619,7 @@ ${headlinesList}`;
       }
     }
 
-    // Cascading fallback: try original → simplified → noun phrases → single keyword
+    // Cascading fallback: original → simplified → noun phrases → single keyword
     const fallbackQueries = buildFallbackQueries(query);
     let articles = [];
     let usedQuery = null;
@@ -658,24 +633,20 @@ ${headlinesList}`;
         usedQuery = q;
         break;
       }
-      // Keep best partial result in case all queries underperform
       if (found.length > articles.length) {
         articles = found;
         usedQuery = q;
       }
     }
 
-    // Last-resort: fetch latest news from user's country, framed as soft answer
+    // Last-resort: latest Germany news, framed as soft answer
     let usedLastResort = false;
     if (articles.length === 0) {
       try {
-        const latestFetches = countriesArr.map(c =>
-          fetch(`${VERCEL_URL}/api/content?action=news&country=${c}&max=8`)
-            .then(r => r.json()).then(d => d.articles || []).catch(() => [])
-        );
-        const all = (await Promise.all(latestFetches)).flat();
+        const fallback = await fetch(`${VERCEL_URL}/api/content?action=news&country=de&max=8`)
+          .then(r => r.json()).then(d => d.articles || []).catch(() => []);
         const seen = new Set();
-        articles = all.filter(a => {
+        articles = fallback.filter(a => {
           const k = (a.headline || '').slice(0, 50).toLowerCase().replace(/[^a-z0-9]/g, '');
           if (!k || seen.has(k)) return false;
           seen.add(k); return true;
@@ -684,17 +655,16 @@ ${headlinesList}`;
       } catch (e) {}
     }
 
-    // True last resort: even latest news failed → return graceful empty
     if (articles.length === 0) {
       await logError(supabase, {
         endpoint: 'ai', action: 'aisearch',
         error: 'All fallbacks exhausted, no articles found',
-        context: { query, attempts, countries: countriesArr },
+        context: { query, attempts },
         sessionId,
       });
       return res.status(200).json({
         success: true,
-        synthesis: `No recent stories matched "${query}" in your selected regions. Try a shorter query, or check the Today tab for the latest briefing.`,
+        synthesis: `No recent stories matched "${query}". Try a shorter query, or check Today for the latest Germany briefing.`,
         confidence: 'low',
         articles: [],
         query,
@@ -705,17 +675,17 @@ ${headlinesList}`;
       `${i + 1}. ${a.headline} (${a.source || 'Unknown'})`
     ).join('\n');
 
-    const system = `You are a personal intelligence analyst for someone following ${locationStr}. Synthesise news into clear, balanced answers. Be specific. No fluff.`;
+    const system = `You are a personal news analyst for an ${AUDIENCE}. Synthesise into clear, balanced answers focused on what this means for daily life in Germany. Specific. No fluff.`;
 
     const prompt = usedLastResort
       ? `User query: "${query}"
 
-We did not find articles directly matching this query. Below are today's most relevant general headlines for someone in ${locationStr}. Acknowledge the gap honestly, then synthesise what IS in the news that may be tangentially relevant. Keep the tone calm and helpful, not apologetic.
+We didn't find articles directly matching this query. Below are today's most relevant Germany-life headlines. Acknowledge the gap honestly, then synthesise what IS in the news that may be tangentially relevant. Calm tone, not apologetic.
 
 Articles available:
 ${articlesList}
 
-Write 60-90 words. End with one line suggesting a sharper query the user could try.
+Write 60-90 words. End with one line suggesting a sharper query.
 
 Respond ONLY with JSON:
 {"synthesis":"your answer here","sourceIndices":[1,3,5],"confidence":"low"}`
@@ -724,24 +694,23 @@ Respond ONLY with JSON:
 Articles found:
 ${articlesList}
 
-Write a synthesis of 80-120 words that directly answers the query, draws on multiple sources, notes conflicting perspectives if present, and ends with one forward-looking sentence.
+Write a synthesis of 80-120 words that directly answers the query for an ${AUDIENCE}. Draw on multiple sources. Note conflicting perspectives if present. End with one forward-looking sentence — what to watch or do next.
 
 Respond ONLY with JSON:
 {"synthesis":"your answer here","sourceIndices":[1,3,5],"confidence":"high|medium|low"}`;
 
     try {
-      const raw    = await callClaude(ANTHROPIC_KEY, system, prompt, 400);
+      const raw = await callClaude(ANTHROPIC_KEY, system, prompt, 400);
       const parsed = parseJSON(raw);
       const sourced = parsed?.sourceIndices
         ? parsed.sourceIndices.map(i => articles[i - 1]).filter(Boolean)
         : articles.slice(0, 5);
       return res.status(200).json({
         success: true, query,
-        synthesis:  parsed?.synthesis  || null,
+        synthesis: parsed?.synthesis || null,
         confidence: parsed?.confidence || (usedLastResort ? 'low' : 'medium'),
-        articles:   sourced,
+        articles: sourced,
         allArticles: articles,
-        // diagnostic — useful in logs, harmless to client
         usedQuery, usedLastResort, attempts,
       });
     } catch (e) {
@@ -758,26 +727,22 @@ Respond ONLY with JSON:
     const rl = await checkRateLimit(supabase, sessionId, 'digest');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { countries = ['us'], interests = [], topic, headline, source } = params;
-    const countriesArr = Array.isArray(countries) ? countries : [countries];
+    const { interests = [], topic, headline, source } = params;
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
-    const locationStr  = countriesArr.map(c => COUNTRY_NAMES[c] || c.toUpperCase()).join(', ');
-    const interestStr  = interestsArr.length ? interestsArr.join(', ') : 'world news';
+    const interestStr = interestsArr.length ? interestsArr.join(', ') : 'daily life in Germany';
 
     const isTopicDive = !!(topic || headline);
-    const searchQuery = topic || headline || `top news ${locationStr}`;
+    const searchQuery = topic || headline || 'top news Germany';
 
     let articles = [];
     try {
       const fetches = [
-        ...countriesArr.map(c =>
-          fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(searchQuery)}&country=${c}&max=8`)
-            .then(r => r.json()).then(d => d.articles || []).catch(() => [])
-        ),
+        fetch(`${VERCEL_URL}/api/content?action=search&q=${encodeURIComponent(searchQuery)}&country=de&max=8`)
+          .then(r => r.json()).then(d => d.articles || []).catch(() => []),
       ];
       if (GNEWS_KEY) {
         fetches.push(
-          fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(searchQuery)}&lang=en&max=10&apikey=${GNEWS_KEY}`)
+          fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(searchQuery)}&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
             .then(r => r.json())
             .then(d => (d.articles || []).map(a => ({
               headline: a.title, summary: a.description,
@@ -797,26 +762,26 @@ Respond ONLY with JSON:
 
     const articlesList = articles.length > 0
       ? articles.map((a, i) => `${i+1}. ${a.headline} (${a.source || 'Unknown'})`).join('\n')
-      : 'No specific articles found — use your general knowledge.';
+      : 'No specific articles found — use your general knowledge of Germany news.';
 
     const system = isTopicDive
-      ? `You are an intelligence analyst writing a deep-dive report on a specific story for someone following ${locationStr} interested in ${interestStr}.`
-      : `You are a morning intelligence briefing editor for someone following ${locationStr} interested in ${interestStr}.`;
+      ? `You are an analyst writing a deep-dive report for an ${AUDIENCE}, interested in ${interestStr}. Voice: 70% practical (what this means for daily life in Germany), 30% intelligent context (history, politics, what most non-Germans miss).`
+      : `You are a morning briefing editor for an ${AUDIENCE}, interested in ${interestStr}. Voice: 70% practical, 30% intelligent context.`;
 
     const prompt = isTopicDive
-      ? `Write a deep-dive intelligence report on this story: "${headline || topic}"
+      ? `Deep-dive report on this story: "${headline || topic}"
 ${source ? `Source: ${source}` : ''}
 
 Related articles found:
 ${articlesList}
 
-Structure your report as JSON:
+Structure as JSON:
 {
   "title": "clean topic title (5 words max)",
   "briefLine": "one sentence: what is happening right now (under 25 words)",
-  "background": "2-3 sentences: how did we get here? key context",
+  "background": "2-3 sentences: how did we get here? key context for someone who didn't grow up in Germany",
   "whatHappened": "2-3 sentences: the specific recent development",
-  "whyItMatters": "2-3 sentences: why this matters to someone in ${locationStr} interested in ${interestStr}",
+  "whyItMatters": "2-3 sentences: practical impact for someone living in Germany — euros, deadlines, rule changes, daily life",
   "watchFor": "2-3 sentences: what to watch in the next 48-72 hours",
   "perspectives": [
     {"side": "label", "view": "one sentence view"},
@@ -825,36 +790,35 @@ Structure your report as JSON:
   "sourceCount": ${articles.length},
   "generatedAt": "${new Date().toISOString()}"
 }`
-      : `Write a morning intelligence briefing for someone following ${locationStr} interested in ${interestStr}.
+      : `Morning briefing for an ${AUDIENCE}, interested in ${interestStr}.
 
 Articles available:
 ${articlesList}
 
 Structure as JSON:
 {
-  "title": "Morning Intelligence Brief",
-  "briefLine": "one editorial sentence capturing the overall mood of today's news (under 25 words)",
+  "title": "Morning Briefing",
+  "briefLine": "one editorial sentence capturing today's mood for life in Germany (under 25 words)",
   "stories": [
     {
       "headline": "clean headline",
-      "whyItMatters": "exactly 50-60 words — specific fact, why it matters to this user, what to watch",
+      "whyItMatters": "exactly 50-60 words — specific fact, daily-life impact in Germany, what to watch",
       "source": "source name",
       "tier": 1
     }
   ],
-  "countryLabels": "${locationStr}",
+  "countryLabels": "${LOCATION_LABEL}",
   "generatedAt": "${new Date().toISOString()}"
 }
 Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
 
     try {
-      const raw    = await callClaude(ANTHROPIC_KEY, system, prompt, 1000);
+      const raw = await callClaude(ANTHROPIC_KEY, system, prompt, 1000);
       const parsed = parseJSON(raw);
       if (!parsed) {
         await logError(supabase, { endpoint: 'ai', action: 'digest', error: 'Invalid JSON from Claude', context: { headline: headline?.slice(0, 50) }, sessionId });
         return res.status(500).json({ error: 'Report generation failed — invalid JSON.' });
       }
-
       return res.status(200).json({
         success: true,
         isTopicDive,
@@ -866,10 +830,9 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
     }
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch` });
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch | digest` });
 
   } catch (topErr) {
-    // Top-level catch — surfaces the real error instead of silent 500 crash
     return res.status(500).json({
       error: 'Unhandled error: ' + (topErr.message || String(topErr)),
       action: (typeof action !== 'undefined' ? action : 'unknown'),
