@@ -3,18 +3,21 @@
 // PURPOSE: Cache warming + topic thread generation + cleanup
 // Runs: GitHub Actions every 3h + Vercel cron 5am UTC daily
 //
-// GERMANY-ONLY: Verityn is now focused on news for English speakers
+// GERMANY-ONLY (May 2026): Verityn is now focused on news for English speakers
 // living in Germany. Multi-country fetching has been removed.
+//
+// CITY TAGGING (May 2026): Each source is tagged with a `city` field.
+// Berlin/Munich/Hamburg/Frankfurt come from city-specific Local DE feeds;
+// everything else is `nationwide`. Articles inherit their source's city tag.
+// Topic clusters store the dominant city via topic_threads.city for downstream
+// per-user filtering in api/ai.js rank.
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
 const { cleanupRateLimits, logError } = require('./_helpers');
 
-// Single-country product. Kept as array for code-shape compatibility with
-// existing /api/content?country=de calls.
 const COUNTRIES = ['de'];
 
-// Fix #23: Defensive VERCEL_URL — strip protocol if accidentally included
 const rawUrl = process.env.VERCEL_URL || 'verityn-backend-ten.vercel.app';
 const VERCEL_URL = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
 
@@ -36,153 +39,81 @@ function isEnglishHeadline(title) {
 }
 
 // ── Germany-relevance filter (v2 — tighter) ──────────────────
-// Strategy: STRONG_GERMANY keeps. HARD_GLOBAL/UK_DOMESTIC drop unless paired with
-// a German anchor. EU_INSTITUTIONAL keeps (EU policy that affects Germany is
-// directly relevant). Generic articles (climate, AI, science, tech) pass through
-// soft — they'll get scored low by rank but might still surface if no other
-// Germany-specific story crowds them out.
-//
-// v1 mistake: had "eu", "euro", "brussels" in the keep-list, so all EU policy
-// stories passed as "Germany". The pool ended up dominated by Iran/Trump/Ukraine
-// because those passed through "neither STRONG_GERMANY nor STRONG_FOREIGN" as
-// generic — and they cluster heavily because every English wire covers them.
-
 const STRONG_GERMANY = /\b(germany|german|berlin|munich|münchen|muenchen|hamburg|frankfurt|cologne|köln|koeln|stuttgart|düsseldorf|duesseldorf|leipzig|dresden|bremen|hannover|nürnberg|nuremberg|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grünen|gruene|afd|merz|scholz|habeck|lindner|baerbock|wagenknecht|weidel|söder|soeder|steinmeier|deutsche bahn|lufthansa|volkswagen|bmw|mercedes|siemens|sap|bayer|allianz|porsche|adidas|dax|krankenkasse|bürgergeld|buergergeld|mietpreisbremse|heizungsgesetz|energiewende|wärmepumpe|waermepumpe|tagesschau|tagesspiegel|spiegel|faz|sueddeutsche|süddeutsche|bvg|s-bahn|u-bahn|autobahn|verdi|ig metall|gdl|mindestlohn|kurzarbeit|tarifvertrag|bürgeramt|buergeramt|anmeldung|finanzamt|niederlassungserlaubnis|aufenthaltstitel|einbürgerung|einbuergerung)\b/i;
 
-// EU institutions that materially affect Germany (Germany is the EU's largest
-// economy — ECB rates, Commission rules, Brussels rulings hit Berlin first).
 const EU_INSTITUTIONAL = /\b(european central bank|ecb|european commission|european parliament|eurozone|eurogroup|eu council)\b/i;
 
-// Hard global geopolitics — drop these unless STRONG_GERMANY is also present.
-// Iran/Trump/Ukraine/Russia/China stories dominate global English wires; without
-// this rejection they crowd out the actual Germany content.
 const HARD_GLOBAL = /\b(iran|iranian|israel|israeli|gaza|hamas|hezbollah|netanyahu|trump|harris|biden|putin|russia|russian|kremlin|moscow|ukraine|ukrainian|zelensky|kyiv|china|chinese|beijing|shanghai|xi jinping|jinping|modi|delhi|mumbai|bangalore|sensex|nifty|rupee|japan|japanese|tokyo|nikkei|yen|south korea|korean|seoul|saudi arabia|riyadh|dubai|abu dhabi|emirates|qatar|brazil|brazilian|mexico|mexican|argentina|chile|nigeria|kenya|south africa|sydney|melbourne|asx|new zealand|wellington|venezuela|colombia|peru|pakistan|pakistani|islamabad|afghanistan|kabul|taliban|syria|syrian|libya|egypt|cairo|turkey|turkish|ankara|erdogan)\b/i;
 
-// UK-domestic — post-Brexit, UK is a separate political/economic story.
-// Keep if has Germany anchor; drop otherwise.
 const UK_DOMESTIC = /\b(britain|british|england|sunak|starmer|labour party|tory party|tories|conservative party|downing street|westminster|whitehall|brexit|chancellor of the exchequer)\b/i;
 
 function isGermanyRelevant(title, summary) {
   const text = ((title || '') + ' ' + (summary || '')).toLowerCase();
-
-  // Strong Germany signal — always keep
   if (STRONG_GERMANY.test(text)) return true;
-
-  // EU institutional with implicit Germany impact — keep
   if (EU_INSTITUTIONAL.test(text)) return true;
-
-  // Hard global without Germany anchor — drop
   if (HARD_GLOBAL.test(text)) return false;
-
-  // UK-domestic without Germany anchor — drop
   if (UK_DOMESTIC.test(text)) return false;
-
-  // Generic articles (climate, AI, science, tech, EU general) — pass through soft
   return true;
 }
 
-// ── Entity map for topic clustering ──────────────────────────
+// ── Entity map for topic clustering (Germany-focused) ────────
 const ENTITY_MAP = {
-  // ── German political institutions ──
   'bundestag':'bundestag','bundesrat':'bundesrat',
   'bundesregierung':'germany','bundeskanzler':'germany','chancellor':'germany',
   'bundeswehr':'bundeswehr',
-
-  // ── German parties ──
   'cdu':'cdu','csu':'csu','spd':'spd','fdp':'fdp',
   'grünen':'greens','greens':'greens','gruene':'greens',
   'afd':'afd','linke':'linke','die linke':'linke','bsw':'bsw',
-
-  // ── German politicians ──
   'merz':'merz','scholz':'scholz','habeck':'habeck','lindner':'lindner',
   'baerbock':'baerbock','wagenknecht':'wagenknecht','weidel':'weidel',
   'söder':'soeder','soeder':'soeder','steinmeier':'steinmeier',
-
-  // ── German policy / law ──
   'bürgergeld':'buergergeld','buergergeld':'buergergeld',
   'mietpreisbremse':'housing-policy','mietendeckel':'housing-policy',
   'heizungsgesetz':'heizungsgesetz','wärmepumpe':'energy','waermepumpe':'energy',
   'energiewende':'energy','klimageld':'climate-policy',
   'mindestlohn':'mindestlohn','tarifvertrag':'tarif','tarif':'tarif',
   'kurzarbeit':'kurzarbeit','elterngeld':'elterngeld','kindergeld':'kindergeld',
-
-  // ── Bureaucracy / paperwork ──
   'anmeldung':'anmeldung','bürgeramt':'buergeramt','buergeramt':'buergeramt',
   'krankenkasse':'krankenkasse','krankenversicherung':'krankenkasse',
   'gkv':'krankenkasse','tk':'krankenkasse','aok':'krankenkasse','barmer':'krankenkasse',
   'rentenversicherung':'rente','rente':'rente','altersvorsorge':'rente',
   'finanzamt':'tax','steuer':'tax','steuererklärung':'tax','steuererklaerung':'tax',
   'gez':'gez','rundfunkbeitrag':'gez',
-
-  // ── Visa / residency ──
   'aufenthaltstitel':'visa','niederlassungserlaubnis':'visa','niederlassung':'visa',
   'einbürgerung':'visa','einbuergerung':'visa','naturalization':'visa',
   'aufenthalt':'visa','arbeitserlaubnis':'visa',
-
-  // ── German cities ──
   'berlin':'berlin','münchen':'munich','munich':'munich','muenchen':'munich',
   'hamburg':'hamburg','frankfurt':'frankfurt',
   'köln':'cologne','cologne':'cologne','koeln':'cologne',
   'stuttgart':'stuttgart','düsseldorf':'duesseldorf','duesseldorf':'duesseldorf',
   'leipzig':'leipzig','dresden':'dresden','bremen':'bremen','hannover':'hannover',
   'nürnberg':'nuremberg','nuremberg':'nuremberg',
-
-  // ── German transport ──
   'bahn':'db','autobahn':'autobahn',
   'bvg':'bvg','s-bahn':'s-bahn','u-bahn':'u-bahn',
   'lufthansa':'lufthansa','flixbus':'flixbus',
-
-  // ── German unions / strikes ──
   'verdi':'verdi','ver.di':'verdi',
   'ig metall':'ig-metall','igmetall':'ig-metall',
   'streik':'strike','strike':'strike','gdl':'gdl',
-
-  // ── German companies ──
   'volkswagen':'volkswagen','vw':'volkswagen',
   'bmw':'bmw','mercedes':'mercedes','mercedes-benz':'mercedes',
   'siemens':'siemens','sap':'sap','bayer':'bayer',
   'allianz':'allianz','deutsche bank':'deutsche-bank','commerzbank':'commerzbank',
   'porsche':'porsche','adidas':'adidas','puma':'puma',
-
-  // ── German economy terms ──
   'dax':'dax','mittelstand':'mittelstand','bundesbank':'bundesbank',
-
-  // ── EU ──
   'eu':'eu','european union':'eu','europäische union':'eu',
   'ezb':'ecb','ecb':'ecb','european central bank':'ecb',
   'european commission':'eu-commission','european parliament':'eu-parliament',
   'brussels':'eu','strasbourg':'eu',
-
-  // ── Bundesliga / football clubs ──
   'bundesliga':'bundesliga','bayern':'bayern','dortmund':'dortmund','bvb':'dortmund',
   'leverkusen':'leverkusen','schalke':'schalke','rb leipzig':'leipzig-fc',
-
-  // ── Existing global entities (kept — they pair with German entities) ──
-  'iran':'iran','iranian':'iran','irans':'iran',
-  'israel':'israel','israeli':'israel','israelis':'israel',
-  'ukraine':'ukraine','ukrainian':'ukraine',
-  'russia':'russia','russian':'russia',
-  'china':'china','chinese':'china',
-  'india':'india','indian':'india',
   'germany':'germany','german':'germany',
-  'france':'france','french':'france',
-  'america':'america','american':'america','us':'america',
-  'britain':'uk','british':'uk','england':'uk',
-  'japan':'japan','japanese':'japan',
-  'pakistan':'pakistan','saudi':'saudi',
-  'europe':'europe','european':'europe',
-  'nato':'nato','gaza':'gaza','hamas':'hamas',
-  'trump':'trump','biden':'biden','putin':'putin','zelensky':'zelensky',
-  'netanyahu':'netanyahu','xi':'xi','macron':'macron',
-  'congress':'congress','parliament':'parliament','senate':'senate',
-  'election':'election','elections':'election',
-  'fed':'fed',
+  'france':'france','europe':'europe','european':'europe',
+  'nato':'nato',
   'inflation':'inflation','recession':'recession','gdp':'gdp',
-  'oil':'oil','opec':'opec','crude':'oil',
+  'oil':'oil','crude':'oil',
   'rate':'rates','rates':'rates','interest':'rates',
   'market':'markets','markets':'markets','stocks':'stocks',
   'dollar':'dollar','euro':'euro',
-  'bank':'banking','banking':'banking',
   'tariff':'tariffs','tariffs':'tariffs','trade':'trade',
   'ai':'ai','artificial':'ai',
   'chip':'chips','chips':'chips','semiconductor':'chips',
@@ -191,46 +122,37 @@ const ENTITY_MAP = {
   'cyber':'cyber','cybersecurity':'cyber',
   'climate':'climate','emissions':'climate','carbon':'climate',
   'energy':'energy','solar':'energy','renewable':'energy',
-  'war':'war','conflict':'conflict','ceasefire':'ceasefire',
-  'sanctions':'sanctions','nuclear':'nuclear',
   'tesla':'tesla','spacex':'spacex','amazon':'amazon',
   'ryanair':'ryanair',
 };
 
-// ── Entities too broad to stand alone — must be paired with a secondary ──
-// Includes country-only entities (germany, france, etc.) and very generic
-// concepts (markets, banking) — these need a specific secondary entity to
-// form a meaningful topic cluster.
 const BROAD_ENTITIES = new Set([
-  'germany','france','india','china','japan','korea','saudi',
-  'australia','uk','europe','america','pakistan','russia',
-  'markets','banking','europe','eu',
+  'germany','france','europe','eu',
+  'markets','banking',
 ]);
+
+// Germany city entities — used to derive a cluster's dominant city tag.
+// Order matters: if a cluster has both 'berlin' and 'munich' entities (rare),
+// the first match wins.
+const CITY_ENTITIES = ['berlin','munich','hamburg','frankfurt','cologne','stuttgart','duesseldorf','leipzig','dresden','bremen','hannover','nuremberg'];
 
 function getEntities(headline) {
   const text = (headline || '').toLowerCase();
   const found = new Set();
-
-  // Multi-word entities checked first (e.g. "deutsche bahn", "ig metall")
-  // before single-word tokenization so they're not split apart.
   for (const [key, val] of Object.entries(ENTITY_MAP)) {
     if (key.includes(' ') || key.includes('-') || key.includes('.')) {
       if (text.includes(key)) found.add(val);
     }
   }
-
-  // Single-word matches via tokenization
   const words = text.replace(/[^a-zäöüß0-9\s]/g, ' ').split(/\s+/);
   for (const w of words) {
     if (ENTITY_MAP[w]) found.add(ENTITY_MAP[w]);
   }
-
   return [...found].sort();
 }
 
 function makeTopicLabel(entities) {
   const labelMap = {
-    // German labels
     'bundestag':'Bundestag','bundesrat':'Bundesrat','bundeswehr':'Bundeswehr',
     'cdu':'CDU','csu':'CSU','spd':'SPD','fdp':'FDP',
     'greens':'Grüne','afd':'AfD','linke':'Die Linke','bsw':'BSW',
@@ -258,56 +180,61 @@ function makeTopicLabel(entities) {
     'bundesliga':'Bundesliga','bayern':'Bayern Munich','dortmund':'Dortmund',
     'leverkusen':'Leverkusen','schalke':'Schalke','leipzig-fc':'RB Leipzig',
     'climate-policy':'Climate Policy',
-
-    // Global (kept)
-    'iran':'Iran','israel':'Israel','ukraine':'Ukraine','russia':'Russia',
-    'china':'China','india':'India','germany':'Germany','france':'France',
-    'america':'United States','trump':'Trump','biden':'Biden','putin':'Putin',
-    'nato':'NATO','gaza':'Gaza','hamas':'Hamas','pakistan':'Pakistan','uk':'UK',
+    'germany':'Germany','france':'France','europe':'Europe',
+    'nato':'NATO',
     'oil':'Oil Prices','rates':'Interest Rates','markets':'Markets',
     'chips':'Semiconductors','ai':'Artificial Intelligence','climate':'Climate',
-    'trade':'Trade','tariffs':'Tariffs','ceasefire':'Ceasefire','nuclear':'Nuclear',
-    'sanctions':'Sanctions','banking':'Banking','dollar':'US Dollar','euro':'Euro',
+    'trade':'Trade','tariffs':'Tariffs','nuclear':'Nuclear',
+    'banking':'Banking','dollar':'US Dollar','euro':'Euro',
     'google':'Google','nvidia':'Nvidia','openai':'OpenAI','microsoft':'Microsoft',
     'apple':'Apple','meta':'Meta','tesla':'Tesla','amazon':'Amazon','ryanair':'Ryanair',
-    'cyber':'Cybersecurity','election':'Elections','zelensky':'Zelensky','netanyahu':'Netanyahu',
-    'saudi':'Saudi Arabia','europe':'Europe','japan':'Japan','korea':'Korea',
-    'inflation':'Inflation','fed':'Federal Reserve','recession':'Recession','gdp':'GDP',
-    'macron':'Macron','xi':'Xi','war':'War','conflict':'Conflict','spacex':'SpaceX',
+    'cyber':'Cybersecurity',
+    'inflation':'Inflation','recession':'Recession','gdp':'GDP','spacex':'SpaceX',
   };
   return entities.slice(0, 3)
     .map(e => labelMap[e] || e.charAt(0).toUpperCase() + e.slice(1))
     .join(' & ');
 }
 
-// ── Cluster articles by entity-pair signature ────────────────
-// Broad entities (countries, "markets") MUST be paired with a specific
-// secondary entity, otherwise the article is dropped from clustering.
+// Derive a cluster's dominant city from its entities and source mix.
+// Priority: explicit city entity > most-common source city > 'nationwide'.
+function deriveClusterCity(entities, articles) {
+  for (const e of entities) {
+    if (CITY_ENTITIES.includes(e)) return e;
+  }
+  // Fall back to source-tag majority
+  const sourceCityCounts = {};
+  for (const a of articles) {
+    const sc = a.sourceCity || 'nationwide';
+    sourceCityCounts[sc] = (sourceCityCounts[sc] || 0) + 1;
+  }
+  let bestCity = 'nationwide';
+  let bestCount = 0;
+  for (const [c, n] of Object.entries(sourceCityCounts)) {
+    if (c === 'nationwide') continue;
+    if (n > bestCount) { bestCity = c; bestCount = n; }
+  }
+  // If a city dominates >= 60% of articles, tag it; otherwise nationwide
+  if (bestCount / articles.length >= 0.6) return bestCity;
+  return 'nationwide';
+}
+
 function clusterArticles(articles) {
   const ENTITY_PRIORITY = [
-    // Germany-specific (highest priority — these are the stories we want)
     'buergergeld','housing-policy','heizungsgesetz','energy','mindestlohn',
     'krankenkasse','visa','strike','tax','rente','anmeldung','tarif',
     'bundestag','bundesrat','cdu','spd','fdp','greens','afd','linke','bsw',
     'merz','scholz','habeck','lindner','weidel','soeder','wagenknecht',
-    // Cities (specific city-level stories)
     'berlin','munich','hamburg','frankfurt','cologne','stuttgart','leipzig',
     'duesseldorf','dresden','bremen','hannover',
-    // German transport
     'db','bvg','s-bahn','lufthansa','verdi','ig-metall','gdl',
-    // German companies
     'volkswagen','bmw','mercedes','siemens','sap','bayer','allianz','porsche',
     'deutsche-bank','adidas',
-    // German football
     'bundesliga','bayern','dortmund','leverkusen','leipzig-fc',
-    // EU
     'eu','ecb','eu-commission',
-    // Existing global priorities (lower)
-    'iran','israel','ukraine','russia','china','india','germany','france',
-    'trump','putin','modi','zelensky','netanyahu',
+    'germany','france',
     'fed','oil','ai','chips','markets','rates','inflation','tariffs','trade',
-    'nato','nuclear','sanctions','war','ceasefire',
-    'climate','election','congress','america','uk','japan','korea',
+    'nato','climate',
     'tesla','spacex','nvidia','openai','google','apple','microsoft','meta','amazon','ryanair',
   ];
 
@@ -337,11 +264,9 @@ function clusterArticles(articles) {
 
     let key;
     if (BROAD_ENTITIES.has(dominant)) {
-      // Broad entity — drop article unless we have a specific secondary
       if (!secondary || BROAD_ENTITIES.has(secondary)) continue;
       key = [dominant, secondary].sort().join('+');
     } else {
-      // Specific entity — pair with secondary if available, else stand alone
       key = secondary && !BROAD_ENTITIES.has(secondary)
         ? [dominant, secondary].sort().join('+')
         : dominant;
@@ -363,10 +288,15 @@ function clusterArticles(articles) {
 
   return Object.values(clusters)
     .filter(c => c.articles.length >= 2)
+    .map(c => ({
+      ...c,
+      city: deriveClusterCity(c.key.split('+'), c.articles),
+    }))
     .sort((a, b) => b.articles.length - a.articles.length);
 }
 
-function parseRssHeadlines(xml, sourceName) {
+// Parse RSS, optionally tagging each article with a sourceCity.
+function parseRssHeadlines(xml, sourceName, sourceCity = 'nationwide') {
   const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
   return items.slice(0, 15).map(item => {
     const title = (item.match(/<title[^>]*>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/title>/) || [])[1] || '';
@@ -375,12 +305,12 @@ function parseRssHeadlines(xml, sourceName) {
       headline: title.trim(),
       summary: desc.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300),
       source: sourceName,
+      sourceCity,
       url: '',
     };
   }).filter(a => a.headline.length > 10);
 }
 
-// ── Detect "while X while Y" fusion in generated text ────────
 function isFusedSentence(text) {
   if (!text) return false;
   const whileCount = (text.match(/\bwhile\b/gi) || []).length;
@@ -407,22 +337,18 @@ module.exports = async function handler(request, response) {
 
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   const GNEWS_KEY = process.env.GNEWS_API_KEY;
-  const NYT_KEY = process.env.NYT_API_KEY;
-  const GUARDIAN_KEY = process.env.GUARDIAN_API_KEY;
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   const results = { cacheWarmed: [], threadsGenerated: [], threadsSkipped: [], errors: [], debug: {} };
 
-  // ── Step 0: Cleanup old rate limits ────────────────────────
   try {
     await cleanupRateLimits(supabase);
   } catch (e) {
     results.errors.push('rate-limit-cleanup: ' + e.message);
   }
 
-  // ── Step 1: Cache warming (Germany only) ───────────────────
   try {
     for (const country of COUNTRIES) {
       try {
@@ -438,19 +364,12 @@ module.exports = async function handler(request, response) {
     await logError(supabase, { endpoint: 'cron', action: 'cache-warming', error: e });
   }
 
-  // ── Step 2: Topic thread generation ──────────────────────
-  // Source strategy (v2 — narrower, more Germany-focused):
-  //   - Heavy: GNews country=de + targeted Germany-topic searches (forces
-  //     daily-life specificity instead of relying on top-headline luck)
-  //   - Heavy: Germany-focused English RSS (The Local DE, Berlin Spectator, DW)
-  //   - Medium: BBC Europe (mixed but useful for Germany context)
-  //   - Medium: POLITICO Europe (EU policy that hits Germany)
-  //   - Removed: NYT World/Business, Guardian World/Business, Reuters Top News
-  //     (too global — they were drowning Germany content with Iran/Trump/Ukraine)
+  // ── Topic thread generation ────────────────────────────────
+  // Sources are tagged with `city` so articles inherit a `sourceCity` value.
+  // Berlin/Munich/Hamburg/Frankfurt come from city-specific Local DE feeds;
+  // everything else is `nationwide`. Cluster city is derived from entities
+  // first, source-mix majority second.
   try {
-    // GNews search queries — force Germany-specific topic coverage. Each query
-    // targets a different facet of expat life; together they push the pool
-    // toward Germany content even when global wires would otherwise dominate.
     const GERMANY_SEARCH_QUERIES = [
       'Germany Bundestag OR Scholz OR Merz OR Habeck',
       'Berlin OR Munich OR Frankfurt housing OR rent OR transport',
@@ -460,92 +379,100 @@ module.exports = async function handler(request, response) {
     ];
 
     const headlineFetches = [
-      // GNews country=de top headlines (Germany-published English content)
+      // GNews country=de top headlines (nationwide)
       fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
         .then(r => r.json())
         .then(d => (d.articles || []).map(a => ({
           headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
           summary: (a.description || '').replace(/<[^>]+>/g, '').trim().slice(0, 300),
-          source: a.source?.name || 'Unknown', url: a.url,
+          source: a.source?.name || 'Unknown', sourceCity: 'nationwide', url: a.url,
         }))).catch(() => []),
 
-      // GNews targeted searches — global English coverage of German topics
+      // GNews targeted searches (nationwide unless headline says otherwise)
       ...(GNEWS_KEY ? GERMANY_SEARCH_QUERIES.map(q =>
         fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=8&apikey=${GNEWS_KEY}`)
           .then(r => r.json())
           .then(d => (d.articles || []).map(a => ({
             headline: (a.title || '').replace(/<[^>]+>/g, '').trim(),
             summary: (a.description || '').replace(/<[^>]+>/g, '').trim().slice(0, 300),
-            source: a.source?.name || 'Unknown', url: a.url,
+            source: a.source?.name || 'Unknown', sourceCity: 'nationwide', url: a.url,
           }))).catch(() => [])
       ) : []),
 
-      // BBC Europe RSS — kept for European policy coverage with Germany
-      // angle. Pre-filter will drop UK-domestic / Iran / Russia stories.
+      // BBC Europe (nationwide)
       fetch('https://feeds.bbci.co.uk/news/world/europe/rss.xml', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC', 'nationwide')).catch(() => []),
 
-      // DW (Deutsche Welle) English — flagship German news in English
+      // Deutsche Welle English (nationwide)
       fetch('https://rss.dw.com/xml/rss-en-all', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle', 'nationwide')).catch(() => []),
 
-      // The Local DE — direct expat-life coverage in English.
-      // Note: feed URL is feeds.thelocal.COM/rss/de (NOT thelocal.de). Two
-      // earlier URLs (feeds.thelocal.de/rss/de and www.thelocal.de/feed/)
-      // returned 0 articles. This one is verified working.
+      // The Local DE main (nationwide)
       fetch('https://feeds.thelocal.com/rss/de', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local', 'nationwide')).catch(() => []),
 
-      // The Local DE — Berlin section
-      fetch('https://feeds.thelocal.com/rss/de/berlin', {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Berlin')).catch(() => []),
-
-      // The Local DE — Politics section (deeper Germany political coverage)
+      // The Local DE Politics (nationwide)
       fetch('https://feeds.thelocal.com/rss/de/politics', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Politics')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Politics', 'nationwide')).catch(() => []),
 
-      // IamExpat Germany — English-language news platform for expats in
-      // Germany. Audience match is direct: visa, healthcare, housing, work,
-      // bureaucracy. Highest-relevance source we have.
+      // The Local DE — city-specific feeds (city-tagged)
+      fetch('https://feeds.thelocal.com/rss/de/berlin', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Berlin', 'berlin')).catch(() => []),
+
+      fetch('https://feeds.thelocal.com/rss/de/munich', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Munich', 'munich')).catch(() => []),
+
+      fetch('https://feeds.thelocal.com/rss/de/hamburg', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Hamburg', 'hamburg')).catch(() => []),
+
+      fetch('https://feeds.thelocal.com/rss/de/frankfurt', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+        signal: AbortSignal.timeout(8000),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Frankfurt', 'frankfurt')).catch(() => []),
+
+      // IamExpat Germany (nationwide — expat-life focus)
       fetch('https://www.iamexpat.de/rss/news-germany', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'IamExpat')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'IamExpat', 'nationwide')).catch(() => []),
 
-      // POLITICO Europe — EU politics and policy that affects Germany
+      // POLITICO Europe (nationwide)
       fetch('https://www.politico.eu/feed/', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
-      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'POLITICO Europe')).catch(() => []),
+      }).then(r => r.text()).then(x => parseRssHeadlines(x, 'POLITICO Europe', 'nationwide')).catch(() => []),
     ];
 
     const allResults = await Promise.all(headlineFetches);
     let allArticles = allResults.flat();
 
-    // Track per-source counts BEFORE any filtering — useful when debugging
-    // "where are all the articles coming from."
     const beforeFilters = allArticles.length;
     const sourceBreakdownPreFilter = {};
+    const cityBreakdownPreFilter = {};
     for (const a of allArticles) {
       const s = a.source || 'Unknown';
+      const c = a.sourceCity || 'nationwide';
       sourceBreakdownPreFilter[s] = (sourceBreakdownPreFilter[s] || 0) + 1;
+      cityBreakdownPreFilter[c] = (cityBreakdownPreFilter[c] || 0) + 1;
     }
 
-    // Filter non-English headlines
     allArticles = allArticles.filter(a => isEnglishHeadline(a.headline));
     const afterEnglish = allArticles.length;
 
-    // Filter for Germany-relevance — v2 filter is stricter
     allArticles = allArticles.filter(a => isGermanyRelevant(a.headline, a.summary));
 
     results.debug.sourceCounts = {
@@ -554,6 +481,7 @@ module.exports = async function handler(request, response) {
       droppedNonGermany: afterEnglish - allArticles.length,
       total: allArticles.length,
       sourceBreakdownPreFilter,
+      cityBreakdownPreFilter,
     };
 
     const seen = new Set();
@@ -566,14 +494,13 @@ module.exports = async function handler(request, response) {
     const clusters = clusterArticles(unique);
     results.debug.totalArticles = unique.length;
     results.debug.clustersFound = clusters.map(c => ({
-      key: c.key, label: c.label, count: c.articles.length,
+      key: c.key, label: c.label, count: c.articles.length, city: c.city,
       sample: c.articles[0]?.headline?.slice(0, 50),
     }));
 
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    // Pre-fetch yesterday's threads for dedup context
     const yesterdayMap = {};
     try {
       const { data: yesterdayThreads } = await supabase
@@ -582,9 +509,7 @@ module.exports = async function handler(request, response) {
       for (const t of (yesterdayThreads || [])) {
         yesterdayMap[t.topic_key] = t.event_text;
       }
-    } catch (e) {
-      // non-fatal
-    }
+    } catch (e) {}
 
     for (const cluster of clusters.slice(0, 20)) {
       try {
@@ -670,9 +595,10 @@ One sentence on the single most important development:`;
           event_date: today,
           event_text: eventText,
           sources: [...cluster.sources].slice(0, 5),
+          city: cluster.city,
         }, { onConflict: 'topic_key,event_date' });
 
-        results.threadsGenerated.push(cluster.label);
+        results.threadsGenerated.push(`${cluster.label} [${cluster.city}]`);
 
       } catch (e) {
         results.errors.push(`thread-${cluster.key}: ${e.message}`);
@@ -680,7 +606,6 @@ One sentence on the single most important development:`;
       }
     }
 
-    // Clean up entries older than 7 days
     const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     try { await supabase.from('topic_threads').delete().lt('event_date', cutoff); } catch (e) {}
 
