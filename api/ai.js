@@ -225,21 +225,24 @@ No markdown, no explanation.`;
     const rl = await checkRateLimit(supabase, sessionId, 'briefing');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { articles = [], interests = [], profession, ts } = params;
+    const { articles = [], interests = [], userCity = 'all', ts } = params;
     const skipCache = !!ts;
     const pool = (Array.isArray(articles) ? articles : []).slice(0, 40);
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     if (pool.length === 0) return res.status(400).json({ error: 'No articles.' });
 
     const interestStr = interestsArr.length ? interestsArr.join(', ') : 'daily life in Germany';
-    const professionStr = profession || null;
+    // Profession dropped from onboarding (May 2026 pivot). City context replaces it
+    // for personalization: a Berliner wants BVG strikes in their why-lines, a
+    // Munich user wants MVG. The prompt receives userCity and uses it lightly.
+    const cityStr = (userCity && userCity !== 'all') ? userCity : null;
 
     function hashStr(s) {
       let h = 0;
       for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h = h & h; }
       return Math.abs(h).toString(36);
     }
-    const cacheKey = `briefing-de-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}-${(interestsArr || []).sort().join('-').slice(0,30)}-${professionStr || 'na'}`.slice(0, 100);
+    const cacheKey = `briefing-de-${hashStr(pool.slice(0,20).map(a=>a.headline).join('|'))}-${(interestsArr || []).sort().join('-').slice(0,30)}-${cityStr || 'all'}`.slice(0, 100);
 
     if (!skipCache) {
       try {
@@ -275,7 +278,7 @@ Specific facts. No wire-service voice. No definitive predictions. \
 When describing impact, use likelihood language: "this typically affects", "watch for", "historically this has meant". \
 Never give financial, legal, or medical advice.`;
 
-    const prompt = `Editing a personal news briefing for an ${AUDIENCE}, interested in ${interestStr}${professionStr ? `, working in ${professionStr}` : ''}.
+    const prompt = `Editing a personal news briefing for an ${AUDIENCE}, interested in ${interestStr}${cityStr ? `, living in ${cityStr.charAt(0).toUpperCase() + cityStr.slice(1)}` : ''}.
 
 RELEVANCE RULES:
 1. At least 5 of the 7 stories MUST directly involve Germany or have clear, immediate impact on daily life in Germany. Tagged [GERMANY] articles are best; [EU] articles work if the EU policy specifically affects Germany; [WORLD] articles only if they directly hit German economy, politics, or life.
@@ -380,7 +383,7 @@ ${headlinesList}`;
       // Why-line monitoring
       const whyMonitor = {
         ts: new Date().toISOString(),
-        profession: professionStr || 'none',
+        city: cityStr || 'all',
         storiesReturned: briefingStories.length,
         storiesMissingWhy: briefingStories.filter(s => !s.why).length,
         whyWordCounts: briefingStories.map(s => ({
@@ -419,7 +422,7 @@ ${headlinesList}`;
 
   // ── ACTION: rank ─────────────────────────────────────────────
   // Germany-relevance ranking. Articles get scored on:
-  //   - semantic similarity to user profile (interests + profession + Germany context)
+  //   - semantic similarity to user profile (interests + city + Germany context)
   //   - recency
   //   - Germany / EU keyword density (bonus)
   //   - foreign-domestic penalty (anything specifically about non-DE/EU country with no German angle)
@@ -427,18 +430,33 @@ ${headlinesList}`;
     const rl = await checkRateLimit(supabase, sessionId, 'rank');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
-    const { articles = [], interests = [], profession } = params;
+    const { articles = [], interests = [], userCity = 'all' } = params;
     const interestsArr = Array.isArray(interests) ? interests : (interests ? interests.split(',') : []);
     const pool = (Array.isArray(articles) ? articles : []).slice(0, 60);
     if (pool.length === 0) return res.status(200).json({ success: true, articles: [] });
 
+    // ── City filter ─────────────────────────────────────────
+    // Hard filter at the source level. If user picked a city, exclude
+    // articles tagged with a DIFFERENT city. Nationwide articles always pass.
+    // If user picked 'all' or didn't pick, no city filtering applied.
+    //
+    // sourceCity is stamped by api/cron.js based on which RSS feed an article
+    // came from (e.g. The Local Berlin → 'berlin'). Articles without a
+    // sourceCity field default to 'nationwide' for safety.
+    const cityFiltered = (userCity && userCity !== 'all')
+      ? pool.filter(a => {
+          const c = a.sourceCity || a.city || 'nationwide';
+          return c === userCity || c === 'nationwide';
+        })
+      : pool;
+
     const NOISE_PATTERNS = /taylor swift|kardashian|celebrity|red carpet|oscars|emmys|grammys|iheartradio|nfl draft|nba trade|cricket score|match preview|recipe|horoscope|zodiac|best buy|sale deal|movie review|box office|reality tv|news bulletin|midday update|morning update|evening update|daily digest|weekly roundup|newsletter|podcast episode|royal family|prince harry|meghan/i;
-    const filtered = pool.filter(a => {
+    const filtered = cityFiltered.filter(a => {
       if (!a.headline || a.headline.length < 15) return false;
       if (NOISE_PATTERNS.test(a.headline)) return false;
       return true;
     });
-    const candidates = filtered.length >= 10 ? filtered : pool.slice(0, 30);
+    const candidates = filtered.length >= 10 ? filtered : cityFiltered.slice(0, 30);
 
     // Germany-relevance terms — heavy boost
     const GERMANY_TERMS = [
@@ -467,31 +485,31 @@ ${headlinesList}`;
       'uk','british','britain','london','sunak','labour',
     ];
 
-    const PROFESSION_CONTEXT = {
-      tech:     'software engineering AI machine learning startups venture capital tech industry',
-      finance:  'investment banking financial markets portfolio management trading economics',
-      founder:  'startup founder venture capital business strategy company building',
-      medicine: 'healthcare clinical research public health pharmaceutical medical',
-      academia: 'research university science publishing data analysis policy',
-      student:  'university education student life integration courses',
-      other:    'professional career industry work',
-    };
-
     const INTEREST_CONTEXT = {
       germany:   'Germany national politics economy daily life',
       visa:      'visa residency immigration naturalization Aufenthaltstitel Blue Card',
       housing:   'housing rent Mietpreisbremse cost of living utilities',
       transport: 'transport BVG Deutsche Bahn S-Bahn autobahn strikes Lufthansa',
       health:    'healthcare Krankenkasse doctors hospitals pharmaceutical',
+      healthcare:'healthcare Krankenkasse doctors hospitals pharmaceutical',
       work:      'work economy DAX Bürgergeld minimum wage employment industry',
       climate:   'climate energy Heizungsgesetz Energiewende renewables emissions',
+      energy:    'climate energy Heizungsgesetz Energiewende renewables emissions',
       life:      'culture food festivals Bundesliga education kita schools daily life',
+      daily:     'daily life Germany news culture food',
+      politics:  'German federal politics Bundestag CDU SPD FDP Grüne AfD coalition',
+      bureaucracy:'Anmeldung Finanzamt taxes paperwork bureaucracy',
+      bundesliga:'Bundesliga football Bayern Dortmund clubs',
+      culture:   'culture food festivals exhibitions books German cities',
+      fashion:   'fashion industry retail Berlin Munich style',
     };
+
+    const cityContext = (userCity && userCity !== 'all') ? `living in ${userCity.charAt(0).toUpperCase() + userCity.slice(1)}` : '';
 
     const profileText = [
       'Germany life as English speaker',
+      cityContext,
       ...interestsArr.map(i => INTEREST_CONTEXT[i] || i),
-      profession ? (PROFESSION_CONTEXT[profession] || profession) : '',
     ].filter(Boolean).join('. ');
 
     if (!OPENAI_KEY) {
