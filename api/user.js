@@ -2,6 +2,13 @@
 // FILE: api/user.js
 // ACTIONS: follow | streak | auth | preferences | threads |
 //          hot-topics | daily-summary | delete-account
+//
+// CHANGES (May 2026):
+// - streak action: POST-only (was accepting GET, which is unsafe for state-
+//   changing endpoints — browsers/RN clients auto-retry slow GETs and can
+//   cause duplicate writes). Pattern flagged by newsletter session after
+//   their duplicate-send incident with a slow-GET subscribe endpoint.
+// - preferences fallback country: 'de' (was 'us', stale from pre-Germany pivot)
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
@@ -66,9 +73,15 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // ── ACTION: streak ────────────────────────────────────────────
+  // ── ACTION: streak (POST-only — prevents browser-retry duplicate writes) ──
   if (action === 'streak') {
-    const sessionId = body.sessionId || query.sessionId;
+    if (req.method !== 'POST') {
+      return res.status(405).json({
+        error: 'POST required for streak updates',
+        hint: 'GET requests are unsafe for state-changing endpoints (browser auto-retry on slow connection)',
+      });
+    }
+    const sessionId = body.sessionId;
     if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
 
     const today    = new Date().toISOString().slice(0, 10);
@@ -85,6 +98,8 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ streak: 1, lastRead: today, longestStreak: 1, isNew: true });
       }
 
+      // Idempotency: if today's read is already recorded, return existing state.
+      // This protects against legitimate same-day re-opens of the app.
       if (existing.last_read === today) {
         return res.status(200).json({ streak: existing.streak, lastRead: today, longestStreak: existing.longest_streak });
       }
@@ -126,7 +141,7 @@ module.exports = async function handler(req, res) {
       const { error } = await supabase.from('profiles').upsert({
         session_id: sessionId,
         topics:     preferences?.interests || [],
-        country:    preferences?.countries?.[0] || 'us',
+        country:    preferences?.countries?.[0] || 'de',  // Germany pivot: 'de' default (was 'us')
         updated_at: new Date().toISOString(),
       }, { onConflict: 'session_id' });
       if (error) await logError(supabase, { endpoint: 'user', action: 'preferences-post', error, sessionId });
@@ -199,7 +214,6 @@ module.exports = async function handler(req, res) {
     if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
 
     try {
-      // Delete all user data across tables
       const tables = ['profiles', 'reading_streaks', 'followed_stories', 'push_tokens'];
       const results = {};
       for (const table of tables) {
@@ -210,7 +224,6 @@ module.exports = async function handler(req, res) {
         results[table] = error ? error.message : 'deleted';
       }
 
-      // Also clean up rate limit entries
       await supabase.from('rate_limits').delete().eq('session_id', sessionId).catch(() => {});
 
       return res.status(200).json({ success: true, deleted: results });
