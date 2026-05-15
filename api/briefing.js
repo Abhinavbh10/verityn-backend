@@ -1,29 +1,38 @@
-// ============================================================
-// FILE: api/briefing.js — Germany-only briefing endpoint
+// api/briefing.js — Standalone briefing endpoint
 //
-// CHANGES (May 2026, Germany pivot):
-// - Drop multi-country/foreign-vs-local logic. We are Germany-only.
-// - Drop profession dependency. Personalization axis is now city + interests.
-// - Pool can include [CITY-LOCAL] articles (from /api/citynews) which get
-//   priority when userCity is set.
-// - Custom topics are NOT in scope here. They live in user prefs and will
-//   drive push notifications later. The home briefing stays pure: Germany
-//   nationwide + your city.
+// CHANGES (2026-04-28, third pass):
+// - Added HARD RULE #3: RELEVANCE FLOOR. Every picked story must have a
+//   specific, concrete impact angle for someone living in {location}. No
+//   filler picks. No "this is interesting but doesn't affect you" stories.
+//   The pool has 25+ articles after capping; 7 with real angles is always
+//   findable.
+// - Removed the previous "fill remaining slots with strongest impact"
+//   wording that left a back door for weak picks.
 //
-// KEPT FROM v2:
-// - HARD RULES: source cap (max 2), no duplicates, relevance floor
-// - POOL_SIZE 35
-// - Why-line: 2 sentences, 25-35 words, sharp friend tone, "your" not
-//   "this affects", concrete impact + what to watch/do next
-// ============================================================
+// Earlier changes still in effect:
+// - HARD SOURCE CAP (max 2 per source) and NO DUPLICATES
+// - [DE-LOCAL] vs [DE] vs [GB] tag glossary
+// - LOCAL NEWS RULE: 3 minimum, 4 ideal of 7
+// - Pool size 35
+// - Source-count audit in response payload
 
 const { createClient } = require('@supabase/supabase-js');
 
+var COUNTRY_NAMES = {
+    de:'Germany',in:'India',us:'United States',gb:'United Kingdom',
+    au:'Australia',sg:'Singapore',ae:'UAE',jp:'Japan'
+};
+
 function parseJSON(raw) {
-    try { return JSON.parse(raw); } catch (e) {}
-    try { return JSON.parse(raw.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()); } catch (e) {}
-    try { const m = raw.match(/[\[{][\s\S]*[\]}]/); if (m) return JSON.parse(m[0]); } catch (e) {}
+    try { return JSON.parse(raw); } catch(e) {}
+    try { return JSON.parse(raw.replace(/```json\s*/gi,'').replace(/```\s*/gi,'').trim()); } catch(e) {}
+    try { var m = raw.match(/[\[{][\s\S]*[\]}]/); if(m) return JSON.parse(m[0]); } catch(e) {}
     return null;
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function normaliseSource(s) {
@@ -35,12 +44,6 @@ function normaliseSource(s) {
         .trim();
 }
 
-const CITY_LABELS = {
-    all: 'Germany', berlin: 'Berlin', munich: 'Munich', hamburg: 'Hamburg',
-    frankfurt: 'Frankfurt', cologne: 'Cologne', stuttgart: 'Stuttgart',
-    duesseldorf: 'Düsseldorf', leipzig: 'Leipzig',
-};
-
 module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -48,96 +51,142 @@ module.exports = async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
-        const key = process.env.ANTHROPIC_API_KEY;
+        var key = process.env.ANTHROPIC_API_KEY;
         if (!key) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
-        const body = req.body || {};
-        const articlesIn = Array.isArray(body.articles) ? body.articles : [];
-        const interests = Array.isArray(body.interests) ? body.interests : [];
-        const userCity = (body.userCity || 'all').toLowerCase();
+        var body = req.body || {};
+        var articles = body.articles || [];
+        var countries = body.countries || ['de'];
+        var location = body.location || 'de';
+        var profession = body.profession || null;
+        var interests = body.interests || [];
+        // City-keyed pipeline (May 2026 city pivot). When set, enforces stricter
+        // hyperlocal quota — 4 of 7 stories must be ABOUT this city, not just
+        // about its country. When not set, falls back to country-level quota.
+        var city = (body.city || '').toLowerCase();
 
-        const POOL_SIZE = 35;
-        const pool = articlesIn.slice(0, POOL_SIZE).map((a, i) => ({
-            headline: (a.headline || '').slice(0, 200),
-            source: (a.source || '').slice(0, 50),
-            summary: (a.summary || '').slice(0, 150),
-            sourceUrl: (a.sourceUrl || '').slice(0, 300),
-            image: a.image ? String(a.image).slice(0, 300) : null,
-            topic: a.topic || 'world',
-            country: a.country || 'DE',
-            sourceCity: (a.sourceCity || 'nationwide').toLowerCase(),
-            isLocal: !!a.isLocal,
-            id: a.id || ('a-' + i),
-            time: a.time || '',
-        }));
+        if (!Array.isArray(articles)) articles = [];
+        if (!Array.isArray(countries)) countries = [countries];
+
+        var POOL_SIZE = 35;
+        var pool = articles.slice(0, POOL_SIZE).map(function(a, i) {
+            return {
+                headline: (a.headline || '').slice(0, 200),
+                source: (a.source || '').slice(0, 50),
+                summary: (a.summary || '').slice(0, 150),
+                sourceUrl: (a.sourceUrl || '').slice(0, 300),
+                image: a.image ? String(a.image).slice(0, 300) : null,
+                topic: a.topic || 'world',
+                country: a.country || 'DE',
+                isLocal: !!a.isLocal,
+                isCityLocal: !!a.isCityLocal,
+                id: a.id || ('a-' + i),
+                time: a.time || '',
+            };
+        });
 
         if (pool.length === 0) return res.status(400).json({ error: 'No articles provided.' });
 
-        const pickCount = Math.min(7, pool.length);
+        var pickCount = Math.min(7, pool.length);
         if (pickCount < 3) return res.status(400).json({ error: 'Need at least 3 articles, got ' + pool.length });
 
-        const cityLabel = CITY_LABELS[userCity] || 'Germany';
-        const isCityUser = userCity !== 'all' && userCity !== '';
-        const audience = isCityUser
-            ? `English speaker living in ${cityLabel}, Germany`
-            : `English speaker living in Germany`;
-        const interestStr = interests.length ? interests.join(', ') : 'daily life in Germany';
+        var locationStr = COUNTRY_NAMES[location] || location || 'Germany';
+        var professionStr = profession || '';
+        var interestStr = (interests.length ? interests.join(', ') : 'world news');
 
-        // City quota: if user has a city, push for 2-3 city-LOCAL stories
-        const cityLocalInPool = pool.filter(a => a.sourceCity === userCity).length;
-        const cityLocalIdeal = isCityUser
-            ? Math.min(3, Math.max(1, cityLocalInPool >= 5 ? 3 : cityLocalInPool >= 2 ? 2 : cityLocalInPool))
-            : 0;
+        // City-keyed quota (May 2026 city pivot). If city is set, enforce STRICTER
+        // quota of 4-of-7 city-local stories — not just German, but ABOUT this city.
+        // Falls back to country-level quota when city is not provided.
+        var hasCity = !!city;
+        var cityNameStr = '';
+        var cityEntityHints = '';
+        if (city === 'berlin') {
+            cityNameStr = 'Berlin';
+            cityEntityHints = 'Berlin neighbourhoods (Kreuzberg, Neukölln, Mitte, Prenzlauer Berg, Charlottenburg, Wedding, Friedrichshain, Lichtenberg, Tempelhof, Schöneberg, Spandau, Steglitz, Treptow, Pankow, Marzahn, Reinickendorf, Köpenick), Berlin transit (BVG, S-Bahn, U-Bahn, Ringbahn, named U/S line numbers like U7 or S41), Berlin landmarks (Brandenburger Tor, Alexanderplatz, Hauptbahnhof, BER, Tegel, Tempelhof, Reichstag, Tiergarten), Berlin politicians and bodies (Berliner Senat, Kai Wegner, Berlin Abgeordnetenhaus), or Berlin-specific institutions (Charité, Humboldt, Sparkasse Berlin)';
+        } else if (city === 'frankfurt') {
+            cityNameStr = 'Frankfurt';
+            cityEntityHints = 'Frankfurt neighbourhoods (Sachsenhausen, Bornheim, Bockenheim, Westend, Nordend, Höchst, Niederrad, Offenbach, Bad Homburg), Frankfurt transit (RMV, VGF, S-Bahn Rhein-Main, named U-Bahn lines, Hauptbahnhof), Frankfurt landmarks (Römer, Hauptwache, Konstablerwache, Main-Taunus-Zentrum, Messe Frankfurt, Frankfurt Flughafen FRA), Frankfurt institutions (Frankfurter Sparkasse, Commerzbank tower, Deutsche Bank tower, ECB, Goethe University), or Hessen-level politics (Boris Rhein, Hessen Landtag)';
+        }
 
-        // Build the headline list with city-aware tags.
-        const headlinesList = pool.map((a, i) => {
-            let tag;
-            if (a.sourceCity && a.sourceCity !== 'nationwide') tag = `${a.sourceCity.toUpperCase()}-LOCAL`;
-            else if (a.isLocal) tag = 'DE-LOCAL';
-            else tag = 'NATIONWIDE';
-            const summary = a.summary ? ' — ' + a.summary.slice(0, 50) : '';
-            return `${i + 1}. [${tag}] ${a.headline}${summary} | ${a.source}${a.image ? ' | HAS_IMAGE' : ''}`;
+        // Quota numbers — stricter when city is set
+        var localMinimum, localIdeal;
+        if (hasCity && pickCount >= 7) {
+            localMinimum = 4;
+            localIdeal = 5;
+        } else if (hasCity && pickCount >= 5) {
+            localMinimum = 3;
+            localIdeal = 4;
+        } else if (hasCity) {
+            localMinimum = 2;
+            localIdeal = 2;
+        } else {
+            localMinimum = pickCount >= 7 ? 3 : pickCount >= 5 ? 2 : 1;
+            localIdeal = pickCount >= 7 ? 4 : pickCount >= 5 ? 3 : 1;
+        }
+
+        var guaranteedLocalCount = pool.filter(function(a) { return a.isLocal; }).length;
+        var guaranteedCityLocalCount = pool.filter(function(a) { return a.isCityLocal; }).length;
+
+        var headlinesList = pool.map(function(a, i) {
+            var summary = a.summary ? ' — ' + a.summary.slice(0, 50) : '';
+            var locTag = a.isLocal ? (a.country || 'XX') + '-LOCAL' : (a.country || '??');
+            return (i+1) + '. [' + locTag + '] ' + a.headline + summary + ' | ' + a.source + (a.image ? ' | HAS_IMAGE' : '');
         }).join('\n');
 
-        const prompt =
-            `Pick exactly ${pickCount} stories for an ${audience}, who follows these topics: ${interestStr}.\n\n`
+        var foreignTag = (countries[0] || 'gb').toUpperCase();
+        var localTag = (countries[1] || 'de').toUpperCase();
+        var foreignName = COUNTRY_NAMES[(countries[0] || 'gb').toLowerCase()] || 'foreign';
 
-            + `HARD RULES (non-negotiable):\n\n`
+        var prompt = 'Pick exactly ' + pickCount + ' stories for a '
+            + (professionStr || 'professional') + ' in ' + locationStr
+            + ', interested in ' + interestStr + '.\n\n'
 
-            + `1. SOURCE CAP. Maximum 2 stories from any one source. Cap is not optional. If your picks include 3 from one source, drop the weakest and replace with another.\n\n`
+            + 'HARD RULES (non-negotiable):\n\n'
 
-            + `2. NO DUPLICATES. If two articles describe the SAME event, pick only ONE. Two articles sharing a topic but covering different events are fine.\n\n`
+            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace with a different source. Cap is not optional. If cap conflicts with the local quota, the cap wins.\n\n'
 
-            + `3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for life in ${cityLabel}. The angle can be: rent, taxes, salary, commute, energy bills, healthcare, visa, jobs, schools, local news, or a clear connection to one of the user's stated topics. If you can't name a concrete way it affects them, DON'T PICK IT. The pool has alternatives.\n\n`
+            + '2. NO DUPLICATES. If two articles describe the SAME news event (same actors, same announcement, same incident), pick only ONE. Example: a Tagesspiegel piece "UAE leaves OPEC oil cartel" and an NYT piece "United Arab Emirates Says It Will Leave OPEC" are the same story. Pick the local-language source if available. Two articles that share a topic but describe different events are fine.\n\n'
 
-            + (isCityUser
-                ? `4. CITY PREFERENCE. The user lives in ${cityLabel}. Aim for ${cityLocalIdeal} of ${pickCount} stories tagged [${userCity.toUpperCase()}-LOCAL] when they're in the pool and relevant. ${cityLocalInPool} city-local articles are available. Don't force this — quality wins — but a Berlin user should see Berlin-specific stories when they exist.\n\n`
-                : `4. NATIONWIDE COVERAGE. The user follows all-Germany news. Spread picks across federal politics, daily life, work, transport, healthcare. No single city should dominate.\n\n`)
+            + '3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for someone living in ' + locationStr + (professionStr ? ' working in ' + professionStr : '') + '. The angle can be: rent, taxes, savings, salary, commute, energy bills, grocery prices, jobs, the local job market, supply chains, banking exposure, currency, mortgages, kids, school, weekend plans, neighborhood, or a clear connection to one of the reader\'s stated interests (' + interestStr + ').\n'
+            + '   Before picking a story, ask: "Can I name a concrete way this affects this reader?" If the honest answer is no, DO NOT PICK IT. The pool has alternatives. There are no "filler" slots. There are no stories worth picking that you have to apologise for.\n'
+            + '   The angle does NOT have to be Berlin-specific. A Fed rate decision affects German Euribor mortgages. A Japan story affects German exports. A Russia story affects gas prices or migration. But the angle must be REAL. If you find yourself reaching, that is the signal to drop the story.\n\n'
 
-            + `TAG GLOSSARY:\n`
-            + `  [BERLIN-LOCAL] / [MUNICH-LOCAL] / [HAMBURG-LOCAL] / [FRANKFURT-LOCAL] — from a city-specific source. Strongly preferred for the city quota when user has a city.\n`
-            + `  [NATIONWIDE] — Germany-wide coverage from any English-language outlet.\n`
-            + `  [DE-LOCAL] — translated from German press (Tagesschau, Tagesspiegel, FAZ, SZ, Spiegel).\n\n`
+            + (hasCity
+                ? ('HYPERLOCAL CITY RULE (most important rule): At least ' + localMinimum + ' of the ' + pickCount + ' picks MUST be ABOUT ' + cityNameStr + ' itself, not just about Germany. A story counts as ' + cityNameStr + '-local ONLY if the HEADLINE names: ' + cityEntityHints + '. National German politics, EU policy, Bundestag stories, federal economy stories, or international stories DO NOT count as ' + cityNameStr + '-local even if they affect the city. They are about Germany or the EU, not about ' + cityNameStr + '.\n'
+                + '   The pool has ' + guaranteedCityLocalCount + ' confirmed ' + cityNameStr + '-local articles (tagged [' + localTag + '-LOCAL] from city-specific feeds). Use them. If fewer than ' + localMinimum + ' city-local picks land in your selection, REPLACE national/international picks with the strongest remaining ' + cityNameStr + '-local stories from the pool.\n'
+                + '   COUNT YOUR ' + cityNameStr.toUpperCase() + '-LOCAL PICKS BEFORE RESPONDING. If the count is below ' + localMinimum + ', swap stories until the count reaches ' + localMinimum + '. This rule beats every other consideration except the source cap.\n\n')
+                : ('LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
+                + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
+                + 'A story is local if the HEADLINE mentions ' + locationStr
+                + ', or cities, institutions, or named figures in that country (Germany examples: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; US: Congress, Fed, Wall Street, NYSE).\n\n'))
 
-            + `For each story write a "why" — exactly 2 sentences, 25 to 35 words total.\n`
-            + `Sentence 1: the specific impact on YOU living in ${cityLabel}. Use "your" not "this affects." Never restate the headline. Be specific about your rent, commute, taxes, grocery bill, salary.\n`
-            + `Sentence 2: what YOU should watch or do next. Concrete action or timeframe.\n\n`
+            + 'TAG GLOSSARY:\n'
+            + (hasCity
+                ? ('  [' + localTag + '-LOCAL] — translated from German press. Some are city-local (' + cityNameStr + ' hyperlocal feeds), others are national (Tagesschau, Spiegel, Handelsblatt). Use the HEADLINE entity match — not the tag — to determine if a story counts as ' + cityNameStr + '-local. ' + guaranteedCityLocalCount + ' guaranteed ' + cityNameStr + '-local in this pool.\n')
+                : ('  [' + localTag + '-LOCAL] — translated from local-language press (Tagesschau, FAZ, Süddeutsche, Spiegel-DE, Tagesspiegel, Handelsblatt, Berliner Zeitung). Guaranteed about ' + locationStr + '. Strongly prefer these for the local quota. ' + guaranteedLocalCount + ' available in this pool.\n'))
+            + '  [' + localTag + '] — published by a ' + locationStr + '-based outlet writing in English (DW, Politico EU, Spiegel International, The Local). Counts as local ONLY if the headline mentions ' + locationStr + ' or its cities/institutions.\n'
+            + '  [' + foreignTag + '] — published by a ' + foreignName + ' outlet (BBC, Guardian, NYT). Counts as local only if the headline is genuinely about ' + locationStr + '.\n\n'
 
-            + `WHY-LINE TONE: Sharp friend explaining news over coffee. Not a textbook. Not a press release.\n`
-            + `WRONG: "Your understanding of governance benefits from monitoring local affairs"\n`
-            + `WRONG: "This is mostly political ethics but worth knowing"\n`
-            + `RIGHT: "Your December Krankenkasse letter likely shows €18-25 more. Switch carriers in Q1 if you don't want it."\n`
-            + `RIGHT: "BVG night-bus cuts hit your route from June. Plan alt-transport for late shifts now — taxi prices won't be kind."\n`
-            + `RIGHT: "ECB rate hold means your German variable-rate mortgage stays put for ~6 weeks. Lock in fixed before September if you can."\n\n`
+            + 'For each story write a "why" — exactly 2 sentences, 25 to 35 words total.\n'
+            + 'Sentence 1: the specific impact on YOU living in ' + locationStr
+            + (professionStr ? ' working in ' + professionStr : '')
+            + '. Use "your" not "this affects." Never restate the headline. Be specific about your rent, your commute, your taxes, your grocery bill, your salary.\n'
+            + 'Sentence 2: what YOU should watch or do next. Concrete action or timeframe.\n\n'
 
-            + `PREFER articles marked HAS_IMAGE for the lead and medium slots, but never skip a [${isCityUser ? userCity.toUpperCase() + '-LOCAL' : 'DE-LOCAL'}] story for image reasons. Local relevance > image availability.\n`
-            + `Cover at least 3 different topics across the picks.\n\n`
+            + 'WHY-LINE TONE: Sharp friend explaining news over coffee. Not a textbook. Not a press release.\n'
+            + 'WRONG: "Your understanding of democratic developments benefits from monitoring local governance"\n'
+            + 'WRONG: "This is mostly a political ethics story but worth knowing"\n'
+            + 'RIGHT: "That rate hold hits your mortgage in about 6 weeks. Lock in a fixed rate before July."\n'
+            + 'RIGHT: "Lufthansa fuel surcharges go up next month. If you fly for work, book Q3 trips now while fares are locked."\n\n'
 
-            + `Respond ONLY with valid JSON, no markdown:\n`
-            + `{"mood":"one sentence","stories":[{"index":1,"why":"2-sentence why-line"}]}\n\n`
-            + `Articles:\n` + headlinesList;
+            + 'PREFER articles marked HAS_IMAGE for the lead and medium slots. But do NOT skip a [' + localTag + '-LOCAL] story because it lacks an image. Local relevance beats image availability.\n'
+            + 'Cover at least 3 different topics across the picks.\n\n'
 
-        const r = await fetch('https://api.anthropic.com/v1/messages', {
+            + 'Respond ONLY with valid JSON, no markdown:\n'
+            + '{"mood":"one sentence","stories":[{"index":1,"why":"2-sentence why-line"}]}\n\n'
+            + 'Articles:\n' + headlinesList;
+
+        var r = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -146,76 +195,63 @@ module.exports = async function handler(req, res) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 1500,
-                system: 'You are a news editor creating a personalised briefing for an English speaker living in Germany. Plain, direct English. Use German terms where standard (Bürgergeld, Krankenkasse, S-Bahn, Mietpreisbremse) without translating. No predictions stated as fact. No financial, legal, or medical advice. Every story you pick must matter to this specific reader. Respond with JSON only.',
+                max_tokens: 1400,
+                system: 'You are a news editor creating a personalised briefing. Plain, direct English. No predictions. No financial advice. Every story you pick must matter to this specific reader. Respond with JSON only.',
                 messages: [{ role: 'user', content: prompt }],
             }),
         });
 
-        const data = await r.json();
+        var data = await r.json();
 
         if (data.error) {
             return res.status(500).json({ error: 'Claude: ' + (data.error.message || JSON.stringify(data.error)) });
         }
 
-        const rawText = (data.content && data.content[0] && data.content[0].text) || '';
-        const stopReason = data.stop_reason || 'unknown';
+        var rawText = (data.content && data.content[0] && data.content[0].text) || '';
+        var stopReason = data.stop_reason || 'unknown';
 
         if (stopReason === 'max_tokens') {
             return res.status(500).json({ error: 'Response truncated', stop_reason: stopReason, raw: rawText.slice(-200) });
         }
 
-        const parsed = parseJSON(rawText);
+        var parsed = parseJSON(rawText);
 
         if (!parsed || !parsed.stories || parsed.stories.length === 0) {
-            return res.status(500).json({
-                error: 'Parse failed',
-                stop_reason: stopReason,
-                storiesFound: parsed ? (parsed.stories ? parsed.stories.length : 0) : 0,
-                raw: rawText.slice(0, 500),
-            });
+            return res.status(500).json({ error: 'Parse failed', stop_reason: stopReason, storiesFound: parsed ? (parsed.stories ? parsed.stories.length : 0) : 0, raw: rawText.slice(0, 500) });
         }
 
-        const briefingStories = parsed.stories
-            .filter(s => s.index >= 1 && s.index <= pool.length && s.why)
-            .map(s => {
-                const a = pool[s.index - 1];
+        var briefingStories = parsed.stories
+            .filter(function(s) { return s.index >= 1 && s.index <= pool.length && s.why; })
+            .map(function(s) {
+                var a = pool[s.index - 1];
                 return {
                     id: a.id, headline: a.headline, summary: a.summary,
                     source: a.source, sourceUrl: a.sourceUrl, image: a.image,
-                    topic: a.topic, country: a.country, sourceCity: a.sourceCity,
-                    isLocal: a.isLocal,
+                    topic: a.topic, country: a.country, isLocal: a.isLocal,
+                    isCityLocal: a.isCityLocal,
                     why: s.why, time: a.time,
                 };
             })
-            .filter(s => s && s.headline);
+            .filter(function(s) { return s && s.headline; });
 
         if (briefingStories.length === 0) {
-            return res.status(500).json({
-                error: 'No stories mapped',
-                indices: parsed.stories.map(s => s.index),
-                poolSize: pool.length,
-            });
+            return res.status(500).json({ error: 'No stories mapped', indices: parsed.stories.map(function(s){return s.index;}), poolSize: pool.length });
         }
 
-        // Source cap audit
-        const sourceCounts = {};
-        for (const s of briefingStories) {
-            const src = normaliseSource(s.source);
+        var sourceCounts = {};
+        for (var bi = 0; bi < briefingStories.length; bi++) {
+            var src = normaliseSource(briefingStories[bi].source);
             sourceCounts[src] = (sourceCounts[src] || 0) + 1;
         }
-        const capViolations = Object.keys(sourceCounts).filter(k => sourceCounts[k] > 2);
+        var capViolations = Object.keys(sourceCounts).filter(function(k) { return sourceCounts[k] > 2; });
         if (capViolations.length > 0) {
             console.log('[briefing] SOURCE CAP VIOLATION: ' + JSON.stringify(sourceCounts));
         }
 
-        // Audit: how many city-local picks made it through
-        const cityLocalPicked = briefingStories.filter(s => s.sourceCity === userCity).length;
-
         try {
-            const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+            var supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
             await supabase.from('newsletter_cache').insert({ stories: briefingStories, mood: parsed.mood });
-        } catch (e) {}
+        } catch(e) {}
 
         return res.status(200).json({
             success: true,
@@ -223,18 +259,17 @@ module.exports = async function handler(req, res) {
             mood: parsed.mood,
             stories: briefingStories,
             poolSize: pool.length,
-            userCity,
-            cityLocalInPool,
-            cityLocalIdeal,
-            cityLocalPicked,
-            sourceCounts,
-            capViolations,
+            guaranteedLocalInPool: guaranteedLocalCount,
+            localPicked: briefingStories.filter(function(s) { return s.isLocal; }).length,
+            cityLocalPicked: briefingStories.filter(function(s) { return s.isCityLocal; }).length,
+            sourceCounts: sourceCounts,
+            capViolations: capViolations,
         });
 
-    } catch (e) {
+    } catch(e) {
         return res.status(500).json({
             error: 'Briefing error: ' + (e.message || String(e)),
-            stack: (e.stack || '').split('\n').slice(0, 3),
+            stack: (e.stack || '').split('\n').slice(0,3),
         });
     }
 };
