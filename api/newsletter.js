@@ -459,13 +459,17 @@ async function translateArticles(articles) {
     return [];
 }
 
-async function generateFreshBriefing(supabase) {
-    // Germany-only post-pivot (May 2026). Countries fetch English wires from
-    // GB and DE; de_local fetches German-language feeds for translation.
-    // Region branching removed — see SKILL.md "Newsletter Operational Spec".
+async function generateFreshBriefing(supabase, city) {
+    // City-keyed pipeline (May 2026 city pivot).
+    // Fetches: GB+DE English wires (broad context) + {city}_local (hyperlocal)
+    //          + de_national (federal stories every city wants).
+    // city must be a supported city slug. Defaults to 'berlin' if not provided
+    // (legacy callers from before city-keying).
+    city = city || 'berlin';
+
     var countries = ['gb', 'de'];
     var BASE = 'https://verityn-backend-ten.vercel.app';
-    var sid = 'newsletter-' + Date.now();
+    var sid = 'newsletter-' + city + '-' + Date.now();
 
     var fetchPromises = [];
     for (var c = 0; c < countries.length; c++) {
@@ -482,9 +486,18 @@ async function generateFreshBriefing(supabase) {
         );
     }
 
-    // German-language local feed (translated downstream)
+    // City-local German-language feed (translated downstream). Tag returned articles
+    // with isCityLocal=true so the briefing quota rule can count them.
+    var cityLocalKey = city + '_local';
     fetchPromises.push(
-        fetch(BASE + '/api/content?action=rss&country=de_local&max=15&sessionId=' + sid)
+        fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=15&sessionId=' + sid)
+            .then(function(r) { return r.json(); })
+            .catch(function() { return { articles: [] }; })
+    );
+
+    // National German feed — every city gets these alongside its local feeds.
+    fetchPromises.push(
+        fetch(BASE + '/api/content?action=rss&country=de_national&max=15&sessionId=' + sid)
             .then(function(r) { return r.json(); })
             .catch(function() { return { articles: [] }; })
     );
@@ -492,39 +505,61 @@ async function generateFreshBriefing(supabase) {
     var results = await Promise.all(fetchPromises);
 
     var allArticles = [];
-    var localArticles = [];
+    var cityLocalArticles = [];
+    var nationalArticles = [];
     for (var r = 0; r < results.length; r++) {
         var d = results[r];
         if (d.articles && Array.isArray(d.articles)) {
-            // Last fetch promise is always de_local — collect separately for translation
-            if (r === results.length - 1) {
-                localArticles = d.articles;
+            if (r === results.length - 2) {
+                // Second-to-last is city_local
+                cityLocalArticles = d.articles;
+            } else if (r === results.length - 1) {
+                // Last is de_national
+                nationalArticles = d.articles;
             } else {
                 allArticles = allArticles.concat(d.articles);
             }
         }
     }
 
-    console.log('[newsletter] englishArticles=' + allArticles.length + ' localArticles=' + localArticles.length);
+    console.log('[newsletter] city=' + city + ' englishArticles=' + allArticles.length + ' cityLocal=' + cityLocalArticles.length + ' national=' + nationalArticles.length);
 
-    var translatedCount = 0;
-    if (localArticles.length > 0) {
-        var translated = await translateArticles(localArticles);
-        if (translated.length > 0) {
-            translated = translated.map(function(a) {
-                return Object.assign({}, a, { country: 'DE', isLocal: true });
+    var translatedCityCount = 0;
+    var translatedNationalCount = 0;
+
+    // Translate city-local separately so we can tag with isCityLocal=true
+    if (cityLocalArticles.length > 0) {
+        var translatedCity = await translateArticles(cityLocalArticles);
+        if (translatedCity.length > 0) {
+            translatedCity = translatedCity.map(function(a) {
+                return Object.assign({}, a, { country: 'DE', isLocal: true, isCityLocal: true });
             });
-            allArticles = translated.concat(allArticles);
-            translatedCount = translated.length;
+            allArticles = translatedCity.concat(allArticles);
+            translatedCityCount = translatedCity.length;
+        }
+    }
+
+    // Translate national feed too — these are still German-language, just broader scope
+    if (nationalArticles.length > 0) {
+        var translatedNational = await translateArticles(nationalArticles);
+        if (translatedNational.length > 0) {
+            translatedNational = translatedNational.map(function(a) {
+                return Object.assign({}, a, { country: 'DE', isLocal: true, isCityLocal: false });
+            });
+            allArticles = allArticles.concat(translatedNational);
+            translatedNationalCount = translatedNational.length;
         }
     }
 
     var beforeCap = allArticles.length;
     allArticles = capPerSource(allArticles, 3);
-    console.log('[newsletter] translated=' + translatedCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
+    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
+    // Construct city-aware briefing request. The `city` field flows into briefing.js
+    // where the quota rule (≥4 city-local of 7) can be enforced. If briefing.js
+    // doesn't yet read city, this is a no-op until we wire it there.
     try {
         var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
@@ -534,36 +569,40 @@ async function generateFreshBriefing(supabase) {
                 countries: countries,
                 interests: ['world', 'finance', 'tech', 'politics'],
                 location: 'de',
+                city: city,
                 profession: 'professional',
-                sessionId: 'newsletter-de-' + new Date().toISOString().slice(0, 10),
+                sessionId: 'newsletter-' + city + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
         var d2 = await r2.json();
         if (d2.stories && d2.stories.length >= 3) {
-            var localPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
-            console.log('[newsletter] briefingStories=' + d2.stories.length + ' localPicked=' + localPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
+            var cityLocalPicked = d2.stories.filter(function(s) { return s.isCityLocal; }).length;
+            var anyLocalPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
+            console.log('[newsletter] city=' + city + ' briefingStories=' + d2.stories.length + ' cityLocalPicked=' + cityLocalPicked + ' anyLocalPicked=' + anyLocalPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
             return d2.stories;
         } else if (d2.error) {
-            console.log('[newsletter] briefing error: ' + d2.error);
+            console.log('[newsletter] city=' + city + ' briefing error: ' + d2.error);
         }
     } catch (e) {
-        console.log('[newsletter] briefing fetch failed: ' + e.message);
+        console.log('[newsletter] city=' + city + ' briefing fetch failed: ' + e.message);
     }
 
     return null;
 }
 
-async function enrichStories(stories) {
+async function enrichStories(stories, city) {
     if (!stories || !stories.length) return stories;
+    city = city || 'berlin';
 
-    // Germany-only post-pivot. Voice rules from SKILL.md "Brand Voice & Content Guide":
-    //   - 70% service journalism (what changes for you, what to do, by when)
-    //   - 30% intelligent context (history, politics, what non-Germans miss)
-    //   - German terms used directly: Krankenkasse, Bürgergeld, Mietpreisbremse,
-    //     Anmeldung, S-Bahn, U-Bahn, BVG, Bundestag, Bundesrat, Sparkasse,
-    //     Bundesländer, Steuererklärung, Wohngeld, Kita, Mietvertrag, Kiez.
-    //     Do not translate. Reader lives in Germany and recognizes them.
-    var context = 'an English speaker living in Germany — likely Berlin or another major city. They care about: their rent (Miete), their energy bills (Strom/Gas), their grocery prices, their commute (BVG, S-Bahn, U-Bahn), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their kids\' school or Kita, their taxes (Steuererklärung), their savings at Sparkasse or Deutsche Bank, their Mietvertrag, their Anmeldung, their Bürgergeld eligibility (or what reform means for it). Could be expat, international student, remote worker, diplomat, journalist, or English-fluent German. Don\'t assume wealth or corporate lifestyle. Don\'t assume they own stocks. Assume a normal person living a normal life in Germany who reads English and wants to understand how news affects their daily life — practically and intellectually — without slogging through bureaucratic German.';
+    // City-keyed voice (May 2026 city pivot). Each city has its own context
+    // table with city-specific transit, neighborhoods, named institutions.
+    // German terms remain untranslated in all cities (skill rule).
+    var cityContext = {
+        berlin: 'an English speaker living in Berlin. They care about: their rent (Miete) and Mietpreisbremse extensions, their commute (BVG, S-Bahn, U-Bahn, named lines like U7 or S41), their Kiez (Kreuzberg, Neukölln, Mitte, Prenzlauer Berg, Wedding, Friedrichshain), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their Anmeldung at the Bürgeramt, their taxes (Steuererklärung), their savings at Sparkasse Berlin, their kids\' Kita waitlist, their Wohngeld eligibility, their Bürgergeld, the Senat of Berlin (Kai Wegner), Berliner Abgeordnetenhaus, BER airport, BVG strikes, Berlin housing market specifics. Could be expat, international student, remote worker, diplomat, journalist, English-fluent Berliner.',
+        frankfurt: 'an English speaker living in Frankfurt. They care about: their rent (Miete) in Frankfurt\'s tight market (one of Germany\'s most expensive after Munich), their commute (RMV — Rhein-Main-Verkehrsverbund, VGF U-Bahn and tram, S-Bahn Rhein-Main, named lines, Hauptbahnhof, FRA airport), their Stadtteil (Sachsenhausen, Bornheim, Bockenheim, Westend, Nordend, Niederrad), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their Anmeldung at the Bürgeramt, their taxes (Steuererklärung), their savings at Frankfurter Sparkasse, their kids\' Kita waitlist, their Wohngeld eligibility, their Bürgergeld, banking-sector job market (ECB, Deutsche Bank, Commerzbank), Hessen-level politics (Boris Rhein, Hessen Landtag), Messe Frankfurt events, Main-Taunus-Zentrum. Could be expat, finance professional, international student, remote worker, English-fluent Frankfurter. Don\'t assume banker — Frankfurt has plenty of non-finance residents too.',
+    };
+    var cityNameTitle = city.charAt(0).toUpperCase() + city.slice(1);
+    var context = cityContext[city] || cityContext.berlin;
 
     var storyData = stories.map(function(s, i) {
         return (i + 1) + '. HEADLINE: ' + s.headline
@@ -662,24 +701,40 @@ module.exports = async function handler(req, res) {
 
             var name = (body.name || email.split('@')[0]).trim();
             var timezone = body.timezone || '';
-            // Germany pivot (May 2026): force region='de' regardless of any client input.
-            // The country-tag field has been removed from the subscribe form on
-            // verityn.news, but defensive normalisation is enforced server-side too.
-            // Timezone is still captured for future Bundesland-aware features.
+            // Germany pivot (May 2026): region stays 'de' (legacy column, may be deprecated later).
             var region = 'de';
+
+            // City-keyed pipeline (May 2026): subscribers get their city's newsletter.
+            // Read Vercel's IP-geolocation header. Normalise to a supported city slug.
+            // Supported cities: berlin, frankfurt. New cities require adding feeds +
+            // context in content.js, weather coords, and enrichStories cityContext.
+            // Anything else falls back to berlin (largest subscriber base by default).
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var ipCityRaw = (req.headers['x-vercel-ip-city'] || '').toLowerCase();
+            var ipCity = decodeURIComponent(ipCityRaw).replace(/[^a-z]/g, '');
+            // Handle common variants: "frankfurt am main" -> "frankfurt"
+            if (ipCity.indexOf('frankfurt') !== -1) ipCity = 'frankfurt';
+            if (ipCity.indexOf('berlin') !== -1) ipCity = 'berlin';
+            var city = SUPPORTED_CITIES.indexOf(ipCity) !== -1 ? ipCity : 'berlin';
+
+            // Allow explicit override from request body (manual subscribe form may
+            // expose city picker later).
+            if (body.city && SUPPORTED_CITIES.indexOf(body.city.toLowerCase()) !== -1) {
+                city = body.city.toLowerCase();
+            }
 
             var existing = await supabase.from('waitlist').select('id, unsubscribed').eq('email', email).limit(1);
             if (existing.data && existing.data.length > 0) {
                 if (existing.data[0].unsubscribed) {
-                    await supabase.from('waitlist').update({ unsubscribed: false, name: name, timezone: timezone, region: region }).eq('email', email);
-                    return res.json({ ok: true, resubscribed: true });
+                    await supabase.from('waitlist').update({ unsubscribed: false, name: name, timezone: timezone, region: region, city: city }).eq('email', email);
+                    return res.json({ ok: true, resubscribed: true, city: city });
                 }
                 return res.json({ ok: true, already: true });
             }
 
-            var { error } = await supabase.from('waitlist').insert({ email: email, name: name, unsubscribed: false, timezone: timezone, region: region });
+            var { error } = await supabase.from('waitlist').insert({ email: email, name: name, unsubscribed: false, timezone: timezone, region: region, city: city });
             if (error) return res.status(500).json({ error: error.message });
-            return res.json({ ok: true, subscribed: true });
+            return res.json({ ok: true, subscribed: true, city: city });
         }
 
         if (action === 'feedback') {
