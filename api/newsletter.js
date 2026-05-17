@@ -318,11 +318,15 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '</table></td></tr></table></body></html>';
 }
 
-async function getWeather() {
-    // Germany-only post-pivot. Hardcoded to Berlin since the audience is
-    // English speakers living in Germany. If we ever go regional inside DE
-    // (Munich edition, Hamburg edition), revisit.
-    var c = { lat: 52.52, lon: 13.41, city: 'Berlin' };
+async function getWeather(city) {
+    // City-keyed weather (May 2026 city pivot). Adding a new city requires adding
+    // coords here AND a feed in content.js AND a cityContext entry in enrichStories.
+    city = city || 'berlin';
+    var coords = {
+        berlin: { lat: 52.52, lon: 13.41, city: 'Berlin' },
+        frankfurt: { lat: 50.11, lon: 8.68, city: 'Frankfurt' },
+    };
+    var c = coords[city] || coords.berlin;
     try {
         var r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset&timezone=auto&forecast_days=1');
         var d = await r.json();
@@ -357,13 +361,14 @@ function cleanName(raw) {
     return name || 'there';
 }
 
-async function generateExtras(stories) {
+async function generateExtras(stories, city) {
     if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
+    city = city || 'berlin';
 
-    // Did You Know pulls from the curated 'eu' pool in _facts.js — Berlin and
-    // Germany facts. Post-Germany pivot the 'eu' label is a legacy key inside
-    // _facts.js; the content is Germany-focused regardless. Could be renamed
-    // to 'de' in a later cleanup.
+    // Did You Know pulls from the curated 'eu' pool in _facts.js — currently
+    // Germany/Berlin facts. Frankfurt subscribers see the same pool for now;
+    // future enhancement = city-keyed fact pools (_facts.berlin, _facts.frankfurt).
+    // Most facts are Berlin-anchored which is fine while subscriber base is Berlin-dominant.
     var facts = require('./_facts.js');
     var didYouKnow = facts.getRandomFact('eu');
 
@@ -676,7 +681,7 @@ async function enrichStories(stories, city) {
 async function getSubscribers(supabase) {
     var result = await supabase
         .from('waitlist')
-        .select('email, name, region')
+        .select('email, name, region, city')
         .eq('unsubscribed', false)
         .order('created_at', { ascending: true });
 
@@ -761,12 +766,17 @@ module.exports = async function handler(req, res) {
         }
 
         if (action === 'preview') {
-            // Germany-only post-pivot. Region query param ignored.
-            var stories = await generateFreshBriefing(supabase);
-            if (!stories) return res.json({ error: 'No briefing available yet.' });
-            stories = await enrichStories(stories);
-            var extras = await generateExtras(stories);
-            extras.weather = await getWeather();
+            // City-keyed pipeline (May 2026 city pivot). Use ?city=berlin or ?city=frankfurt
+            // to preview that city's edition. Defaults to berlin.
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var previewCity = (req.query.city || 'berlin').toLowerCase();
+            if (SUPPORTED_CITIES.indexOf(previewCity) === -1) previewCity = 'berlin';
+
+            var stories = await generateFreshBriefing(supabase, previewCity);
+            if (!stories) return res.json({ error: 'No briefing available yet.', city: previewCity });
+            stories = await enrichStories(stories, previewCity);
+            var extras = await generateExtras(stories, previewCity);
+            extras.weather = await getWeather(previewCity);
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
         }
@@ -776,15 +786,26 @@ module.exports = async function handler(req, res) {
             if (!testEmail) return res.json({ error: 'Add &email=your@email.com' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
 
+            // City-keyed pipeline (May 2026): test send uses the subscriber's stored city,
+            // falling back to ?city= override, then berlin.
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var testCity = 'berlin';
             var testName = testEmail.split('@')[0];
             try {
-                var lookup = await supabase.from('waitlist').select('name').eq('email', testEmail.toLowerCase()).limit(1);
+                var lookup = await supabase.from('waitlist').select('name, city').eq('email', testEmail.toLowerCase()).limit(1);
                 if (lookup.data && lookup.data.length > 0) {
                     testName = lookup.data[0].name || testName;
+                    if (lookup.data[0].city && SUPPORTED_CITIES.indexOf(lookup.data[0].city) !== -1) {
+                        testCity = lookup.data[0].city;
+                    }
                 }
             } catch (e) { }
+            // Query override wins
+            if (req.query.city && SUPPORTED_CITIES.indexOf(req.query.city.toLowerCase()) !== -1) {
+                testCity = req.query.city.toLowerCase();
+            }
 
-            var stories2 = await generateFreshBriefing(supabase);
+            var stories2 = await generateFreshBriefing(supabase, testCity);
             if (!stories2) {
                 var debugStories = null;
                 try {
@@ -801,24 +822,26 @@ module.exports = async function handler(req, res) {
                             articles: (dd1.articles || []).slice(0, 5),
                             countries: ['de', 'gb'],
                             location: 'de',
+                            city: testCity,
                             interests: ['world'],
                         }),
                     });
                     var dd2 = await dr2.json();
                     return res.json({
                         error: 'Full pipeline failed. Debug info:',
+                        city: testCity,
                         articlesFound: articleCount,
                         briefingResponse: dd2.error || dd2.stories ? 'got ' + (dd2.stories || []).length + ' stories' : 'unknown',
                         briefingRaw: JSON.stringify(dd2).slice(0, 500),
                     });
                 } catch (debugErr) {
-                    return res.json({ error: 'Full pipeline failed. Debug also failed: ' + debugErr.message });
+                    return res.json({ error: 'Full pipeline failed. Debug also failed: ' + debugErr.message, city: testCity });
                 }
             }
 
-            stories2 = await enrichStories(stories2);
-            var extras2 = await generateExtras(stories2);
-            extras2.weather = await getWeather();
+            stories2 = await enrichStories(stories2, testCity);
+            var extras2 = await generateExtras(stories2, testCity);
+            extras2.weather = await getWeather(testCity);
 
             var transporter = getTransporter();
             var subject = buildSubjectLine(stories2);
@@ -831,6 +854,7 @@ module.exports = async function handler(req, res) {
                 });
                 try { transporter.close(); } catch (e) { }
                 var localCount = stories2.filter(function(s) { return s.isLocal; }).length;
+                var cityLocalCount = stories2.filter(function(s) { return s.isCityLocal; }).length;
                 var srcCounts = {};
                 for (var sci = 0; sci < stories2.length; sci++) {
                     var sk = (stories2[sci].source || '').toLowerCase()
@@ -839,7 +863,7 @@ module.exports = async function handler(req, res) {
                         .replace(/[-_\s]+/g, '').trim();
                     srcCounts[sk] = (srcCounts[sk] || 0) + 1;
                 }
-                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, name: testName, stories: stories2.length, localStories: localCount, sourceCounts: srcCounts });
+                return res.json({ ok: true, messageId: result.messageId, subject: subject, to: testEmail, name: testName, city: testCity, stories: stories2.length, localStories: localCount, cityLocalStories: cityLocalCount, sourceCounts: srcCounts });
             } catch (e) {
                 try { transporter.close(); } catch (e2) { }
                 return res.json({ error: 'SMTP failed: ' + e.message });
@@ -897,49 +921,85 @@ module.exports = async function handler(req, res) {
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
-            // Germany-only post-pivot. All subscribers receive the same edition.
-            // Region grouping removed — see SKILL.md "Newsletter Operational Spec".
-            var stories = await generateFreshBriefing(supabase);
-            if (!stories) return res.json({ error: 'No briefing available' });
+            // City-keyed pipeline (May 2026 city pivot). Group subscribers by city,
+            // run the briefing+enrich+extras+weather pipeline once per city present,
+            // then send each subscriber their city's edition. Log one newsletter_log
+            // row per city. Subscribers with unsupported/null city fall back to berlin.
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var groups = {};
+            for (var g = 0; g < subscribers.length; g++) {
+                var sCity = (subscribers[g].city || 'berlin').toLowerCase();
+                if (SUPPORTED_CITIES.indexOf(sCity) === -1) sCity = 'berlin';
+                if (!groups[sCity]) groups[sCity] = [];
+                groups[sCity].push(subscribers[g]);
+            }
+            var citiesPresent = Object.keys(groups);
+            console.log('[newsletter] send cities=' + JSON.stringify(citiesPresent) + ' subs=' + subscribers.length);
 
-            stories = await enrichStories(stories);
-
-            try { await supabase.from('newsletter_cache').insert({ stories: stories }); } catch (e) { }
-
-            var extras = await generateExtras(stories);
-            extras.weather = await getWeather();
-            var subject = buildSubjectLine(stories);
-
+            var totalSent = 0, totalFailed = 0;
+            var resultByCity = {};
             var transporter2 = getTransporter();
-            var sent = 0, failed = 0, errors = [];
 
-            for (var i = 0; i < Math.min(subscribers.length, BATCH_SIZE); i++) {
-                var sub = subscribers[i];
-                try {
-                    await transporter2.sendMail({
-                        from: FROM_NAME + ' <' + FROM_EMAIL + '>',
-                        to: sub.email,
-                        subject: subject,
-                        html: buildEmailHTML(stories, sub.name || sub.email.split('@')[0], sub.email, extras),
-                    });
-                    sent++;
-                } catch (e) {
-                    failed++;
-                    errors.push({ email: sub.email, error: e.message });
+            for (var ci = 0; ci < citiesPresent.length; ci++) {
+                var cCity = citiesPresent[ci];
+                var cSubs = groups[cCity];
+
+                // Per-city pipeline run
+                var cStories = await generateFreshBriefing(supabase, cCity);
+                if (!cStories) {
+                    console.log('[newsletter] city=' + cCity + ' briefing failed, skipping ' + cSubs.length + ' subscribers');
+                    resultByCity[cCity] = { error: 'briefing failed', subs: cSubs.length };
+                    continue;
                 }
-                if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
+                cStories = await enrichStories(cStories, cCity);
+                var cExtras = await generateExtras(cStories, cCity);
+                cExtras.weather = await getWeather(cCity);
+                var cSubject = buildSubjectLine(cStories);
+
+                try { await supabase.from('newsletter_cache').insert({ stories: cStories }); } catch (e) { }
+
+                var cSent = 0, cFailed = 0, cErrors = [];
+                for (var i = 0; i < Math.min(cSubs.length, BATCH_SIZE); i++) {
+                    var sub = cSubs[i];
+                    try {
+                        await transporter2.sendMail({
+                            from: FROM_NAME + ' <' + FROM_EMAIL + '>',
+                            to: sub.email,
+                            subject: cSubject,
+                            html: buildEmailHTML(cStories, sub.name || sub.email.split('@')[0], sub.email, cExtras),
+                        });
+                        cSent++;
+                    } catch (e) {
+                        cFailed++;
+                        cErrors.push({ email: sub.email, error: e.message });
+                    }
+                    if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
+                }
+
+                totalSent += cSent;
+                totalFailed += cFailed;
+                resultByCity[cCity] = { sent: cSent, failed: cFailed, subject: cSubject };
+
+                // One log row per city — subject prefixed [city] for grep-ability
+                try {
+                    await supabase.from('newsletter_log').insert({
+                        sent_count: cSent, failed_count: cFailed,
+                        errors: cErrors.length > 0 ? cErrors : null,
+                        subject: '[' + cCity + '] ' + cSubject,
+                        story_count: cStories.length,
+                    });
+                } catch (e) { }
             }
 
             try { transporter2.close(); } catch (e) { }
-            try {
-                await supabase.from('newsletter_log').insert({
-                    sent_count: sent, failed_count: failed,
-                    errors: errors.length > 0 ? errors : null,
-                    subject: subject, story_count: stories.length,
-                });
-            } catch (e) { }
 
-            return res.json({ ok: true, sent: sent, failed: failed, total: subscribers.length, subject: subject });
+            return res.json({
+                ok: true,
+                sent: totalSent,
+                failed: totalFailed,
+                total: subscribers.length,
+                cities: resultByCity,
+            });
         }
 
         return res.json({ actions: 'subscribe, unsubscribe, preview, test, send' });
