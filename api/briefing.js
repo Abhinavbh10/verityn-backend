@@ -111,8 +111,8 @@ module.exports = async function handler(req, res) {
         // Quota numbers — stricter when city is set
         var localMinimum, localIdeal;
         if (hasCity && pickCount >= 7) {
-            localMinimum = 4;
-            localIdeal = 5;
+            localMinimum = 3;
+            localIdeal = 4;
         } else if (hasCity && pickCount >= 5) {
             localMinimum = 3;
             localIdeal = 4;
