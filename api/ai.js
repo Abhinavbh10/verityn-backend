@@ -864,16 +864,21 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
       return res.status(200).json({ success: true, articles: [] });
     }
 
-    // German marker detection — same regex as content.js isEnglishHeadline.
-    // If a headline has 2+ German words, mark it for translation.
-    const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|gegen|über|unter|bei|nach|vor|aus|von|zu|im|am|ein|eine|den|dem|des|als|wie|wenn|aber|oder|sondern|denn|weil|dass|ob|um|ohne|gerade|sehr|viel|mehr|noch|nur|schon|bereits|immer|nie|hier|dort|jetzt)\b/i;
+    // German marker detection — expanded.
+    // Triggers translation if EITHER:
+    //   (a) headline/summary contains German-specific chars (ä, ö, ü, ß), OR
+    //   (b) headline/summary has 2+ common German marker words
+    const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|einem|schon|zwischen|während|gegen|über|unter|bei|nach|vor|aus|von|zu|im|am|ein|eine|den|dem|des|als|wie|wenn|aber|oder|sondern|denn|weil|dass|ob|um|ohne|sehr|viel|mehr|noch|nur|bereits|immer|nie|hier|dort|jetzt|wegen|trotz|laut|soll|sollen|kann|können|muss|müssen|heute|gestern|morgen|prozent|jahre|jahren)\b/i;
+    const GERMAN_CHARS = /[äöüßÄÖÜ]/;
 
     const toTranslate = [];
     const passthroughIndices = new Set();
 
     articles.forEach((a, idx) => {
-      const hits = ((a.headline || '').match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
-      if (hits >= 2) {
+      const text = ((a.headline || '') + ' ' + (a.summary || '')).slice(0, 500);
+      const hasGermanChars = GERMAN_CHARS.test(text);
+      const wordHits = (text.match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
+      if (hasGermanChars || wordHits >= 2) {
         toTranslate.push({ idx, headline: a.headline, summary: a.summary || '' });
       } else {
         passthroughIndices.add(idx);
