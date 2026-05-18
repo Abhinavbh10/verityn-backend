@@ -848,7 +848,135 @@ Include 5 stories. tier 1 = lead, tier 2 = also today, tier 3 = worth knowing.`;
     }
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch | digest` });
+  // ── ACTION: translate ─────────────────────────────────────
+  // Translates German article headlines + summaries to English.
+  // Used by the app to mirror the newsletter pipeline (translate → brief).
+  // Returns the same article objects with English headline/summary, preserving
+  // all other fields (image, source, sourceUrl, sourceCity, etc.).
+  // Already-English articles are passed through unchanged (detected by absence
+  // of German marker words in the headline).
+  if (action === 'translate') {
+    const rl = await checkRateLimit(supabase, sessionId, 'translate');
+    if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
+
+    const { articles = [] } = params;
+    if (!Array.isArray(articles) || articles.length === 0) {
+      return res.status(200).json({ success: true, articles: [] });
+    }
+
+    // German marker detection — same regex as content.js isEnglishHeadline.
+    // If a headline has 2+ German words, mark it for translation.
+    const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|gegen|über|unter|bei|nach|vor|aus|von|zu|im|am|ein|eine|den|dem|des|als|wie|wenn|aber|oder|sondern|denn|weil|dass|ob|um|ohne|gerade|sehr|viel|mehr|noch|nur|schon|bereits|immer|nie|hier|dort|jetzt)\b/i;
+
+    const toTranslate = [];
+    const passthroughIndices = new Set();
+
+    articles.forEach((a, idx) => {
+      const hits = ((a.headline || '').match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
+      if (hits >= 2) {
+        toTranslate.push({ idx, headline: a.headline, summary: a.summary || '' });
+      } else {
+        passthroughIndices.add(idx);
+      }
+    });
+
+    // Nothing to translate? Pass through.
+    if (toTranslate.length === 0) {
+      return res.status(200).json({ success: true, articles, translated: 0 });
+    }
+
+    // Build a single batched Claude call. Each article gets an index so we can
+    // map results back. Claude returns JSON with index → translated text.
+    const items = toTranslate.map((t, i) =>
+      `${i + 1}. HEADLINE: ${t.headline}\n   SUMMARY: ${t.summary.slice(0, 250)}`
+    ).join('\n\n');
+
+    const prompt = `Translate these ${toTranslate.length} German news items to clear, natural English. Preserve meaning, names, numbers, and named entities (Krankenkasse, Bürgergeld, BVG, S-Bahn, Anmeldung, etc. should stay in German — they're recognized terms for English speakers in Germany).
+
+For each item, return:
+- index: the number (1-${toTranslate.length})
+- headline: English translation, ~12-20 words
+- summary: English translation of the summary, ~30-60 words
+
+Respond ONLY with valid JSON, no markdown:
+{"items":[{"index":1,"headline":"...","summary":"..."}]}
+
+Items:
+${items}`;
+
+    try {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 4000,
+          system: 'You translate German news to English for English speakers living in Germany. Keep German terms that are commonly used in expat English (Krankenkasse, Bürgergeld, BVG, S-Bahn, U-Bahn, Anmeldung, Finanzamt, Bürgeramt, Mietpreisbremse, Heizungsgesetz, etc). Respond with JSON only.',
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await r.json();
+      const rawText = data.content?.[0]?.text || '';
+
+      let parsed;
+      try { parsed = JSON.parse(rawText); }
+      catch (e) {
+        try { parsed = JSON.parse(rawText.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()); }
+        catch (e2) {
+          const m = rawText.match(/\{[\s\S]*\}/);
+          if (m) { try { parsed = JSON.parse(m[0]); } catch (e3) {} }
+        }
+      }
+
+      if (!parsed?.items) {
+        // Translation failed — pass through originals
+        return res.status(200).json({
+          success: true,
+          articles,
+          translated: 0,
+          error: 'parse_failed',
+        });
+      }
+
+      // Map translations back into the original articles array
+      const translatedArticles = articles.map((a, idx) => {
+        if (passthroughIndices.has(idx)) return a;
+        const tIdx = toTranslate.findIndex(t => t.idx === idx);
+        const result = parsed.items.find(it => it.index === tIdx + 1);
+        if (result?.headline) {
+          return {
+            ...a,
+            headline: result.headline,
+            summary: result.summary || a.summary,
+            headline_original: a.headline,
+            translated: true,
+          };
+        }
+        return a;
+      });
+
+      return res.status(200).json({
+        success: true,
+        articles: translatedArticles,
+        translated: parsed.items.length,
+      });
+    } catch (e) {
+      await logError(supabase, { endpoint: 'ai', action: 'translate', error: e, sessionId });
+      // On error, return originals — better to show German than to fail entirely
+      return res.status(200).json({
+        success: true,
+        articles,
+        translated: 0,
+        error: e.message,
+      });
+    }
+  }
+
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: oneliner | briefing | rank | aisearch | digest | translate` });
 
   } catch (topErr) {
     return res.status(500).json({
