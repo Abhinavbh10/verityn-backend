@@ -499,17 +499,45 @@ module.exports = async function handler(request, response) {
     }));
 
     const today = new Date().toISOString().slice(0, 10);
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    const yesterdayMap = {};
+    // Fetch last 7 days of event_text for ALL topics, so we can detect
+    // "same story restated" within the same topic and skip duplicates.
+    const historyMap = {};  // topic_key → array of recent event_texts (newest first)
     try {
-      const { data: yesterdayThreads } = await supabase
-        .from('topic_threads').select('topic_key, event_text')
-        .eq('event_date', yesterday);
-      for (const t of (yesterdayThreads || [])) {
-        yesterdayMap[t.topic_key] = t.event_text;
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const { data: recentThreads } = await supabase
+        .from('topic_threads').select('topic_key, event_text, event_date')
+        .gte('event_date', sevenDaysAgo)
+        .order('event_date', { ascending: false });
+      for (const t of (recentThreads || [])) {
+        if (!historyMap[t.topic_key]) historyMap[t.topic_key] = [];
+        historyMap[t.topic_key].push(t.event_text);
       }
     } catch (e) {}
+
+    // Word-overlap similarity check.
+    // Two event_texts share too much if 60%+ of one's content words appear
+    // in the other (excluding stopwords).
+    function tokenize(s) {
+      const STOP = new Set(['the','a','an','and','or','but','of','to','in','on','for','at','by','with','from','as','is','was','are','were','will','would','said','says','has','have','had','this','that','these','those','his','her','its','their','it']);
+      return (s || '').toLowerCase()
+        .replace(/[^a-zäöüß0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 2 && !STOP.has(w));
+    }
+    function isTooSimilar(newText, history) {
+      const newTokens = new Set(tokenize(newText));
+      if (newTokens.size === 0) return false;
+      for (const past of history) {
+        const pastTokens = new Set(tokenize(past));
+        if (pastTokens.size === 0) continue;
+        let overlap = 0;
+        for (const t of newTokens) if (pastTokens.has(t)) overlap++;
+        const ratio = overlap / Math.min(newTokens.size, pastTokens.size);
+        if (ratio >= 0.6) return true;
+      }
+      return false;
+    }
 
     for (const cluster of clusters.slice(0, 20)) {
       try {
@@ -527,28 +555,32 @@ module.exports = async function handler(request, response) {
           .map(a => `- ${a.headline} (${a.source || 'Unknown'})`)
           .join('\n');
 
-        const yesterdayText = yesterdayMap[cluster.key] || null;
+        const history = historyMap[cluster.key] || [];
+        const recentText = history.length > 0
+          ? history.slice(0, 5).map((t, i) => `${i + 1}. "${t}"`).join('\n')
+          : null;
 
         const systemPrompt = `You write one crisp past-tense sentence about a specific news story affecting people living in Germany. Under 22 words. Specific facts.
 
 CRITICAL RULES:
 - The sentence describes ONE event only. NEVER fuse two unrelated events with "while", "as", or "and".
 - If the headlines cover multiple unrelated stories, pick the single most important one and ignore the rest.
-- If today's headlines don't materially advance the story (i.e. they restate yesterday's news), respond with exactly: SKIP
+- If today's headlines don't materially advance the story beyond what was already covered in recent days, respond with exactly: SKIP
+- "Materially advance" means a NEW fact, action, vote, ruling, or development. A restatement of the same situation with different wording does NOT qualify — respond SKIP.
 - Frame the event for someone living in Germany. If a global story (e.g. Iran, Trump, China), make the German angle clear if there is one — otherwise skip.
 
 Output the sentence directly OR the word SKIP. Nothing else.`;
 
-        const userMsg = yesterdayText
+        const userMsg = recentText
           ? `Topic: ${cluster.label}
 
-Yesterday's update:
-"${yesterdayText}"
+Recent coverage of this topic (newest first):
+${recentText}
 
 Today's headlines:
 ${headlines}
 
-One sentence on the single most important new development today. If today doesn't add new information beyond yesterday, respond SKIP:`
+One sentence on the single most important NEW development today. If today's headlines only restate what's already been covered above, respond SKIP:`
           : `Topic: ${cluster.label}
 
 Today's headlines:
@@ -586,6 +618,12 @@ One sentence on the single most important development:`;
         }
         if (isFusedSentence(eventText)) {
           results.threadsSkipped.push(`${cluster.label} (fused output rejected)`);
+          continue;
+        }
+
+        // Programmatic dedup: reject if too similar to any of last 7 days' entries.
+        if (history.length > 0 && isTooSimilar(eventText, history)) {
+          results.threadsSkipped.push(`${cluster.label} (too similar to recent entries)`);
           continue;
         }
 
