@@ -133,6 +133,8 @@ const COUNTRY_FEEDS = {
     'https://www.tagesspiegel.de/contentexport/feed/berlin',  // Tagesspiegel Berlin section
     'https://www.berliner-zeitung.de/feed.xml',                // Berliner Zeitung
     'https://www.bz-berlin.de/feed',                           // B.Z. Berlin — verified May 2026, tabloid-flavoured but hyperlocal
+    'https://www.rbb24.de/aktuell/index.xml/feed=rss.xml',     // rbb24 — verified May 2026 (note: /rss path 404s, THIS path works). Berlin+Brandenburg public broadcaster.
+    'https://www.morgenpost.de/berlin/rss',                    // Berliner Morgenpost Berlin section — verified May 2026, pure Berlin hyperlocal (S-Bahn, Freibäder, local incidents)
   ],
   frankfurt_local: [
     // Frankfurt hyperlocal — FAZ Rhein-Main has 8+ named-Frankfurt stories per fetch
