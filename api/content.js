@@ -663,34 +663,36 @@ module.exports = async function handler(req, res) {
   }
 
   // ── ACTION: topicnews ──────────────────────────────────────
-  // Returns English-language, expat-focused Germany news matched to the
-  // user's selected topics, last 7 days. Powers the Topics tab.
+  // English, expat-focused Germany news matched to the user's topics, last 7
+  // days. Powers the Topics tab. High-precision: Germany-relevance gate +
+  // word-boundary keyword matching + relevance scoring.
   //
   // USAGE: /api/content?action=topicnews&topics=transport,housing,visa&city=berlin
-  //
-  // Sources are ENGLISH expat-focused feeds (The Local, IamExpat, DW English,
-  // Politico EU) — no German translation needed, and these outlets write FOR
-  // English-speaking residents, so relevancy is high.
-  //
-  // Each returned article carries matchedTopics[] so the app can filter by chip.
-  // The raw 7-day pool is cached 1h; topic matching happens per-request.
   if (action === 'topicnews') {
-    // Strong keyword sets per topic. German + English terms. The richer the
-    // set, the higher the relevancy. Expat-specific terms included throughout.
+    // ── High-precision keyword sets ──
+    // Single words are matched with WORD BOUNDARIES (so "strike" won't fire on
+    // "strikes in Iran" unless it's a standalone word — and we drop bare generic
+    // words entirely). Multi-word phrases use substring (already specific).
+    // German terms are kept untranslated — they're high-signal and rarely
+    // produce false positives.
     const TOPIC_KEYWORDS = {
-      transport: ['deutsche bahn','deutschebahn',' db ','bahn','bvg','s-bahn','u-bahn','sbahn','ubahn','autobahn','strike','streik','lufthansa','flixbus','train','ticket','deutschlandticket','49-euro','49 euro','mobility','mvg','rmv','hvv','tram','commute','flight','airport','flughafen','rail','transit','transport'],
-      housing: ['rent','rents','rental','miete','mieten','mietpreisbremse','wohnung','wohnungen','apartment','flat','nebenkosten','landlord','tenant','mieter','vermieter','immobilien','housing','kaution','wbs','wohnungssuche','real estate','property','schufa','hausverwaltung'],
-      visa: ['visa','visas','residence permit','aufenthaltstitel','aufenthalt','blue card','bluecard','niederlassung','einbürgerung','einbuergerung','naturalization','naturalisation','citizenship','staatsbürgerschaft','staatsbuergerschaft','ausländerbehörde','auslaenderbehoerde','immigration','immigrant','work permit','skilled worker','fachkräfte','fachkraefte','residency','passport','opportunity card','chancenkarte'],
-      bureaucracy: ['anmeldung','ummeldung','abmeldung','finanzamt','tax return','steuererklärung','steuererklaerung','steuer','bürgeramt','buergeramt','termin','paperwork','elster','bürokratie','buerokratie','registration','rundfunkbeitrag','gez','bureaucracy','red tape'],
-      healthcare: ['krankenkasse','krankenversicherung','health insurance','tk ','aok','barmer','doctor','arzt','ärzte','aerzte','hospital','krankenhaus','prescription','rezept','gesundheit','pflege','apotheke','pharmacy','medical','krankschreibung','hausarzt','termin beim arzt'],
-      work: ['job','jobs','salary','salaries','gehalt','lohn','tarif','mindestlohn','minimum wage','kurzarbeit','arbeitsamt','arbeitsagentur','unemployment','arbeitslos','ig metall','verdi','kündigung','kuendigung','layoff','redundanc','elterngeld','parental leave','bürgergeld','buergergeld','employment','hiring','workforce','wages','strike','recession','economy'],
-      politics: ['bundestag','bundesrat','bundesregierung','cdu','csu','spd','fdp','grüne','gruene','greens','afd','linke','merz','scholz','habeck','lindner','weidel','coalition','koalition','election','wahl','minister','kanzler','chancellor','bundeswehr','parliament','government'],
-      energy: ['heizung','heizungsgesetz','energiewende','gas price','strom','electricity','power price','solar','climate','klima','emission','co2','wärmepumpe','waermepumpe','renewable','erneuerbare','nuclear','atomkraft','energy price','energiepreis','heating','windkraft'],
-      bundesliga: ['bundesliga','bayern munich','bayern münchen','dortmund','bvb','leverkusen','schalke','rb leipzig','fußball','fussball','dfb','dfb-pokal','champions league','gladbach','eintracht','union berlin','hertha','stuttgart vfb','bremen werder'],
-      culture: ['museum','exhibition','ausstellung','festival','concert','konzert','restaurant','kino','cinema','theater','theatre',' art ','kunst','berlinale','oktoberfest','christmas market','weihnachtsmarkt','gallery','nightlife','food scene','cuisine'],
-      fashion: ['fashion','mode','fashion week','retail','adidas','puma','hugo boss','zalando','about you','clothing','designer','sneaker'],
-      daily: ['expat','foreigner','foreigners','residents','cost of living','life in germany','ausländer','auslaender','integration','everyday','consumer','prices rise','supermarket','aldi','lidl','rewe','holiday','feiertag','weather warning','heatwave'],
+      transport: ['deutsche bahn','s-bahn','u-bahn','rail strike','train strike','transport strike','warning strike','rail network','public transport','air travel','flight cancel','flight delay','aviation','bvg','autobahn','lufthansa','flixbus','streik','warnstreik','bahnstreik','deutschlandticket','49-euro ticket','mvg','rmv','hvv','bahn','flughafen','hauptbahnhof'],
+      housing: ['rent cap','rent control','rent rise','rents rise','rent increase','rental market','rental contract','housing shortage','housing market','housing crisis','housing chaos','real estate','property market','serviced apartment','first month housing','mietpreisbremse','nebenkosten','wohnungssuche','mietvertrag','kaution','schufa','immobilien','miete','mieten','mieter','vermieter','wohnung','wohnungen','landlord','tenant','rent','rents','rental','wbs'],
+      visa: ['residence permit','blue card','work permit','opportunity card','skilled worker','work visa','student visa','family reunification','visa','visas','aufenthaltstitel','aufenthalt','einbürgerung','einbuergerung','naturalization','naturalisation','citizenship','staatsbürgerschaft','staatsbuergerschaft','ausländerbehörde','auslaenderbehoerde','immigration','chancenkarte','niederlassung','fachkräfte','fachkraefte','residency'],
+      bureaucracy: ['tax return','tax declaration','residence registration','anmeldung','ummeldung','abmeldung','finanzamt','steuererklärung','steuererklaerung','bürgeramt','buergeramt','elster','bürokratie','buerokratie','rundfunkbeitrag','gez','termin'],
+      healthcare: ['health insurance','public health','private insurance','health system','krankenkasse','krankenversicherung','aok','barmer','arzt','ärzte','aerzte','hausarzt','krankenhaus','apotheke','rezept','krankschreibung','pflege','gesundheit','hospital','doctor'],
+      work: ['minimum wage','parental leave','collective bargaining','trade union','labor market','labour market','job market','short-time work','wage talks','pay rise','wage rise','gehalt','tarif','tarifvertrag','mindestlohn','kurzarbeit','arbeitsamt','arbeitsagentur','arbeitslos','kündigung','kuendigung','elterngeld','bürgergeld','buergergeld','verdi','ig metall','gewerkschaft'],
+      politics: ['german government','german election','german politics','coalition government','bundestag','bundesrat','bundesregierung','cdu','csu','spd','fdp','grüne','gruene','afd','merz','scholz','habeck','lindner','weidel','koalition','bundeswehr','kanzler','chancellor merz'],
+      energy: ['gas price','electricity price','power price','energy price','heat pump','climate target','climate goal','renewable energy','energy transition','heizungsgesetz','energiewende','wärmepumpe','waermepumpe','strompreis','gaspreis','klimaziel','atomkraft','windkraft','solar power'],
+      bundesliga: ['bayern munich','bayern münchen','borussia dortmund','rb leipzig','union berlin','champions league','dfb pokal','dfb-pokal','bundesliga','dortmund','leverkusen','schalke','gladbach','wolfsburg','hoffenheim','freiburg','bvb'],
+      culture: ['art exhibition','film festival','christmas market','food scene','museum island','berlin film','museum','ausstellung','berlinale','oktoberfest','weihnachtsmarkt','theater','konzert','gallery','festival'],
+      fashion: ['fashion week','fashion industry','berlin fashion','fashion','mode','adidas','puma','hugo boss','zalando','sneaker'],
+      daily: ['cost of living','life in germany','new to germany','moving to germany','living in germany','expat life','price rise','prices rise','consumer prices','public holiday','weather warning','heat wave','heatwave','expat','expats','ausländer','auslaender','integration','feiertag','aldi','lidl','rewe','edeka','supermarket'],
     };
+
+    // Germany-relevance gate — same spirit as cron.js. Expat-core sources
+    // (The Local, IamExpat) auto-pass; everything else must mention a Germany signal.
+    const STRONG_GERMANY = /\b(germany|german|berlin|munich|münchen|hamburg|frankfurt|cologne|köln|stuttgart|düsseldorf|duesseldorf|leipzig|dresden|bremen|hannover|nuremberg|nürnberg|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grüne|gruene|afd|merz|scholz|habeck|lindner|deutsche bahn|lufthansa|volkswagen|mercedes|siemens|dax|krankenkasse|bürgergeld|mietpreisbremse|heizungsgesetz|bvg|s-bahn|u-bahn|autobahn|anmeldung|finanzamt|aufenthalt|einbürgerung|elterngeld)\b/i;
 
     const requestedTopics = String(req.query.topics || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
     const cityKey = String(req.query.city || '').toLowerCase().trim();
@@ -699,28 +701,26 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ success: true, articles: [], reason: 'no_topics' });
     }
 
-    // English expat-focused Germany feeds
+    // English expat-focused Germany feeds ONLY. No DW-EU, no DW-business,
+    // no Politico — those carry global news that pollutes relevancy.
+    const EXPAT_CORE = new Set(['The Local', 'IamExpat']);
     const TOPIC_FEEDS = [
-      'https://www.thelocal.de/feed/',
-      'https://www.iamexpat.de/rss/news-germany',
-      'https://rss.dw.com/xml/rss-en-ger',
-      'https://rss.dw.com/xml/rss-en-bus',
-      'https://rss.dw.com/xml/rss-en-eu',
-      'https://www.politico.eu/feed/',
+      { url: 'https://www.thelocal.de/feed/', name: 'The Local' },
+      { url: 'https://www.iamexpat.de/rss/news-germany', name: 'IamExpat' },
+      { url: 'https://rss.dw.com/xml/rss-en-ger', name: 'Deutsche Welle' },
     ];
     const CITY_TOPIC_FEEDS = {
-      berlin: 'https://feeds.thelocal.com/rss/de/berlin',
-      frankfurt: 'https://feeds.thelocal.com/rss/de/frankfurt',
-      munich: 'https://feeds.thelocal.com/rss/de/munich',
-      hamburg: 'https://feeds.thelocal.com/rss/de/hamburg',
+      berlin: { url: 'https://feeds.thelocal.com/rss/de/berlin', name: 'The Local' },
+      frankfurt: { url: 'https://feeds.thelocal.com/rss/de/frankfurt', name: 'The Local' },
+      munich: { url: 'https://feeds.thelocal.com/rss/de/munich', name: 'The Local' },
+      hamburg: { url: 'https://feeds.thelocal.com/rss/de/hamburg', name: 'The Local' },
     };
     const feeds = [...TOPIC_FEEDS];
     if (cityKey && CITY_TOPIC_FEEDS[cityKey]) feeds.push(CITY_TOPIC_FEEDS[cityKey]);
 
-    const poolCacheKey = `topicnews-pool-${cityKey || 'none'}`;
+    const poolCacheKey = `topicnews-pool-v2-${cityKey || 'none'}`;
     let pool = null;
 
-    // Try cached pool (1h)
     try {
       const { data: cached } = await supabase
         .from('digest_cache').select('digest')
@@ -730,12 +730,11 @@ module.exports = async function handler(req, res) {
       if (cached?.digest?.articles?.length) pool = cached.digest.articles;
     } catch (e) {}
 
-    // Fetch fresh pool
     if (!pool) {
       try {
         const results = await Promise.all(
-          feeds.map(url =>
-            fetch(url, {
+          feeds.map(f =>
+            fetch(f.url, {
               headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
               signal: AbortSignal.timeout(10000),
             }).then(r => r.text()).catch(() => '')
@@ -746,8 +745,8 @@ module.exports = async function handler(req, res) {
         for (let fi = 0; fi < results.length; fi++) {
           const xml = results[fi];
           if (!xml) continue;
+          const feed = feeds[fi];
           const items = xml.match(/<item[\s\S]*?<\/item>/g) || [];
-          const feedDomain = feeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0];
           for (const item of items) {
             const title = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
             const rawDesc = (item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '';
@@ -756,41 +755,47 @@ module.exports = async function handler(req, res) {
             const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
             const imgMatch = item.match(/url="([^"]+\.(jpg|jpeg|png|webp)[^"]*)"/i) ||
                              item.match(/<media:content[^>]+url="([^"]+)"/i) ||
-                             item.match(/<enclosure[^>]+url="([^"]+)"/i);
+                             item.match(/<enclosure[^>]+url="([^"]+)"/i) ||
+                             item.match(/<media:thumbnail[^>]+url="([^"]+)"/i);
             const image = imgMatch ? imgMatch[1] : null;
             if (!title || title.length < 12) continue;
             if (/<[a-z]/i.test(title)) continue;
             if (!isEnglishHeadline(title)) continue;
             const pub = pubDate ? new Date(pubDate) : new Date();
             if (isNaN(pub.getTime()) || pub.getTime() < sevenDaysAgo) continue;
-            const sourceMap = {
-              'thelocal.de': 'The Local', 'feeds.thelocal.com': 'The Local',
-              'iamexpat.de': 'IamExpat', 'rss.dw.com': 'Deutsche Welle',
-              'politico.eu': 'POLITICO Europe',
-            };
-            const sourceName = sourceMap[feedDomain] || feedDomain.split('.')[0];
+
+            const isExpatCore = EXPAT_CORE.has(feed.name);
+            const isCityFeed = cityKey && CITY_TOPIC_FEEDS[cityKey] && feed.url === CITY_TOPIC_FEEDS[cityKey].url;
+
+            // Germany-relevance gate: expat-core sources auto-pass; others must
+            // mention a Germany signal in headline or summary.
+            if (!isExpatCore) {
+              const text = (title + ' ' + desc);
+              if (!STRONG_GERMANY.test(text)) continue;
+            }
+
             pool.push({
               id: `topic-${fi}-${Math.random().toString(36).slice(2, 9)}`,
               headline: title,
               summary: /^<[a-z]/i.test(desc.trim()) ? '' : desc.slice(0, 300),
-              source: sourceName,
+              source: feed.name,
               sourceUrl: link,
               image,
               publishedAt: pub.toISOString(),
               time: getRelativeTime(pub),
               country: 'DE',
-              sourceCity: (cityKey && feeds[fi] === CITY_TOPIC_FEEDS[cityKey]) ? cityKey : 'nationwide',
+              sourceCity: isCityFeed ? cityKey : 'nationwide',
+              _expatCore: isExpatCore,
+              _cityLocal: !!isCityFeed,
             });
           }
         }
-        // Dedup
         const seen = new Set();
         pool = pool.filter(a => {
           const k = a.headline.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
           if (seen.has(k)) return false;
           seen.add(k); return true;
         });
-        // Cache pool 1h
         try {
           await supabase.from('digest_cache').upsert({
             cache_key: poolCacheKey,
@@ -805,31 +810,61 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Match pool against requested topics
+    // ── Keyword matcher: phrases use substring, single words use word-boundary ──
+    function matchTopic(text, topic) {
+      const kws = TOPIC_KEYWORDS[topic] || [topic];
+      for (const kw of kws) {
+        if (kw.includes(' ') || kw.includes('-')) {
+          if (text.includes(kw)) return true;
+        } else {
+          // word boundary for single tokens (handles ä/ö/ü)
+          const re = new RegExp(`(^|[^a-zäöüß])${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-zäöüß]|$)`, 'i');
+          if (re.test(text)) return true;
+        }
+      }
+      return false;
+    }
+
+    // Match + score every pooled article against requested topics.
     const matched = [];
     for (const a of pool) {
-      const text = (' ' + (a.headline || '') + ' ' + (a.summary || '') + ' ').toLowerCase();
+      const headline = (' ' + (a.headline || '') + ' ').toLowerCase();
+      const summary = (' ' + (a.summary || '') + ' ').toLowerCase();
       const matchedTopics = [];
+      let score = 0;
       for (const topic of requestedTopics) {
-        const kws = TOPIC_KEYWORDS[topic] || [topic];
-        if (kws.some(kw => text.includes(kw))) matchedTopics.push(topic);
+        const inHeadline = matchTopic(headline, topic);
+        const inSummary = matchTopic(summary, topic);
+        if (inHeadline || inSummary) {
+          matchedTopics.push(topic);
+          score += inHeadline ? 3 : 1; // headline match is much stronger
+        }
       }
       if (matchedTopics.length > 0) {
-        matched.push({ ...a, matchedTopics });
+        // Source quality + locality boosts
+        if (a._expatCore) score += 2;
+        if (a._cityLocal) score += 1;
+        if (a.image) score += 0.5; // prefer stories with art, mild boost
+        const { _expatCore, _cityLocal, ...clean } = a;
+        matched.push({ ...clean, matchedTopics, _score: score });
       }
     }
-    matched.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
 
-    // Per-topic counts (so the app knows which topics to show as chips)
+    // Sort by score desc, then recency desc
+    matched.sort((a, b) => (b._score - a._score) || (new Date(b.publishedAt) - new Date(a.publishedAt)));
+
+    // Strip internal score before returning
+    const out = matched.map(({ _score, ...rest }) => rest);
+
     const topicCounts = {};
     for (const t of requestedTopics) topicCounts[t] = 0;
-    for (const a of matched) {
+    for (const a of out) {
       for (const t of a.matchedTopics) topicCounts[t] = (topicCounts[t] || 0) + 1;
     }
 
     return res.status(200).json({
       success: true,
-      articles: matched,
+      articles: out,
       topicCounts,
       poolSize: pool.length,
     });
