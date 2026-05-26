@@ -345,7 +345,27 @@ module.exports = async function handler(req, res) {
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
     const { country = 'us', max = '15' } = req.query;
-    const feeds = COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
+
+    // City-local feed resolution. Previously `{city}_local` codes (berlin_local,
+    // frankfurt_local, bonn_local) weren't COUNTRY_FEEDS keys and fell back to
+    // US feeds. Now they resolve to city-specific German feeds (translated
+    // downstream by the app's translate step). Bonn uses General-Anzeiger.
+    const CITY_LOCAL_FEEDS = {
+      berlin_local: [
+        'https://www.tagesspiegel.de/contentexport/feed/berlin',
+        'https://www.berliner-zeitung.de/feed.xml',
+        'https://www.tagesschau.de/index~rss2.xml',
+      ],
+      frankfurt_local: [
+        'https://www.faz.net/rss/aktuell/rhein-main/',
+        'https://www.tagesschau.de/index~rss2.xml',
+      ],
+      bonn_local: [
+        'https://ga.de/feed.rss',
+        'https://www.tagesschau.de/index~rss2.xml',
+      ],
+    };
+    const feeds = CITY_LOCAL_FEEDS[country] || COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
 
     const isLocalLanguageFeed = /_local$/.test(country);
 
@@ -675,19 +695,19 @@ module.exports = async function handler(req, res) {
     // words entirely). Multi-word phrases use substring (already specific).
     // German terms are kept untranslated — they're high-signal and rarely
     // produce false positives.
+    // 5 broad buckets (consolidated May 2026). Each unions its former
+    // sub-topics so a single chip pulls plenty of stories from the same pool.
     const TOPIC_KEYWORDS = {
-      transport: ['deutsche bahn','s-bahn','u-bahn','rail strike','train strike','transport strike','warning strike','rail network','public transport','air travel','flight cancel','flight delay','aviation','bvg','autobahn','lufthansa','flixbus','streik','warnstreik','bahnstreik','deutschlandticket','49-euro ticket','mvg','rmv','hvv','bahn','flughafen','hauptbahnhof'],
-      housing: ['rent cap','rent control','rent rise','rents rise','rent increase','rental market','rental contract','housing shortage','housing market','housing crisis','housing chaos','real estate','property market','serviced apartment','first month housing','mietpreisbremse','nebenkosten','wohnungssuche','mietvertrag','kaution','schufa','immobilien','miete','mieten','mieter','vermieter','wohnung','wohnungen','landlord','tenant','rent','rents','rental','wbs'],
-      visa: ['residence permit','blue card','work permit','opportunity card','skilled worker','work visa','student visa','family reunification','visa','visas','aufenthaltstitel','aufenthalt','einbürgerung','einbuergerung','naturalization','naturalisation','citizenship','staatsbürgerschaft','staatsbuergerschaft','ausländerbehörde','auslaenderbehoerde','immigration','chancenkarte','niederlassung','fachkräfte','fachkraefte','residency'],
-      bureaucracy: ['tax return','tax declaration','residence registration','anmeldung','ummeldung','abmeldung','finanzamt','steuererklärung','steuererklaerung','bürgeramt','buergeramt','elster','bürokratie','buerokratie','rundfunkbeitrag','gez','termin'],
-      healthcare: ['health insurance','public health','private insurance','health system','krankenkasse','krankenversicherung','aok','barmer','arzt','ärzte','aerzte','hausarzt','krankenhaus','apotheke','rezept','krankschreibung','pflege','gesundheit','hospital','doctor'],
-      work: ['minimum wage','parental leave','collective bargaining','trade union','labor market','labour market','job market','short-time work','wage talks','pay rise','wage rise','gehalt','tarif','tarifvertrag','mindestlohn','kurzarbeit','arbeitsamt','arbeitsagentur','arbeitslos','kündigung','kuendigung','elterngeld','bürgergeld','buergergeld','verdi','ig metall','gewerkschaft'],
-      politics: ['german government','german election','german politics','coalition government','bundestag','bundesrat','bundesregierung','cdu','csu','spd','fdp','grüne','gruene','afd','merz','scholz','habeck','lindner','weidel','koalition','bundeswehr','kanzler','chancellor merz'],
-      energy: ['gas price','electricity price','power price','energy price','heat pump','climate target','climate goal','renewable energy','energy transition','heizungsgesetz','energiewende','wärmepumpe','waermepumpe','strompreis','gaspreis','klimaziel','atomkraft','windkraft','solar power'],
-      bundesliga: ['bayern munich','bayern münchen','borussia dortmund','rb leipzig','union berlin','champions league','dfb pokal','dfb-pokal','bundesliga','dortmund','leverkusen','schalke','gladbach','wolfsburg','hoffenheim','freiburg','bvb'],
-      culture: ['art exhibition','film festival','christmas market','food scene','museum island','berlin film','museum','ausstellung','berlinale','oktoberfest','weihnachtsmarkt','theater','konzert','gallery','festival'],
-      fashion: ['fashion week','fashion industry','berlin fashion','fashion','mode','adidas','puma','hugo boss','zalando','sneaker'],
-      daily: ['cost of living','life in germany','new to germany','moving to germany','living in germany','expat life','price rise','prices rise','consumer prices','public holiday','weather warning','heat wave','heatwave','expat','expats','ausländer','auslaender','integration','feiertag','aldi','lidl','rewe','edeka','supermarket'],
+      // daily = old daily + culture + fashion + healthcare
+      daily: ['cost of living','life in germany','new to germany','moving to germany','living in germany','expat life','price rise','prices rise','consumer prices','public holiday','weather warning','heat wave','heatwave','expat','expats','ausländer','auslaender','integration','feiertag','aldi','lidl','rewe','edeka','supermarket','art exhibition','film festival','christmas market','food scene','museum island','berlin film','museum','ausstellung','berlinale','oktoberfest','weihnachtsmarkt','theater','konzert','gallery','festival','fashion week','fashion industry','fashion','mode','health insurance','public health','private insurance','health system','krankenkasse','krankenversicherung','aok','barmer','arzt','ärzte','aerzte','hausarzt','krankenhaus','apotheke','rezept','krankschreibung','pflege','gesundheit','hospital','doctor'],
+      // money = old work + energy
+      money: ['minimum wage','parental leave','collective bargaining','trade union','labor market','labour market','job market','short-time work','wage talks','pay rise','wage rise','cost of living','gehalt','tarif','tarifvertrag','mindestlohn','kurzarbeit','arbeitsamt','arbeitsagentur','arbeitslos','kündigung','kuendigung','elterngeld','bürgergeld','buergergeld','verdi','ig metall','gewerkschaft','gas price','electricity price','power price','energy price','heat pump','climate target','climate goal','renewable energy','energy transition','heizungsgesetz','energiewende','wärmepumpe','waermepumpe','strompreis','gaspreis','klimaziel','atomkraft','windkraft','solar power'],
+      // visa = old visa + bureaucracy
+      visa: ['residence permit','blue card','work permit','opportunity card','skilled worker','work visa','student visa','family reunification','visa','visas','aufenthaltstitel','aufenthalt','einbürgerung','einbuergerung','naturalization','naturalisation','citizenship','staatsbürgerschaft','staatsbuergerschaft','ausländerbehörde','auslaenderbehoerde','immigration','chancenkarte','niederlassung','fachkräfte','fachkraefte','residency','tax return','tax declaration','residence registration','anmeldung','ummeldung','abmeldung','finanzamt','steuererklärung','steuererklaerung','bürgeramt','buergeramt','elster','bürokratie','buerokratie','rundfunkbeitrag','gez','termin'],
+      // living = old housing + transport
+      living: ['rent cap','rent control','rent rise','rents rise','rent increase','rental market','rental contract','housing shortage','housing market','housing crisis','housing chaos','real estate','property market','serviced apartment','first month housing','mietpreisbremse','nebenkosten','wohnungssuche','mietvertrag','kaution','schufa','immobilien','miete','mieten','mieter','vermieter','wohnung','wohnungen','landlord','tenant','rent','rents','rental','wbs','deutsche bahn','s-bahn','u-bahn','rail strike','train strike','transport strike','warning strike','rail network','public transport','air travel','flight cancel','flight delay','aviation','bvg','autobahn','lufthansa','flixbus','streik','warnstreik','bahnstreik','deutschlandticket','49-euro ticket','mvg','rmv','hvv','bahn','flughafen','hauptbahnhof'],
+      // politics = old politics
+      politics: ['german government','german election','german politics','coalition government','bundestag','bundesrat','bundesregierung','cdu','csu','spd','fdp','grüne','gruene','afd','merz','scholz','habeck','lindner','weidel','koalition','bundeswehr','kanzler','chancellor merz','minister','parliament'],
     };
 
     // Germany-relevance gate — same spirit as cron.js. Expat-core sources
@@ -708,8 +728,11 @@ module.exports = async function handler(req, res) {
       { url: 'https://www.thelocal.de/feed/', name: 'The Local' },
       { url: 'https://feeds.thelocal.com/rss/de', name: 'The Local' },
       { url: 'https://feeds.thelocal.com/rss/de/politics', name: 'The Local' },
+      { url: 'https://feeds.thelocal.com/rss/de/money', name: 'The Local' },
+      { url: 'https://feeds.thelocal.com/rss/de/news', name: 'The Local' },
       { url: 'https://www.iamexpat.de/rss/news-germany', name: 'IamExpat' },
       { url: 'https://www.iamexpat.de/rss/expat-news', name: 'IamExpat' },
+      { url: 'https://www.iamexpat.de/rss/lifestyle-news', name: 'IamExpat' },
       { url: 'https://rss.dw.com/xml/rss-en-ger', name: 'Deutsche Welle' },
     ];
     const CITY_TOPIC_FEEDS = {
@@ -721,7 +744,7 @@ module.exports = async function handler(req, res) {
     const feeds = [...TOPIC_FEEDS];
     if (cityKey && CITY_TOPIC_FEEDS[cityKey]) feeds.push(CITY_TOPIC_FEEDS[cityKey]);
 
-    const poolCacheKey = `topicnews-pool-v3-${cityKey || 'none'}`;
+    const poolCacheKey = `topicnews-pool-v4-${cityKey || 'none'}`;
     let pool = null;
 
     try {
