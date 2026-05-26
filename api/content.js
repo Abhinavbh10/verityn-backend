@@ -706,7 +706,10 @@ module.exports = async function handler(req, res) {
     const EXPAT_CORE = new Set(['The Local', 'IamExpat']);
     const TOPIC_FEEDS = [
       { url: 'https://www.thelocal.de/feed/', name: 'The Local' },
+      { url: 'https://feeds.thelocal.com/rss/de', name: 'The Local' },
+      { url: 'https://feeds.thelocal.com/rss/de/politics', name: 'The Local' },
       { url: 'https://www.iamexpat.de/rss/news-germany', name: 'IamExpat' },
+      { url: 'https://www.iamexpat.de/rss/expat-news', name: 'IamExpat' },
       { url: 'https://rss.dw.com/xml/rss-en-ger', name: 'Deutsche Welle' },
     ];
     const CITY_TOPIC_FEEDS = {
@@ -718,7 +721,7 @@ module.exports = async function handler(req, res) {
     const feeds = [...TOPIC_FEEDS];
     if (cityKey && CITY_TOPIC_FEEDS[cityKey]) feeds.push(CITY_TOPIC_FEEDS[cityKey]);
 
-    const poolCacheKey = `topicnews-pool-v2-${cityKey || 'none'}`;
+    const poolCacheKey = `topicnews-pool-v3-${cityKey || 'none'}`;
     let pool = null;
 
     try {
@@ -761,6 +764,15 @@ module.exports = async function handler(req, res) {
             if (!title || title.length < 12) continue;
             if (/<[a-z]/i.test(title)) continue;
             if (!isEnglishHeadline(title)) continue;
+
+            // Skip multi-topic roundups / live blogs — they mention many topics
+            // in passing and always cause keyword mismatches.
+            // DW live blogs have "/live-" in the URL; DW daily roundups start
+            // with "Germany news:" or "Germany updates:".
+            if (/\/live-/i.test(link)) continue;
+            if (/^germany (news|updates|headlines)\s*:/i.test(title)) continue;
+            if (/^(the week|this week) in germany/i.test(title)) continue;
+
             const pub = pubDate ? new Date(pubDate) : new Date();
             if (isNaN(pub.getTime()) || pub.getTime() < sevenDaysAgo) continue;
 
