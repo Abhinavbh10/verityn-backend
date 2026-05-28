@@ -110,6 +110,126 @@ function cleanSource(raw) {
     return map[s] || s.replace(/[-_]/g, ' ');
 }
 
+// ── Cross-day memory + same-event dedup + theme tagging (May 2026) ──────────
+// Kills the repetition problem: same story across days, same event from two
+// sources within a send, same theme every day, same fact two days running.
+
+// Lightweight entity extraction for same-event dedup. Pulls salient nouns /
+// proper-noun-ish tokens from a headline. Two headlines that share enough
+// entities are treated as the same event.
+var STOPWORDS = new Set(['the','a','an','and','or','but','of','to','in','on','for','with','at','by','from','as','is','are','was','were','be','been','will','would','could','should','this','that','these','those','it','its','his','her','their','your','you','we','they','he','she','after','before','over','under','into','out','up','down','new','says','say','said','how','why','what','when','where','who','amid','again','more','less','than','then','now','here','there','about','against']);
+function extractEntities(headline) {
+    var words = (headline || '').toLowerCase().replace(/[^a-z0-9äöüß\s]/g, ' ').split(/\s+/);
+    var ents = [];
+    for (var i = 0; i < words.length; i++) {
+        var w = words[i];
+        if (w.length >= 4 && !STOPWORDS.has(w)) ents.push(w);
+    }
+    return ents;
+}
+
+// Same-event dedup within a candidate pool. If two articles share >=2 salient
+// entities AND aren't from purposely-different angles, keep the first (which is
+// city-local-first ordered) and drop the later duplicate.
+function dedupeSameEvent(articles) {
+    var kept = [];
+    var keptEntitySets = [];
+    for (var i = 0; i < articles.length; i++) {
+        var ents = extractEntities(articles[i].headline);
+        var entSet = new Set(ents);
+        var isDup = false;
+        for (var k = 0; k < keptEntitySets.length; k++) {
+            var overlap = 0;
+            var prev = keptEntitySets[k];
+            entSet.forEach(function(e) { if (prev.has(e)) overlap++; });
+            // 2+ shared salient entities = same event
+            if (overlap >= 2) { isDup = true; break; }
+        }
+        if (!isDup) {
+            kept.push(articles[i]);
+            keptEntitySets.push(entSet);
+        }
+    }
+    return kept;
+}
+
+// Rough theme tagger for cross-day theme rotation + within-day diversity.
+var THEME_PATTERNS = [
+    ['conflict', /\b(iran|israel|gaza|hormuz|ukraine|russia|war|strike[sd]?|missile|military|troops|nato|ceasefire)\b/i],
+    ['housing', /\b(rent|miete|mietpreis|wohnung|housing|apartment|tempelhof|immobilien|landlord|tenant|wohngeld)\b/i],
+    ['transit', /\b(bvg|s-bahn|u-bahn|sbahn|ubahn|deutsche bahn|\bdb\b|rmv|tram|bus|commute|train|verkehr|bahn)\b/i],
+    ['politics', /\b(wegner|senat|bundestag|election|wahl|coalition|afd|cdu|spd|government|minister|abgeordnetenhaus)\b/i],
+    ['economy', /\b(inflation|economy|gdp|recession|jobs|unemployment|tax|steuer|wirtschaft|export|dax|ecb|interest rate)\b/i],
+    ['energy', /\b(oil|gas|strom|energy|solar|heizkosten|fuel|diesel|petrol|electricity|power)\b/i],
+    ['crime', /\b(police|polizei|arrest|shooting|attack|crime|gewalt|killed|stabbing|gang)\b/i],
+    ['weather', /\b(weather|wetter|storm|rain|heat|hitze|temperature|sun|snow|forecast)\b/i],
+    ['tech', /\b(ai|tech|chip|semiconductor|software|startup|digital|samsung|meta|google|apple|nvidia)\b/i],
+    ['culture', /\b(festival|museum|concert|art|kultur|film|theatre|theater|exhibition|karneval|food|restaurant)\b/i],
+];
+function tagTheme(headline) {
+    for (var i = 0; i < THEME_PATTERNS.length; i++) {
+        if (THEME_PATTERNS[i][1].test(headline || '')) return THEME_PATTERNS[i][0];
+    }
+    return 'other';
+}
+
+// Fetch what recent sends covered for this city (last `days` days).
+async function getRecentMemory(supabase, city, days) {
+    days = days || 3;
+    var cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    var out = { headlines: [], themes: [], facts: [] };
+    try {
+        var res = await supabase
+            .from('newsletter_memory')
+            .select('headlines, themes, fact_served, sent_date')
+            .eq('city', city)
+            .gte('sent_date', cutoff)
+            .order('sent_date', { ascending: false });
+        if (res.data) {
+            for (var i = 0; i < res.data.length; i++) {
+                var row = res.data[i];
+                if (Array.isArray(row.headlines)) out.headlines = out.headlines.concat(row.headlines);
+                if (Array.isArray(row.themes)) out.themes = out.themes.concat(row.themes);
+                if (row.fact_served) out.facts.push(row.fact_served);
+            }
+        }
+    } catch (e) {
+        console.log('[newsletter] getRecentMemory failed (non-fatal): ' + e.message);
+    }
+    return out;
+}
+
+// Theme rotation: given themes already heavy this week, return them sorted by
+// frequency (most overused first) so briefing knows what to avoid.
+function overusedThemes(recentThemes) {
+    var counts = {};
+    for (var i = 0; i < recentThemes.length; i++) {
+        counts[recentThemes[i]] = (counts[recentThemes[i]] || 0) + 1;
+    }
+    return Object.keys(counts)
+        .filter(function(t) { return counts[t] >= 2 && t !== 'other'; })
+        .sort(function(a, b) { return counts[b] - counts[a]; });
+}
+
+// Write today's send to memory.
+async function writeMemory(supabase, city, stories, factServed) {
+    try {
+        var headlines = stories.map(function(s) { return s.headline; }).filter(Boolean);
+        var themes = stories.map(function(s) { return tagTheme(s.headline); });
+        var entities = [];
+        stories.forEach(function(s) { entities = entities.concat(extractEntities(s.headline).slice(0, 3)); });
+        await supabase.from('newsletter_memory').insert({
+            city: city,
+            story_entities: entities,
+            headlines: headlines,
+            themes: themes,
+            fact_served: factServed || '',
+        });
+    } catch (e) {
+        console.log('[newsletter] writeMemory failed (non-fatal): ' + e.message);
+    }
+}
+
 function capPerSource(articles, capN) {
     if (!Array.isArray(articles)) return [];
     var counts = {};
@@ -361,16 +481,16 @@ function cleanName(raw) {
     return name || 'there';
 }
 
-async function generateExtras(stories, city) {
+async function generateExtras(stories, city, excludeFacts) {
     if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
     city = city || 'berlin';
 
     // Did You Know pulls from the curated 'eu' pool in _facts.js — currently
-    // Germany/Berlin facts. Frankfurt subscribers see the same pool for now;
-    // future enhancement = city-keyed fact pools (_facts.berlin, _facts.frankfurt).
-    // Most facts are Berlin-anchored which is fine while subscriber base is Berlin-dominant.
+    // Germany/Berlin facts. Frankfurt subscribers see the same pool for now.
+    // excludeFacts is the list of facts served in recent sends (cross-day dedup)
+    // so the same fact doesn't appear two days running.
     var facts = require('./_facts.js');
-    var didYouKnow = facts.getRandomFact('eu');
+    var didYouKnow = facts.getRandomFact('eu', excludeFacts || []);
 
     // "What we're watching" is still Claude-generated since it's news-derived
     // and benefits from real-time context. Tightened the prompt to push for
@@ -557,14 +677,18 @@ async function generateFreshBriefing(supabase, city) {
     }
 
     var beforeCap = allArticles.length;
+    // Same-event dedup BEFORE cap — collapse "Samsung bonus" from FT + DW into one.
+    allArticles = dedupeSameEvent(allArticles);
+    var afterDedup = allArticles.length;
     allArticles = capPerSource(allArticles, 3);
-    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' poolAfterCap=' + allArticles.length);
+    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
-    // Construct city-aware briefing request. The `city` field flows into briefing.js
-    // where the quota rule (≥4 city-local of 7) can be enforced. If briefing.js
-    // doesn't yet read city, this is a no-op until we wire it there.
+    // Cross-day memory — what did recent sends for this city cover?
+    var memory = await getRecentMemory(supabase, city, 3);
+    var recentThemesOverused = overusedThemes(memory.themes);
+
     try {
         var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
@@ -576,6 +700,8 @@ async function generateFreshBriefing(supabase, city) {
                 location: 'de',
                 city: city,
                 profession: 'professional',
+                recentHeadlines: memory.headlines,
+                recentThemes: recentThemesOverused,
                 sessionId: 'newsletter-' + city + '-' + new Date().toISOString().slice(0, 10),
             }),
         });
@@ -775,7 +901,8 @@ module.exports = async function handler(req, res) {
             var stories = await generateFreshBriefing(supabase, previewCity);
             if (!stories) return res.json({ error: 'No briefing available yet.', city: previewCity });
             stories = await enrichStories(stories, previewCity);
-            var extras = await generateExtras(stories, previewCity);
+            var pvMemory = await getRecentMemory(supabase, previewCity, 7);
+            var extras = await generateExtras(stories, previewCity, pvMemory.facts);
             extras.weather = await getWeather(previewCity);
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
@@ -840,7 +967,8 @@ module.exports = async function handler(req, res) {
             }
 
             stories2 = await enrichStories(stories2, testCity);
-            var extras2 = await generateExtras(stories2, testCity);
+            var tMemory = await getRecentMemory(supabase, testCity, 7);
+            var extras2 = await generateExtras(stories2, testCity, tMemory.facts);
             extras2.weather = await getWeather(testCity);
 
             var transporter = getTransporter();
@@ -952,7 +1080,9 @@ module.exports = async function handler(req, res) {
                     continue;
                 }
                 cStories = await enrichStories(cStories, cCity);
-                var cExtras = await generateExtras(cStories, cCity);
+                // Fetch recently-served facts for this city so we don't repeat one
+                var cMemory = await getRecentMemory(supabase, cCity, 7);
+                var cExtras = await generateExtras(cStories, cCity, cMemory.facts);
                 cExtras.weather = await getWeather(cCity);
                 var cSubject = buildSubjectLine(cStories);
 
@@ -989,6 +1119,12 @@ module.exports = async function handler(req, res) {
                         story_count: cStories.length,
                     });
                 } catch (e) { }
+
+                // Write to memory so tomorrow's send can dedup against today.
+                // Only record if we actually sent something.
+                if (cSent > 0) {
+                    await writeMemory(supabase, cCity, cStories, cExtras.did_you_know || '');
+                }
             }
 
             try { transporter2.close(); } catch (e) { }
