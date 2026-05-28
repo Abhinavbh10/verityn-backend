@@ -64,6 +64,10 @@ module.exports = async function handler(req, res) {
         // hyperlocal quota — 4 of 7 stories must be ABOUT this city, not just
         // about its country. When not set, falls back to country-level quota.
         var city = (body.city || '').toLowerCase();
+        // Cross-day dedup (May 2026). newsletter.js passes what recent sends covered
+        // so we can avoid repeating stories/themes day after day.
+        var recentHeadlines = Array.isArray(body.recentHeadlines) ? body.recentHeadlines : [];
+        var recentThemes = Array.isArray(body.recentThemes) ? body.recentThemes : [];
 
         if (!Array.isArray(articles)) articles = [];
         if (!Array.isArray(countries)) countries = [countries];
@@ -150,6 +154,16 @@ module.exports = async function handler(req, res) {
             + '3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for someone living in ' + locationStr + (professionStr ? ' working in ' + professionStr : '') + '. The angle can be: rent, taxes, savings, salary, commute, energy bills, grocery prices, jobs, the local job market, supply chains, banking exposure, currency, mortgages, kids, school, weekend plans, neighborhood, or a clear connection to one of the reader\'s stated interests (' + interestStr + ').\n'
             + '   Before picking a story, ask: "Can I name a concrete way this affects this reader?" If the honest answer is no, DO NOT PICK IT. The pool has alternatives. There are no "filler" slots. There are no stories worth picking that you have to apologise for.\n'
             + '   The angle does NOT have to be Berlin-specific. A Fed rate decision affects German Euribor mortgages. A Japan story affects German exports. A Russia story affects gas prices or migration. But the angle must be REAL. If you find yourself reaching, that is the signal to drop the story.\n\n'
+
+            + '4. INTERNATIONAL-CONFLICT CAP (strict). Stories about active foreign wars and armed conflicts — Iran/Israel/Hormuz strikes, Russia-Ukraine front-line news, Gaza, Middle East military escalation, etc. — are capped at AT MOST 1 of the ' + pickCount + ' stories, and that 1 may NEVER be in slot 1 or slot 2. It only qualifies at all if it has a DIRECT, concrete German-cost angle (e.g. oil→Heizkosten, gas→Strom bill). \n'
+            + '   Do NOT pick a second conflict story even if both have a cost angle — one is the hard ceiling. Do NOT lead the briefing with a war story. Do NOT make "what we\'re watching" about the same conflict. If the pool is heavy with war news, fill the freed slots with city-local or German domestic stories instead. The reader gets war coverage everywhere else; Verityn\'s job is their life in ' + locationStr + ', not the front line.\n\n'
+
+            + ((recentHeadlines.length || recentThemes.length)
+                ? ('5. NO RECENT REPEATS. The last few editions already covered the stories/themes below. Do NOT pick a story that repeats one of these unless there is a genuine NEW development today (not just the same situation restated). Prefer fresh stories the reader has not seen this week.\n'
+                    + (recentHeadlines.length ? '   Recently covered headlines:\n' + recentHeadlines.slice(0, 21).map(function(h){ return '     - ' + h; }).join('\n') + '\n' : '')
+                    + (recentThemes.length ? '   Themes already heavy this week (pick UNDERrepresented themes instead): ' + recentThemes.slice(0, 12).join(', ') + '\n' : '')
+                    + '\n')
+                : '')
 
             + (hasCity
                 ? ('HYPERLOCAL CITY RULE (most important rule): At least ' + localMinimum + ' of the ' + pickCount + ' picks MUST be ABOUT ' + cityNameStr + ' itself, not just about Germany. A story counts as ' + cityNameStr + '-local ONLY if the HEADLINE names: ' + cityEntityHints + '. National German politics, EU policy, Bundestag stories, federal economy stories, or international stories DO NOT count as ' + cityNameStr + '-local even if they affect the city. They are about Germany or the EU, not about ' + cityNameStr + '.\n'
