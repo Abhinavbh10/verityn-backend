@@ -146,10 +146,15 @@ var FACTS = {
 // Region aliases — asia and global use the same generic pool
 FACTS.asia = FACTS.global;
 
-function getRandomFact(region) {
+function getRandomFact(region, exclude) {
     var pool = FACTS[region] || FACTS.global;
     if (!pool || pool.length === 0) return '';
-    return pool[Math.floor(Math.random() * pool.length)];
+    exclude = Array.isArray(exclude) ? exclude : [];
+    // Filter out recently-served facts. If everything's excluded (small pool,
+    // long exclude window), fall back to the full pool.
+    var avail = pool.filter(function(f) { return exclude.indexOf(f) === -1; });
+    if (avail.length === 0) avail = pool;
+    return avail[Math.floor(Math.random() * avail.length)];
 }
 
 module.exports = { FACTS: FACTS, getRandomFact: getRandomFact };
