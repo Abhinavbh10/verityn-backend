@@ -445,6 +445,7 @@ async function getWeather(city) {
     var coords = {
         berlin: { lat: 52.52, lon: 13.41, city: 'Berlin' },
         frankfurt: { lat: 50.11, lon: 8.68, city: 'Frankfurt' },
+        bonn: { lat: 50.74, lon: 7.10, city: 'Bonn' },
     };
     var c = coords[city] || coords.berlin;
     try {
@@ -677,11 +678,16 @@ async function generateFreshBriefing(supabase, city) {
     }
 
     var beforeCap = allArticles.length;
-    // Same-event dedup BEFORE cap — collapse "Samsung bonus" from FT + DW into one.
+    // Same-event dedup BEFORE cap — collapse duplicates from different sources into one.
     allArticles = dedupeSameEvent(allArticles);
     var afterDedup = allArticles.length;
-    allArticles = capPerSource(allArticles, 3);
-    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' poolAfterCap=' + allArticles.length);
+    // Per-source cap. Default 3, but cities with a single local feed (Frankfurt)
+    // would self-starve at 3 since ALL their hyperlocal stories come from one
+    // source. Bump cap to 8 in that case so the pool stays large enough.
+    var singleSourceCities = { frankfurt: true };
+    var sourceCapN = singleSourceCities[city] ? 8 : 3;
+    allArticles = capPerSource(allArticles, sourceCapN);
+    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) return null;
 
@@ -731,6 +737,7 @@ async function enrichStories(stories, city) {
     var cityContext = {
         berlin: 'an English speaker living in Berlin. They care about: their rent (Miete) and Mietpreisbremse extensions, their commute (BVG, S-Bahn, U-Bahn, named lines like U7 or S41), their Kiez (Kreuzberg, Neukölln, Mitte, Prenzlauer Berg, Wedding, Friedrichshain), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their Anmeldung at the Bürgeramt, their taxes (Steuererklärung), their savings at Sparkasse Berlin, their kids\' Kita waitlist, their Wohngeld eligibility, their Bürgergeld, the Senat of Berlin (Kai Wegner), Berliner Abgeordnetenhaus, BER airport, BVG strikes, Berlin housing market specifics. Could be expat, international student, remote worker, diplomat, journalist, English-fluent Berliner.',
         frankfurt: 'an English speaker living in Frankfurt. They care about: their rent (Miete) in Frankfurt\'s tight market (one of Germany\'s most expensive after Munich), their commute (RMV — Rhein-Main-Verkehrsverbund, VGF U-Bahn and tram, S-Bahn Rhein-Main, named lines, Hauptbahnhof, FRA airport), their Stadtteil (Sachsenhausen, Bornheim, Bockenheim, Westend, Nordend, Niederrad), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their Anmeldung at the Bürgeramt, their taxes (Steuererklärung), their savings at Frankfurter Sparkasse, their kids\' Kita waitlist, their Wohngeld eligibility, their Bürgergeld, banking-sector job market (ECB, Deutsche Bank, Commerzbank), Hessen-level politics (Boris Rhein, Hessen Landtag), Messe Frankfurt events, Main-Taunus-Zentrum. Could be expat, finance professional, international student, remote worker, English-fluent Frankfurter. Don\'t assume banker — Frankfurt has plenty of non-finance residents too.',
+        bonn: 'an English speaker living in Bonn. They care about: their rent (Miete) in Bonn\'s relatively tighter post-government-quarter market, their commute (SWB Bus und Bahn, VRS tariff zone, Stadtbahn lines 16/63/66/67, Deutsche Bahn to Köln), their Stadtteil (Bad Godesberg, Beuel, Poppelsdorf, Endenich, Kessenich, Tannenbusch, Hardtberg), their health insurance (Krankenkasse), their visa or Niederlassungserlaubnis status, their Anmeldung at the Bürgeramt, their taxes (Steuererklärung), their savings at Sparkasse KölnBonn, their kids\' Kita waitlist, their Wohngeld eligibility, their Bürgergeld, the UN campus and DAX-listed Deutsche Post DHL / Deutsche Telekom headquartered there, the former-capital institutions, Universität Bonn, Beethoven heritage and the Beethovenfest. Could be UN/NGO worker, civil servant, Telekom/Post employee, student, researcher, expat, English-fluent Bonner. Bonn is smaller and greener than Berlin/Frankfurt — more university-town and international-institution flavour.',
     };
     var cityNameTitle = city.charAt(0).toUpperCase() + city.slice(1);
     var context = cityContext[city] || cityContext.berlin;
@@ -840,12 +847,13 @@ module.exports = async function handler(req, res) {
             // Supported cities: berlin, frankfurt. New cities require adding feeds +
             // context in content.js, weather coords, and enrichStories cityContext.
             // Anything else falls back to berlin (largest subscriber base by default).
-            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
             var ipCityRaw = (req.headers['x-vercel-ip-city'] || '').toLowerCase();
             var ipCity = decodeURIComponent(ipCityRaw).replace(/[^a-z]/g, '');
             // Handle common variants: "frankfurt am main" -> "frankfurt"
             if (ipCity.indexOf('frankfurt') !== -1) ipCity = 'frankfurt';
             if (ipCity.indexOf('berlin') !== -1) ipCity = 'berlin';
+            if (ipCity.indexOf('bonn') !== -1) ipCity = 'bonn';
             var city = SUPPORTED_CITIES.indexOf(ipCity) !== -1 ? ipCity : 'berlin';
 
             // Allow explicit override from request body (manual subscribe form may
@@ -894,7 +902,7 @@ module.exports = async function handler(req, res) {
         if (action === 'preview') {
             // City-keyed pipeline (May 2026 city pivot). Use ?city=berlin or ?city=frankfurt
             // to preview that city's edition. Defaults to berlin.
-            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
             var previewCity = (req.query.city || 'berlin').toLowerCase();
             if (SUPPORTED_CITIES.indexOf(previewCity) === -1) previewCity = 'berlin';
 
@@ -915,7 +923,7 @@ module.exports = async function handler(req, res) {
 
             // City-keyed pipeline (May 2026): test send uses the subscriber's stored city,
             // falling back to ?city= override, then berlin.
-            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
             var testCity = 'berlin';
             var testName = testEmail.split('@')[0];
             try {
@@ -1053,7 +1061,7 @@ module.exports = async function handler(req, res) {
             // run the briefing+enrich+extras+weather pipeline once per city present,
             // then send each subscriber their city's edition. Log one newsletter_log
             // row per city. Subscribers with unsupported/null city fall back to berlin.
-            var SUPPORTED_CITIES = ['berlin', 'frankfurt'];
+            var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
             var groups = {};
             for (var g = 0; g < subscribers.length; g++) {
                 var sCity = (subscribers[g].city || 'berlin').toLowerCase();
