@@ -110,6 +110,9 @@ module.exports = async function handler(req, res) {
         } else if (city === 'frankfurt') {
             cityNameStr = 'Frankfurt';
             cityEntityHints = 'Frankfurt neighbourhoods (Sachsenhausen, Bornheim, Bockenheim, Westend, Nordend, Höchst, Niederrad, Offenbach, Bad Homburg), Frankfurt transit (RMV, VGF, S-Bahn Rhein-Main, named U-Bahn lines, Hauptbahnhof), Frankfurt landmarks (Römer, Hauptwache, Konstablerwache, Main-Taunus-Zentrum, Messe Frankfurt, Frankfurt Flughafen FRA), Frankfurt institutions (Frankfurter Sparkasse, Commerzbank tower, Deutsche Bank tower, ECB, Goethe University), or Hessen-level politics (Boris Rhein, Hessen Landtag)';
+        } else if (city === 'bonn') {
+            cityNameStr = 'Bonn';
+            cityEntityHints = 'Bonn neighbourhoods (Bad Godesberg, Beuel, Poppelsdorf, Endenich, Kessenich, Tannenbusch, Hardtberg, Dottendorf), Bonn transit (SWB, VRS, Stadtbahn lines 16/63/66/67, Bonn Hauptbahnhof, DB to Köln), Bonn landmarks (Münsterplatz, Marktplatz, Beethoven-Haus, Poppelsdorfer Schloss, UN Campus, Rheinaue, Kennedybrücke), Bonn institutions (Sparkasse KölnBonn, Universität Bonn, Deutsche Post DHL, Deutsche Telekom, UN/NGO offices), or Bonn/NRW politics (Stadt Bonn, Oberbürgermeisterin, NRW Landtag)';
         }
 
         // Quota numbers — stricter when city is set
@@ -168,7 +171,29 @@ module.exports = async function handler(req, res) {
             + (hasCity
                 ? ('HYPERLOCAL CITY RULE (most important rule): At least ' + localMinimum + ' of the ' + pickCount + ' picks MUST be ABOUT ' + cityNameStr + ' itself, not just about Germany. A story counts as ' + cityNameStr + '-local ONLY if the HEADLINE names: ' + cityEntityHints + '. National German politics, EU policy, Bundestag stories, federal economy stories, or international stories DO NOT count as ' + cityNameStr + '-local even if they affect the city. They are about Germany or the EU, not about ' + cityNameStr + '.\n'
                 + '   The pool has ' + guaranteedCityLocalCount + ' confirmed ' + cityNameStr + '-local articles (tagged [' + localTag + '-LOCAL] from city-specific feeds). Use them. If fewer than ' + localMinimum + ' city-local picks land in your selection, REPLACE national/international picks with the strongest remaining ' + cityNameStr + '-local stories from the pool.\n'
-                + '   COUNT YOUR ' + cityNameStr.toUpperCase() + '-LOCAL PICKS BEFORE RESPONDING. If the count is below ' + localMinimum + ', swap stories until the count reaches ' + localMinimum + '. This rule beats every other consideration except the source cap.\n\n')
+                + '   COUNT YOUR ' + cityNameStr.toUpperCase() + '-LOCAL PICKS BEFORE RESPONDING. If the count is below ' + localMinimum + ', swap stories until the count reaches ' + localMinimum + '. This rule beats every other consideration except the source cap.\n\n'
+
+                + 'HYPERLOCAL QUALITY RANKING (within the city-local picks). Being "about ' + cityNameStr + '" is necessary but not sufficient. Among ' + cityNameStr + '-local candidates, RANK BY DAILY-LIFE IMPACT before picking. Strong = the reader will notice in their week. Weak = technically ' + cityNameStr + ' but readers won\'t feel it.\n'
+                + '   STRONG ' + cityNameStr + '-local examples to prefer (these are the kinds of stories competitors lead with):\n'
+                + '     - Sunday opening referendum / Späti law change (affects what\'s open weekends)\n'
+                + '     - BVG/U-Bahn/S-Bahn strikes or service changes (affects commute)\n'
+                + '     - Pharmacy-as-mental-health-network / new neighborhood services (where to go)\n'
+                + '     - District heating cost change / energy company decisions (Heizkosten impact)\n'
+                + '     - Rent index (Mietspiegel) updates / specific Miete numbers / Mietpreisbremse changes\n'
+                + '     - Train cancellations between cities, named line disruptions\n'
+                + '     - Building Modernization Act / heat pump law changes (Strom/Heizung cost)\n'
+                + '     - Outdoor cinemas opening / festivals starting / public swimming pool seasons (weekend planning)\n'
+                + '     - Named neighborhood incident (Lichtenberg accident, Kreuzberg shooting, Wedding fire)\n'
+                + '     - New policy hitting Anmeldung / Bürgeramt / Termin process\n'
+                + '     - Local labor strikes affecting daily services\n'
+                + '   WEAK ' + cityNameStr + '-local examples to AVOID unless nothing better exists:\n'
+                + '     - Politician severance payouts / appointment shuffles (no reader action, abstract politics)\n'
+                + '     - University building closures (affects only that university\'s students, not most readers)\n'
+                + '     - "Berlin Senate paid X for dismissed members" / pure budget-line stories\n'
+                + '     - Statistical reports without an action (X% of Berliners are Y) — these are facts, not news\n'
+                + '     - Pure weather descriptions without infrastructure/forest-fire/transit-disruption impact\n'
+                + '     - Generic "Berlin politics shuffle" without a named policy change\n'
+                + '   Test before picking: can you write a why-line that names a SPECIFIC thing the reader does or pays differently this week or month because of this story? If no, the story is weak ' + cityNameStr + '-local. Skip it and pick a stronger one from the pool.\n\n')
                 : ('LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
                 + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
                 + 'A story is local if the HEADLINE mentions ' + locationStr
