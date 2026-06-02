@@ -159,51 +159,36 @@ module.exports = async function handler(req, res) {
         var localTag = (countries[1] || 'de').toUpperCase();
         var foreignName = COUNTRY_NAMES[(countries[0] || 'gb').toLowerCase()] || 'foreign';
 
-        // Bucket-specific job framing (Architecture B, June 2026). When the
-        // caller specifies a bucket (place/money/context), the specialist call
-        // has ONE focused job instead of juggling multi-constraint selection.
-        var bucketJob = '';
-        if (bucketName === 'place') {
-            bucketJob = 'BUCKET JOB: This pool is pre-filtered to articles ABOUT ' + (cityNameStr || locationStr) + ' specifically. Your job is to pick the ' + pickCount + ' STRONGEST hyperlocal stories — ones where a reader in ' + (cityNameStr || locationStr) + ' will say "that affects my week." Prefer concrete daily-life impact (referendums, transit changes, rent changes, named neighborhood incidents, local policy shifts, local institutions) over abstract politics (severance payouts, university renovations, statistical updates). The whole pool is already place-relevant; you only need to pick the best ' + pickCount + '. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
-        } else if (bucketName === 'money') {
-            bucketJob = 'BUCKET JOB: This pool is pre-filtered to articles that hit the reader\'s wallet — rent, taxes, energy, salaries, prices, banking, pension, benefits, mortgages, cost of living. Your job is to pick the ' + pickCount + ' that most directly change what a reader in ' + locationStr + ' pays, earns, or saves in the next weeks or months. Prefer specific numbers and timeframes (e.g. "Krankenkasse rises in January", "Mietspiegel published at €7.71/sqm") over abstract policy discussions. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
-        } else if (bucketName === 'context' || bucketName === 'context-fill') {
-            bucketJob = 'BUCKET JOB: This is the broader-context pool — national policy, EU regulation, international stories with German daily-life angle. Your job is to pick the ' + pickCount + ' that give the reader necessary context on what is changing in their broader world this week. Prefer stories with a concrete reader angle (a Fed move affecting their Euribor mortgage, a trade story affecting their job market, a policy affecting their visa) over pure international news. AVOID active-conflict war stories (Iran, Ukraine, Gaza front-line news) unless they have a direct German-cost angle — and even then, only one such story maximum, never two. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
-        }
+        // CITY-ONLY MODE (June 2026): newsletter.js passes cityOnly=true with a
+        // pool already filtered to one city. No buckets, no quotas — the pool
+        // IS the city, briefing's only job is to pick the 7 strongest.
+        var cityOnly = !!body.cityOnly;
 
-        var prompt = bucketJob
-            + 'Pick exactly ' + pickCount + ' stories for a '
-            + (professionStr || 'professional') + ' in ' + locationStr
-            + ', interested in ' + interestStr + '.\n\n'
+        var prompt = 'Pick exactly ' + pickCount + ' stories for an English speaker living in '
+            + (cityOnly && cityNameStr ? cityNameStr : locationStr)
+            + '.\n\n'
 
-            + 'HARD RULES (non-negotiable):\n\n'
+            + (cityOnly
+                ? ('THE POOL. Every article in this pool is from ' + (cityNameStr || locationStr) + ' hyperlocal news sources. Your only job is to pick the ' + pickCount + ' stories that most matter to a reader living in ' + (cityNameStr || locationStr) + ' today. No quotas to balance — just pick the strongest ' + pickCount + '.\n\n'
 
-            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace with a different source. Cap is not optional. If cap conflicts with the local quota, the cap wins.\n\n'
+                + 'WHAT TO PREFER (in this order):\n'
+                + '1. Stories with concrete daily-life impact — transit changes, rent/Mietspiegel updates, named neighborhood incidents, local policy shifts, BVG/SWB/RMV strikes, Kita/Bürgeramt/Krankenkasse changes, energy bills, local labor strikes, public service openings, weekend events.\n'
+                + '2. Stories naming specific places, institutions, or people the reader recognises (named Kiez/Stadtteil, named transit lines, named local figures, named landmarks).\n'
+                + '3. Stories where a reader could plausibly take an action this week (avoid the U7 strike, book a Termin before deadline, check their Mietspiegel, plan for a festival).\n\n'
 
-            + '2. NO DUPLICATES. If two articles describe the SAME news event (same actors, same announcement, same incident), pick only ONE. Example: a Tagesspiegel piece "UAE leaves OPEC oil cartel" and an NYT piece "United Arab Emirates Says It Will Leave OPEC" are the same story. Pick the local-language source if available. Two articles that share a topic but describe different events are fine.\n\n'
+                + 'WHAT TO AVOID:\n'
+                + '- Politician severance payouts, university building closures, abstract budget items, pure ceremonial politics — these are technically local but readers do not feel them.\n'
+                + '- Stories that are mostly about another city even if they mention ' + (cityNameStr || locationStr) + ' once.\n'
+                + '- Sports coverage of away games against other cities.\n'
+                + '- Pure weather descriptions ("warm weekend") unless they carry a material impact (heatwave warning, transit shutdown, forest fire restrictions, weekend swimming-pool openings).\n\n')
 
-            + '3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for someone living in ' + locationStr + (professionStr ? ' working in ' + professionStr : '') + '. The angle can be: rent, taxes, savings, salary, commute, energy bills, grocery prices, jobs, the local job market, supply chains, banking exposure, currency, mortgages, kids, school, weekend plans, neighborhood, or a clear connection to one of the reader\'s stated interests (' + interestStr + ').\n'
-            + '   Before picking a story, ask: "Can I name a concrete way this affects this reader?" If the honest answer is no, DO NOT PICK IT. The pool has alternatives. There are no "filler" slots. There are no stories worth picking that you have to apologise for.\n'
-            + '   The angle does NOT have to be Berlin-specific. A Fed rate decision affects German Euribor mortgages. A Japan story affects German exports. A Russia story affects gas prices or migration. But the angle must be REAL. If you find yourself reaching, that is the signal to drop the story.\n\n'
+                : ('HARD RULES (non-negotiable):\n\n'
+            + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace with a different source. Cap is not optional.\n\n'
+            + '2. NO DUPLICATES. If two articles describe the SAME news event, pick only ONE.\n\n'
+            + '3. RELEVANCE FLOOR. Every picked story must have a specific, concrete impact angle for someone living in ' + locationStr + '. Before picking a story, ask: "Can I name a concrete way this affects this reader?" If no, DO NOT PICK IT.\n\n'))
 
-            + (bucketName
-                ? ''  // bucket calls have their own framing in bucketJob above; skip generic local-news rule
-                : (hasCity
-                ? ('HYPERLOCAL CITY RULE (most important rule): At least ' + localMinimum + ' of the ' + pickCount + ' picks MUST be ABOUT ' + cityNameStr + ' itself, not just about Germany. A story counts as ' + cityNameStr + '-local ONLY if the HEADLINE names: ' + cityEntityHints + '. National German politics, EU policy, Bundestag stories, federal economy stories, or international stories DO NOT count as ' + cityNameStr + '-local even if they affect the city. They are about Germany or the EU, not about ' + cityNameStr + '.\n'
-                + '   The pool has ' + guaranteedCityLocalCount + ' confirmed ' + cityNameStr + '-local articles (tagged [' + localTag + '-LOCAL] from city-specific feeds). Use them. If fewer than ' + localMinimum + ' city-local picks land in your selection, REPLACE national/international picks with the strongest remaining ' + cityNameStr + '-local stories from the pool.\n'
-                + '   COUNT YOUR ' + cityNameStr.toUpperCase() + '-LOCAL PICKS BEFORE RESPONDING. If the count is below ' + localMinimum + ', swap stories until the count reaches ' + localMinimum + '. This rule beats every other consideration except the source cap.\n'
-                + '   Prefer ' + cityNameStr + '-local stories with concrete daily-life impact (referendums, transit strikes, rent changes, named local incidents, neighborhood events). Avoid picking politician severance, university building closures, or abstract political shuffles when stronger ' + cityNameStr + '-local options exist in the pool.\n\n')
-                : ('LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
-                + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
-                + 'A story is local if the HEADLINE mentions ' + locationStr
-                + ', or cities, institutions, or named figures in that country (Germany examples: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; US: Congress, Fed, Wall Street, NYSE).\n\n')))
-
-            + 'TAG GLOSSARY:\n'
-            + (hasCity
-                ? ('  [' + localTag + '-LOCAL] — translated from German press. Some are city-local (' + cityNameStr + ' hyperlocal feeds), others are national (Tagesschau, Spiegel, Handelsblatt). Use the HEADLINE entity match — not the tag — to determine if a story counts as ' + cityNameStr + '-local. ' + guaranteedCityLocalCount + ' guaranteed ' + cityNameStr + '-local in this pool.\n')
-                : ('  [' + localTag + '-LOCAL] — translated from local-language press (Tagesschau, FAZ, Süddeutsche, Spiegel-DE, Tagesspiegel, Handelsblatt, Berliner Zeitung). Guaranteed about ' + locationStr + '. Strongly prefer these for the local quota. ' + guaranteedLocalCount + ' available in this pool.\n'))
-            + '  [' + localTag + '] — published by a ' + locationStr + '-based outlet writing in English (DW, Politico EU, Spiegel International, The Local). Counts as local ONLY if the headline mentions ' + locationStr + ' or its cities/institutions.\n'
-            + '  [' + foreignTag + '] — published by a ' + foreignName + ' outlet (BBC, Guardian, NYT). Counts as local only if the headline is genuinely about ' + locationStr + '.\n\n'
+            + 'SOURCE CAP: maximum 2 stories from any single source. If you find 3 from one outlet, drop the weakest and swap.\n'
+            + 'NO DUPLICATES: if two articles describe the same event (same actors, same incident), pick only one. Headlines like "Tram derails in Berlin-Hohenschönhausen" and "20 injured after Hohenschönhausen tram crash" are the same story — pick one.\n\n'
 
             + 'For each story write a "why" — exactly 2 sentences, 25 to 35 words total.\n'
             + 'Sentence 1: the specific impact on YOU living in ' + locationStr
