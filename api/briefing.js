@@ -91,8 +91,20 @@ module.exports = async function handler(req, res) {
 
         if (pool.length === 0) return res.status(400).json({ error: 'No articles provided.' });
 
-        var pickCount = Math.min(7, pool.length);
-        if (pickCount < 3) return res.status(400).json({ error: 'Need at least 3 articles, got ' + pool.length });
+        // Bucket-aware pickCount (Architecture B, June 2026).
+        // newsletter.js's specialist bucket calls pass an explicit pickCount
+        // (e.g. 2 from place bucket, 3 from context bucket). Legacy single-call
+        // mode falls back to "pick up to 7".
+        var requestedPick = parseInt(body.pickCount, 10);
+        var pickCount;
+        if (requestedPick && requestedPick > 0) {
+            pickCount = Math.min(requestedPick, pool.length);
+        } else {
+            pickCount = Math.min(7, pool.length);
+        }
+        if (pickCount < 1) return res.status(400).json({ error: 'Need at least 1 article, got ' + pool.length });
+
+        var bucketName = (body.bucket || '').toLowerCase();
 
         var locationStr = COUNTRY_NAMES[location] || location || 'Germany';
         var professionStr = profession || '';
@@ -101,7 +113,10 @@ module.exports = async function handler(req, res) {
         // City-keyed quota (May 2026 city pivot). If city is set, enforce STRICTER
         // quota of 4-of-7 city-local stories — not just German, but ABOUT this city.
         // Falls back to country-level quota when city is not provided.
-        var hasCity = !!city;
+        // BUCKET MODE (June 2026): when bucket is set, the pool is already pre-filtered
+        // by category, so we skip the hyperlocal quota rule entirely — the bucket job
+        // framing handles the focus.
+        var hasCity = !!city && !bucketName;
         var cityNameStr = '';
         var cityEntityHints = '';
         if (city === 'berlin') {
@@ -144,7 +159,20 @@ module.exports = async function handler(req, res) {
         var localTag = (countries[1] || 'de').toUpperCase();
         var foreignName = COUNTRY_NAMES[(countries[0] || 'gb').toLowerCase()] || 'foreign';
 
-        var prompt = 'Pick exactly ' + pickCount + ' stories for a '
+        // Bucket-specific job framing (Architecture B, June 2026). When the
+        // caller specifies a bucket (place/money/context), the specialist call
+        // has ONE focused job instead of juggling multi-constraint selection.
+        var bucketJob = '';
+        if (bucketName === 'place') {
+            bucketJob = 'BUCKET JOB: This pool is pre-filtered to articles ABOUT ' + (cityNameStr || locationStr) + ' specifically. Your job is to pick the ' + pickCount + ' STRONGEST hyperlocal stories — ones where a reader in ' + (cityNameStr || locationStr) + ' will say "that affects my week." Prefer concrete daily-life impact (referendums, transit changes, rent changes, named neighborhood incidents, local policy shifts, local institutions) over abstract politics (severance payouts, university renovations, statistical updates). The whole pool is already place-relevant; you only need to pick the best ' + pickCount + '. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
+        } else if (bucketName === 'money') {
+            bucketJob = 'BUCKET JOB: This pool is pre-filtered to articles that hit the reader\'s wallet — rent, taxes, energy, salaries, prices, banking, pension, benefits, mortgages, cost of living. Your job is to pick the ' + pickCount + ' that most directly change what a reader in ' + locationStr + ' pays, earns, or saves in the next weeks or months. Prefer specific numbers and timeframes (e.g. "Krankenkasse rises in January", "Mietspiegel published at €7.71/sqm") over abstract policy discussions. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
+        } else if (bucketName === 'context' || bucketName === 'context-fill') {
+            bucketJob = 'BUCKET JOB: This is the broader-context pool — national policy, EU regulation, international stories with German daily-life angle. Your job is to pick the ' + pickCount + ' that give the reader necessary context on what is changing in their broader world this week. Prefer stories with a concrete reader angle (a Fed move affecting their Euribor mortgage, a trade story affecting their job market, a policy affecting their visa) over pure international news. AVOID active-conflict war stories (Iran, Ukraine, Gaza front-line news) unless they have a direct German-cost angle — and even then, only one such story maximum, never two. Do NOT skip picks — you must return ' + pickCount + '.\n\n';
+        }
+
+        var prompt = bucketJob
+            + 'Pick exactly ' + pickCount + ' stories for a '
             + (professionStr || 'professional') + ' in ' + locationStr
             + ', interested in ' + interestStr + '.\n\n'
 
@@ -158,7 +186,9 @@ module.exports = async function handler(req, res) {
             + '   Before picking a story, ask: "Can I name a concrete way this affects this reader?" If the honest answer is no, DO NOT PICK IT. The pool has alternatives. There are no "filler" slots. There are no stories worth picking that you have to apologise for.\n'
             + '   The angle does NOT have to be Berlin-specific. A Fed rate decision affects German Euribor mortgages. A Japan story affects German exports. A Russia story affects gas prices or migration. But the angle must be REAL. If you find yourself reaching, that is the signal to drop the story.\n\n'
 
-            + (hasCity
+            + (bucketName
+                ? ''  // bucket calls have their own framing in bucketJob above; skip generic local-news rule
+                : (hasCity
                 ? ('HYPERLOCAL CITY RULE (most important rule): At least ' + localMinimum + ' of the ' + pickCount + ' picks MUST be ABOUT ' + cityNameStr + ' itself, not just about Germany. A story counts as ' + cityNameStr + '-local ONLY if the HEADLINE names: ' + cityEntityHints + '. National German politics, EU policy, Bundestag stories, federal economy stories, or international stories DO NOT count as ' + cityNameStr + '-local even if they affect the city. They are about Germany or the EU, not about ' + cityNameStr + '.\n'
                 + '   The pool has ' + guaranteedCityLocalCount + ' confirmed ' + cityNameStr + '-local articles (tagged [' + localTag + '-LOCAL] from city-specific feeds). Use them. If fewer than ' + localMinimum + ' city-local picks land in your selection, REPLACE national/international picks with the strongest remaining ' + cityNameStr + '-local stories from the pool.\n'
                 + '   COUNT YOUR ' + cityNameStr.toUpperCase() + '-LOCAL PICKS BEFORE RESPONDING. If the count is below ' + localMinimum + ', swap stories until the count reaches ' + localMinimum + '. This rule beats every other consideration except the source cap.\n'
@@ -166,7 +196,7 @@ module.exports = async function handler(req, res) {
                 : ('LOCAL NEWS RULE: At least ' + localMinimum + ' of the ' + pickCount + ' stories must be ABOUT '
                 + locationStr + '. Ideally ' + localIdeal + ' of ' + pickCount + '. '
                 + 'A story is local if the HEADLINE mentions ' + locationStr
-                + ', or cities, institutions, or named figures in that country (Germany examples: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; US: Congress, Fed, Wall Street, NYSE).\n\n'))
+                + ', or cities, institutions, or named figures in that country (Germany examples: Berlin, Munich, Hamburg, Frankfurt, Bundestag, Bundesregierung, BVG, Lufthansa, Deutsche Bank, Bayer, Siemens, Volkswagen, BMW, Merz, Scholz, DAX, ECB; India: Mumbai, Delhi, Bangalore, RBI, Sensex, Modi; US: Congress, Fed, Wall Street, NYSE).\n\n')))
 
             + 'TAG GLOSSARY:\n'
             + (hasCity
