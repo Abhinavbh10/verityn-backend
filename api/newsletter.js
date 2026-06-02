@@ -649,196 +649,78 @@ async function generateFreshBriefing(supabase, city) {
     var BASE = 'https://verityn-backend-ten.vercel.app';
     var sid = 'newsletter-' + city + '-' + Date.now();
 
-    var fetchPromises = [];
-    for (var c = 0; c < countries.length; c++) {
-        var country = countries[c];
-        fetchPromises.push(
-            fetch(BASE + '/api/content?action=news&country=' + country + '&max=10&sessionId=' + sid)
-                .then(function(r) { return r.json(); })
-                .catch(function() { return { articles: [] }; })
-        );
-        fetchPromises.push(
-            fetch(BASE + '/api/content?action=rss&country=' + country + '&max=10&sessionId=' + sid)
-                .then(function(r) { return r.json(); })
-                .catch(function() { return { articles: [] }; })
-        );
-    }
-
-    // City-local German-language feed (translated downstream). Tag returned articles
-    // with isCityLocal=true so the briefing quota rule can count them.
+    // CITY-ONLY POOL (June 2026 pivot to pure-hyperlocal product).
+    // Verityn's job: Berlin news for English speakers in Berlin. Frankfurt news
+    // for Frankfurt. Bonn news for Bonn. No English wires, no de_national,
+    // no international, no buckets. The pool IS the city. Briefing picks 7.
+    // Other architectural complexity (Place/Money/Context, conflict cap, etc.)
+    // is unnecessary when the pool itself is already focused.
     var cityLocalKey = city + '_local';
-    fetchPromises.push(
-        fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=15&sessionId=' + sid)
-            .then(function(r) { return r.json(); })
-            .catch(function() { return { articles: [] }; })
-    );
+    var cityFetch = await fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=25&sessionId=' + sid)
+        .then(function(r) { return r.json(); })
+        .catch(function() { return { articles: [] }; });
 
-    // National German feed — every city gets these alongside its local feeds.
-    fetchPromises.push(
-        fetch(BASE + '/api/content?action=rss&country=de_national&max=15&sessionId=' + sid)
-            .then(function(r) { return r.json(); })
-            .catch(function() { return { articles: [] }; })
-    );
-
-    var results = await Promise.all(fetchPromises);
+    var cityLocalArticles = (cityFetch.articles && Array.isArray(cityFetch.articles)) ? cityFetch.articles : [];
+    console.log('[newsletter] city=' + city + ' rawCityArticles=' + cityLocalArticles.length);
 
     var allArticles = [];
-    var cityLocalArticles = [];
-    var nationalArticles = [];
-    for (var r = 0; r < results.length; r++) {
-        var d = results[r];
-        if (d.articles && Array.isArray(d.articles)) {
-            if (r === results.length - 2) {
-                // Second-to-last is city_local
-                cityLocalArticles = d.articles;
-            } else if (r === results.length - 1) {
-                // Last is de_national
-                nationalArticles = d.articles;
-            } else {
-                allArticles = allArticles.concat(d.articles);
-            }
-        }
-    }
-
-    console.log('[newsletter] city=' + city + ' englishArticles=' + allArticles.length + ' cityLocal=' + cityLocalArticles.length + ' national=' + nationalArticles.length);
-
-    var translatedCityCount = 0;
-    var translatedNationalCount = 0;
-
-    // Translate city-local separately so we can tag with isCityLocal=true
     if (cityLocalArticles.length > 0) {
-        var translatedCity = await translateArticles(cityLocalArticles);
-        if (translatedCity.length > 0) {
-            translatedCity = translatedCity.map(function(a) {
+        var translated = await translateArticles(cityLocalArticles);
+        if (translated.length > 0) {
+            allArticles = translated.map(function(a) {
                 return Object.assign({}, a, { country: 'DE', isLocal: true, isCityLocal: true });
             });
-            allArticles = translatedCity.concat(allArticles);
-            translatedCityCount = translatedCity.length;
-        }
-    }
-
-    // Translate national feed too — these are still German-language, just broader scope
-    if (nationalArticles.length > 0) {
-        var translatedNational = await translateArticles(nationalArticles);
-        if (translatedNational.length > 0) {
-            translatedNational = translatedNational.map(function(a) {
-                return Object.assign({}, a, { country: 'DE', isLocal: true, isCityLocal: false });
-            });
-            allArticles = allArticles.concat(translatedNational);
-            translatedNationalCount = translatedNational.length;
         }
     }
 
     var beforeCap = allArticles.length;
-    // Same-event dedup BEFORE cap — collapse duplicates from different sources into one.
+    // Same-event dedup (two sources reporting one event → keep one).
     allArticles = dedupeSameEvent(allArticles);
     var afterDedup = allArticles.length;
-    // Per-source cap. Default 3, but cities with a single local feed (Frankfurt)
-    // would self-starve at 3 since ALL their hyperlocal stories come from one
-    // source. Bump cap to 8 in that case so the pool stays large enough.
+    // Per-source cap. Default 3, but single-source cities (Frankfurt) bump to 8.
     var singleSourceCities = { frankfurt: true };
     var sourceCapN = singleSourceCities[city] ? 8 : 3;
     allArticles = capPerSource(allArticles, sourceCapN);
-    console.log('[newsletter] city=' + city + ' translatedCity=' + translatedCityCount + ' translatedNational=' + translatedNationalCount + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' poolAfterCap=' + allArticles.length);
+    console.log('[newsletter] city=' + city + ' translatedCity=' + allArticles.length + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' poolAfterCap=' + allArticles.length);
 
-    if (allArticles.length < 3) return null;
-
-    // Cross-day memory — what did recent sends for this city cover?
-    var memory = await getRecentMemory(supabase, city, 3);
-    var recentThemesOverused = overusedThemes(memory.themes);
-
-    // Architecture B (June 2026): bucket pool into Place / Money / Context,
-    // run 3 specialist briefing calls in parallel, combine. Guarantees the
-    // city quota structurally — Place bucket always supplies the local stories.
-    var buckets = bucketArticles(allArticles, city);
-    console.log('[bucket] city=' + city + ' place=' + buckets.place.length + ' money=' + buckets.money.length + ' context=' + buckets.context.length);
-
-    // Sample headlines per bucket — invaluable for diagnosing future selection issues.
-    if (buckets.place.length > 0) console.log('[bucket-sample] place: ' + buckets.place.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
-    if (buckets.money.length > 0) console.log('[bucket-sample] money: ' + buckets.money.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
-    if (buckets.context.length > 0) console.log('[bucket-sample] context: ' + buckets.context.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
-
-    // Target picks per bucket. If a bucket is empty or short, slots overflow
-    // to Context (the catchall) so we always reach 7 stories total.
-    var placeTarget = 2, moneyTarget = 2, contextTarget = 3;
-
-    // If Place bucket is short, redistribute slots to Money first, then Context.
-    var placePick = Math.min(placeTarget, buckets.place.length);
-    var unmetPlace = placeTarget - placePick;
-    var moneyPick = Math.min(moneyTarget + Math.floor(unmetPlace / 2), buckets.money.length);
-    var unmetMoney = (moneyTarget + Math.floor(unmetPlace / 2)) - moneyPick;
-    // Context fills whatever remains to reach 7
-    var contextPick = Math.min(7 - placePick - moneyPick, buckets.context.length);
-
-    console.log('[bucket-target] city=' + city + ' place=' + placePick + ' money=' + moneyPick + ' context=' + contextPick + ' total=' + (placePick + moneyPick + contextPick));
-
-    // Helper: call /api/briefing for one bucket
-    async function pickFromBucket(bucketName, bucketArticles, pickCount) {
-        if (pickCount === 0 || bucketArticles.length === 0) return [];
-        try {
-            var r = await fetch(BASE + '/api/briefing', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    articles: bucketArticles,
-                    countries: countries,
-                    interests: ['world', 'finance', 'tech', 'politics'],
-                    location: 'de',
-                    city: city,
-                    profession: 'professional',
-                    pickCount: pickCount,
-                    bucket: bucketName,
-                    recentHeadlines: memory.headlines.slice(0, 14),
-                    sessionId: 'newsletter-' + city + '-' + bucketName + '-' + new Date().toISOString().slice(0, 10),
-                }),
-            });
-            var d = await r.json();
-            if (d.stories && d.stories.length > 0) {
-                console.log('[bucket-' + bucketName + '] picked=' + d.stories.length + ' from=' + bucketArticles.length);
-                return d.stories;
-            } else if (d.error) {
-                console.log('[bucket-' + bucketName + '] error: ' + d.error);
-            }
-        } catch (e) {
-            console.log('[bucket-' + bucketName + '] fetch failed: ' + e.message);
-        }
-        return [];
-    }
-
-    // Three specialist calls in parallel
-    var bucketResults = await Promise.all([
-        pickFromBucket('place', buckets.place, placePick),
-        pickFromBucket('money', buckets.money, moneyPick),
-        pickFromBucket('context', buckets.context, contextPick),
-    ]);
-
-    var placeStories = bucketResults[0];
-    var moneyStories = bucketResults[1];
-    var contextStories = bucketResults[2];
-
-    // Combine — Place first (leads the email), then Money, then Context.
-    var combined = placeStories.concat(moneyStories).concat(contextStories);
-
-    // Backfill from Context if any bucket returned fewer than expected.
-    if (combined.length < 5 && buckets.context.length > contextStories.length) {
-        var extraNeeded = 7 - combined.length;
-        var extras = await pickFromBucket('context-fill', buckets.context, extraNeeded);
-        // Dedup against already-picked
-        var pickedHeadlines = new Set(combined.map(function(s) { return s.headline; }));
-        var newOnes = extras.filter(function(s) { return !pickedHeadlines.has(s.headline); });
-        combined = combined.concat(newOnes).slice(0, 7);
-    }
-
-    if (combined.length < 3) {
-        console.log('[newsletter] city=' + city + ' combined briefing too small: ' + combined.length);
+    if (allArticles.length < 3) {
+        console.log('[newsletter] city=' + city + ' pool too small (' + allArticles.length + ') — no send');
         return null;
     }
 
-    var cityLocalPicked = combined.filter(function(s) { return s.isCityLocal; }).length;
-    var anyLocalPicked = combined.filter(function(s) { return s.isLocal; }).length;
-    console.log('[newsletter] city=' + city + ' totalStories=' + combined.length + ' cityLocalPicked=' + cityLocalPicked + ' anyLocalPicked=' + anyLocalPicked);
+    // Cross-day memory — pass recent headlines to briefing so it can deprioritise repeats.
+    var memory = await getRecentMemory(supabase, city, 3);
 
-    return combined;
+    // Single briefing call on the city-only pool. No buckets, no quota math —
+    // the pool is the city, briefing just picks the 7 best.
+    try {
+        var r2 = await fetch(BASE + '/api/briefing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                articles: allArticles,
+                countries: ['de'],
+                interests: ['world', 'finance', 'tech', 'politics'],
+                location: 'de',
+                city: city,
+                profession: 'professional',
+                cityOnly: true,
+                recentHeadlines: memory.headlines.slice(0, 14),
+                sessionId: 'newsletter-' + city + '-' + new Date().toISOString().slice(0, 10),
+            }),
+        });
+        var d2 = await r2.json();
+        if (d2.stories && d2.stories.length >= 3) {
+            console.log('[newsletter] city=' + city + ' picked=' + d2.stories.length);
+            return d2.stories;
+        } else if (d2.error) {
+            console.log('[newsletter] city=' + city + ' briefing error: ' + d2.error);
+        }
+    } catch (e) {
+        console.log('[newsletter] city=' + city + ' briefing fetch failed: ' + e.message);
+    }
+
+    return null;
 }
 
 async function enrichStories(stories, city) {
