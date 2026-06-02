@@ -252,7 +252,7 @@ function buildStoryCard(s, i, size) {
     var source = cleanSource(s.source);
     var headline = escapeHtml(s.headline);
     var why = escapeHtml(s.why || '');
-    var body = escapeHtml(s.body || '');
+    var body = escapeHtml(s.body || s.summary || '');
     var url = s.sourceUrl || 'https://verityn.news';
     var image = s.image || '';
 
@@ -807,7 +807,10 @@ async function enrichStories(stories, city) {
                 });
             });
         }
-    } catch (e) { }
+        console.log('[newsletter] enrichStories: response did not match expected shape. enriched.length=' + (enriched && enriched.length) + ' stories.length=' + stories.length + ' raw=' + clean.slice(0, 300));
+    } catch (e) {
+        console.log('[newsletter] enrichStories: failed with error: ' + e.message + ' raw=' + (typeof text !== 'undefined' ? text.slice(0, 300) : 'no-text'));
+    }
     return stories;
 }
 
