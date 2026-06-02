@@ -681,7 +681,32 @@ async function generateFreshBriefing(supabase, city) {
     var singleSourceCities = { frankfurt: true };
     var sourceCapN = singleSourceCities[city] ? 8 : 3;
     allArticles = capPerSource(allArticles, sourceCapN);
-    console.log('[newsletter] city=' + city + ' translatedCity=' + allArticles.length + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' poolAfterCap=' + allArticles.length);
+
+    // Headline-must-mention-city filter (June 2026). Even though we fetch only
+    // {city}_local feeds, source papers like Tagesspiegel-Berlin and rbb24
+    // publish national/regional stories under their "Berlin section". The
+    // result: articles arrive tagged isCityLocal=true but the actual content
+    // is about Frankfurt/Cottbus/Switzerland. This filter requires the
+    // translated headline to name a city entity. Reuses CITY_PLACE_PATTERNS.
+    var afterCityFilter = allArticles.length;
+    if (CITY_PLACE_PATTERNS[city]) {
+        var placePat = CITY_PLACE_PATTERNS[city];
+        var filtered = allArticles.filter(function(a) {
+            return placePat.test(a.headline || '') || placePat.test(a.summary || '');
+        });
+        // If the filter would leave too few articles to brief from, keep the
+        // unfiltered pool — better to ship a slightly noisy newsletter than
+        // a 1-story one. Threshold: at least 4 articles to keep filter.
+        if (filtered.length >= 4) {
+            console.log('[newsletter] city=' + city + ' cityFilter kept=' + filtered.length + ' dropped=' + (allArticles.length - filtered.length));
+            allArticles = filtered;
+            afterCityFilter = filtered.length;
+        } else {
+            console.log('[newsletter] city=' + city + ' cityFilter would leave only ' + filtered.length + ', keeping unfiltered pool');
+        }
+    }
+
+    console.log('[newsletter] city=' + city + ' translatedCity=' + allArticles.length + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' afterCityFilter=' + afterCityFilter + ' poolAfterCap=' + allArticles.length);
 
     if (allArticles.length < 3) {
         console.log('[newsletter] city=' + city + ' pool too small (' + allArticles.length + ') — no send');
