@@ -585,6 +585,58 @@ async function translateArticles(articles) {
     return [];
 }
 
+// ── Bucket classification (Architecture B, June 2026) ──────────────────────
+// Split the candidate pool into three buckets BEFORE the briefing call.
+// Each bucket gets its own specialist briefing call with one focused job.
+// This guarantees the city quota structurally instead of asking Claude to
+// honor it across many competing constraints.
+//
+// Categories:
+//   PLACE   — articles ABOUT the city itself. Headline names a specific local
+//             entity (neighborhood, transit line, named institution, etc.).
+//   MONEY   — articles that hit the reader's wallet. Headline or summary
+//             contains money/cost keywords. Can be national, EU, local.
+//   CONTEXT — everything else. National policy, international, broader stories.
+//             Acts as the catchall for stories that don't fit place/money.
+
+var CITY_PLACE_PATTERNS = {
+    berlin: /\b(berlin|brandenburg|kreuzberg|neuk[oö]lln|mitte|prenzlauer berg|charlottenburg|wedding|friedrichshain|lichtenberg|tempelhof|schöneberg|schoneberg|spandau|steglitz|treptow|köpenick|koepenick|pankow|marzahn|reinickendorf|moabit|wilmersdorf|grunewald|wannsee|potsdam|bvg|s-bahn|u-bahn|ringbahn|ber airport|bran[\s-]?denburger tor|alexanderplatz|tiergarten|reichstag|charit[eé]|sparkasse berlin|berliner senat|kai wegner|abgeordnetenhaus|berlinale|humboldt|tu berlin|fu berlin|olympiastadion|tegel|spree|kiez)\b/i,
+    frankfurt: /\b(frankfurt|main|hessen|sachsenhausen|bornheim|bockenheim|westend|nordend|h[oö]chst|niederrad|offenbach|bad homburg|rmv|vgf|hauptbahnhof|fra airport|frankfurt flughafen|r[oö]mer|hauptwache|konstablerwache|main-taunus|messe frankfurt|frankfurter sparkasse|commerzbank|deutsche bank tower|ecb|europ[ae]ische zentralbank|goethe uni|boris rhein|hessen landtag)\b/i,
+    bonn: /\b(bonn|bad godesberg|beuel|poppelsdorf|endenich|kessenich|tannenbusch|hardtberg|dottendorf|swb|vrs|stadtbahn|m[uü]nsterplatz|marktplatz|beethoven|poppelsdorfer schloss|un campus|rheinaue|kennedybr[uü]cke|sparkasse k[oö]lnbonn|universit[aä]t bonn|deutsche post|deutsche telekom|nrw landtag)\b/i,
+};
+
+// Money / cost keywords. Hits any of these and an article enters MONEY bucket.
+var MONEY_PATTERN = /\b(euro|euros|cent|cents|miete|mieten|mietpreis|mietendeckel|wohngeld|b[uü]rgergeld|krankenkasse|krankenversicherung|steuer|steuern|steuererkl|tax|taxes|gehalt|salar(y|ies)|lohn|l[oö]hne|wage|wages|sparkasse|bank account|hypothek|mortgage|kredit|credit|bvg ticket|deutschlandticket|9[\s-]?euro|49[\s-]?euro|gas price|fuel price|petrol|gasoline|pump|strom|stromkosten|gaspreis|heizkosten|heizung|inflation|inflate|recession|rezession|gdp|bip|wirtschaft.*wachs|rent|rents|rental|cost of living|living cost|grocer|preis|preise|prices|cheaper|expensive|teurer|billiger|pension|rente|sozialversicherung|btw|vat|mwst|mehrwertsteuer|hartz|grundsicherung|kindergeld|elterngeld|wohnung.*preis|housing.*cost|verdienen|earn|paycheck|netto|brutto|netz.*entgelt|tariff|gehaltserh|payroll)\b/i;
+
+function bucketArticles(articles, city) {
+    var placePat = CITY_PLACE_PATTERNS[city] || CITY_PLACE_PATTERNS.berlin;
+    var place = [], money = [], context = [];
+
+    for (var i = 0; i < articles.length; i++) {
+        var a = articles[i];
+        var text = (a.headline || '') + ' ' + (a.summary || '');
+
+        // PLACE: city-local OR headline names city/neighbourhood/transit/institution.
+        // If isCityLocal flag is set, trust the source classification.
+        var placeMatch = !!a.isCityLocal || placePat.test(text);
+
+        // MONEY: headline or summary contains money keywords.
+        var moneyMatch = MONEY_PATTERN.test(text);
+
+        // Routing — Place wins over Money when both match (Place is rarer/more valuable).
+        // Money wins over Context.
+        if (placeMatch) {
+            place.push(a);
+        } else if (moneyMatch) {
+            money.push(a);
+        } else {
+            context.push(a);
+        }
+    }
+
+    return { place: place, money: money, context: context };
+}
+
 async function generateFreshBriefing(supabase, city) {
     // City-keyed pipeline (May 2026 city pivot).
     // Fetches: GB+DE English wires (broad context) + {city}_local (hyperlocal)
@@ -695,36 +747,98 @@ async function generateFreshBriefing(supabase, city) {
     var memory = await getRecentMemory(supabase, city, 3);
     var recentThemesOverused = overusedThemes(memory.themes);
 
-    try {
-        var r2 = await fetch(BASE + '/api/briefing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                articles: allArticles,
-                countries: countries,
-                interests: ['world', 'finance', 'tech', 'politics'],
-                location: 'de',
-                city: city,
-                profession: 'professional',
-                recentHeadlines: memory.headlines,
-                recentThemes: recentThemesOverused,
-                sessionId: 'newsletter-' + city + '-' + new Date().toISOString().slice(0, 10),
-            }),
-        });
-        var d2 = await r2.json();
-        if (d2.stories && d2.stories.length >= 3) {
-            var cityLocalPicked = d2.stories.filter(function(s) { return s.isCityLocal; }).length;
-            var anyLocalPicked = d2.stories.filter(function(s) { return s.isLocal; }).length;
-            console.log('[newsletter] city=' + city + ' briefingStories=' + d2.stories.length + ' cityLocalPicked=' + cityLocalPicked + ' anyLocalPicked=' + anyLocalPicked + ' capViolations=' + JSON.stringify(d2.capViolations || []));
-            return d2.stories;
-        } else if (d2.error) {
-            console.log('[newsletter] city=' + city + ' briefing error: ' + d2.error);
+    // Architecture B (June 2026): bucket pool into Place / Money / Context,
+    // run 3 specialist briefing calls in parallel, combine. Guarantees the
+    // city quota structurally — Place bucket always supplies the local stories.
+    var buckets = bucketArticles(allArticles, city);
+    console.log('[bucket] city=' + city + ' place=' + buckets.place.length + ' money=' + buckets.money.length + ' context=' + buckets.context.length);
+
+    // Sample headlines per bucket — invaluable for diagnosing future selection issues.
+    if (buckets.place.length > 0) console.log('[bucket-sample] place: ' + buckets.place.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
+    if (buckets.money.length > 0) console.log('[bucket-sample] money: ' + buckets.money.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
+    if (buckets.context.length > 0) console.log('[bucket-sample] context: ' + buckets.context.slice(0, 3).map(function(a) { return a.headline.slice(0, 60); }).join(' | '));
+
+    // Target picks per bucket. If a bucket is empty or short, slots overflow
+    // to Context (the catchall) so we always reach 7 stories total.
+    var placeTarget = 2, moneyTarget = 2, contextTarget = 3;
+
+    // If Place bucket is short, redistribute slots to Money first, then Context.
+    var placePick = Math.min(placeTarget, buckets.place.length);
+    var unmetPlace = placeTarget - placePick;
+    var moneyPick = Math.min(moneyTarget + Math.floor(unmetPlace / 2), buckets.money.length);
+    var unmetMoney = (moneyTarget + Math.floor(unmetPlace / 2)) - moneyPick;
+    // Context fills whatever remains to reach 7
+    var contextPick = Math.min(7 - placePick - moneyPick, buckets.context.length);
+
+    console.log('[bucket-target] city=' + city + ' place=' + placePick + ' money=' + moneyPick + ' context=' + contextPick + ' total=' + (placePick + moneyPick + contextPick));
+
+    // Helper: call /api/briefing for one bucket
+    async function pickFromBucket(bucketName, bucketArticles, pickCount) {
+        if (pickCount === 0 || bucketArticles.length === 0) return [];
+        try {
+            var r = await fetch(BASE + '/api/briefing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    articles: bucketArticles,
+                    countries: countries,
+                    interests: ['world', 'finance', 'tech', 'politics'],
+                    location: 'de',
+                    city: city,
+                    profession: 'professional',
+                    pickCount: pickCount,
+                    bucket: bucketName,
+                    recentHeadlines: memory.headlines.slice(0, 14),
+                    sessionId: 'newsletter-' + city + '-' + bucketName + '-' + new Date().toISOString().slice(0, 10),
+                }),
+            });
+            var d = await r.json();
+            if (d.stories && d.stories.length > 0) {
+                console.log('[bucket-' + bucketName + '] picked=' + d.stories.length + ' from=' + bucketArticles.length);
+                return d.stories;
+            } else if (d.error) {
+                console.log('[bucket-' + bucketName + '] error: ' + d.error);
+            }
+        } catch (e) {
+            console.log('[bucket-' + bucketName + '] fetch failed: ' + e.message);
         }
-    } catch (e) {
-        console.log('[newsletter] city=' + city + ' briefing fetch failed: ' + e.message);
+        return [];
     }
 
-    return null;
+    // Three specialist calls in parallel
+    var bucketResults = await Promise.all([
+        pickFromBucket('place', buckets.place, placePick),
+        pickFromBucket('money', buckets.money, moneyPick),
+        pickFromBucket('context', buckets.context, contextPick),
+    ]);
+
+    var placeStories = bucketResults[0];
+    var moneyStories = bucketResults[1];
+    var contextStories = bucketResults[2];
+
+    // Combine — Place first (leads the email), then Money, then Context.
+    var combined = placeStories.concat(moneyStories).concat(contextStories);
+
+    // Backfill from Context if any bucket returned fewer than expected.
+    if (combined.length < 5 && buckets.context.length > contextStories.length) {
+        var extraNeeded = 7 - combined.length;
+        var extras = await pickFromBucket('context-fill', buckets.context, extraNeeded);
+        // Dedup against already-picked
+        var pickedHeadlines = new Set(combined.map(function(s) { return s.headline; }));
+        var newOnes = extras.filter(function(s) { return !pickedHeadlines.has(s.headline); });
+        combined = combined.concat(newOnes).slice(0, 7);
+    }
+
+    if (combined.length < 3) {
+        console.log('[newsletter] city=' + city + ' combined briefing too small: ' + combined.length);
+        return null;
+    }
+
+    var cityLocalPicked = combined.filter(function(s) { return s.isCityLocal; }).length;
+    var anyLocalPicked = combined.filter(function(s) { return s.isLocal; }).length;
+    console.log('[newsletter] city=' + city + ' totalStories=' + combined.length + ' cityLocalPicked=' + cityLocalPicked + ' anyLocalPicked=' + anyLocalPicked);
+
+    return combined;
 }
 
 async function enrichStories(stories, city) {
