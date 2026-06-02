@@ -131,6 +131,7 @@ const COUNTRY_FEEDS = {
   berlin_local: [
     // Berlin hyperlocal — named neighborhoods, named local institutions, named incidents
     'https://www.tagesspiegel.de/contentexport/feed/berlin',  // Tagesspiegel Berlin section
+    'https://www.tagesspiegel.de/contentexport/feed/checkpoint',  // Tagesspiegel Checkpoint — human-curated daily Berlin brief, highest signal-to-noise (added June 2026)
     'https://www.berliner-zeitung.de/feed.xml',                // Berliner Zeitung
     'https://www.bz-berlin.de/feed',                           // B.Z. Berlin — verified May 2026, tabloid-flavoured but hyperlocal
     'https://www.rbb24.de/aktuell/index.xml/feed=rss.xml',     // rbb24 — verified May 2026 (note: /rss path 404s, THIS path works). Berlin+Brandenburg public broadcaster.
