@@ -687,12 +687,14 @@ async function generateFreshBriefing(supabase, city) {
     // publish national/regional stories under their "Berlin section". The
     // result: articles arrive tagged isCityLocal=true but the actual content
     // is about Frankfurt/Cottbus/Switzerland. This filter requires the
-    // translated headline to name a city entity. Reuses CITY_PLACE_PATTERNS.
+    // translated HEADLINE (not summary) to name a city entity. Summaries
+    // are too permissive — they often cross-reference the city even when
+    // the story is about elsewhere. Uses CITY_PLACE_PATTERNS.
     var afterCityFilter = allArticles.length;
     if (CITY_PLACE_PATTERNS[city]) {
         var placePat = CITY_PLACE_PATTERNS[city];
         var filtered = allArticles.filter(function(a) {
-            return placePat.test(a.headline || '') || placePat.test(a.summary || '');
+            return placePat.test(a.headline || '');
         });
         // If the filter would leave too few articles to brief from, keep the
         // unfiltered pool — better to ship a slightly noisy newsletter than
