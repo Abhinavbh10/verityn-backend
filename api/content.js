@@ -1,7 +1,7 @@
 // ============================================================
 // FILE: api/content.js
 // REPLACES: news.js, rss.js, search.js, image.js
-// ROUTE via: ?action=news | rss | search | citynews | image
+// ROUTE via: ?action=news | rss | search | image
 //
 // CHANGE (2026-04-28): RSS feeds whose country key ends in
 // `_local` (e.g. `de_local`) bypass the English-only filter.
@@ -10,11 +10,6 @@
 // words (der/die/das/und/ist/...) were being dropped at line ~409
 // before they ever reached the translator. Result: zero local
 // German news in the daily newsletter.
-//
-// CHANGE (2026-05-07): Added `citynews` action. Returns city-specific
-// articles from The Local DE city feeds (Berlin/Munich/Hamburg/Frankfurt).
-// Folded in here instead of a separate api file due to Vercel Hobby
-// plan's 12-function limit. Each article tagged sourceCity. Caches 1h.
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
@@ -49,6 +44,11 @@ function getRelativeTime(d) {
 function cleanText(text) {
   if (!text) return '';
   return text
+    // Strip CDATA artifacts that leak through malformed feed wrapping.
+    // Some Indian RSS feeds (Economic Times, others) embed CDATA in odd
+    // positions and the title regex can leave behind dangling `]]>` or
+    // `<![CDATA[`. These artifacts then break Claude's JSON output when
+    // the headline goes into a prompt.
     .replace(/<!\[CDATA\[/g, '')
     .replace(/\]\]>/g, '')
     .replace(/<[^>]+>/g, ' ')
@@ -62,20 +62,30 @@ function cleanText(text) {
 }
 
 // ── RSS feeds per country ─────────────────────────────────────
+// `de` — English-only feeds (DW English, The Local, Spiegel International,
+//        Euronews, Politico EU, Google News English-in-Germany search)
+// `de_local` — German-language feeds (translated downstream by newsletter.js).
+//        Bypasses isEnglishHeadline on purpose. Country keys ending `_local`
+//        are reserved for this pattern.
 const COUNTRY_FEEDS = {
   in: [
+    // Google News India (English) — top Indian stories
     'https://news.google.com/rss?hl=en&gl=IN&ceid=IN:en',
+    // General news
     'https://indianexpress.com/feed/',
     'https://economictimes.indiatimes.com/rssfeedstopstories.cms',
     'https://www.thehindu.com/news/feeder/default.rss',
     'https://timesofindia.indiatimes.com/rssfeedstopstories.cms',
+    // Business & Finance — F6 additions
     'https://www.business-standard.com/rss/latest.rss',
     'https://www.financialexpress.com/feed/',
     'https://www.livemint.com/rss/news',
     'https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms',
     'https://www.moneycontrol.com/rss/latestnews.xml',
+    // Tech & Startups
     'https://yourstory.com/feed',
     'https://entrackr.com/feed/',
+    // TV/Broadcast
     'https://www.ndtv.com/rss/top-stories',
     'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml',
   ],
@@ -97,17 +107,57 @@ const COUNTRY_FEEDS = {
     'https://www.ft.com/rss/home',
   ],
   de: [
+    // Google News search for Germany-specific English content
     'https://news.google.com/rss/search?q=Germany+OR+Berlin+OR+Bundestag+OR+Scholz&hl=en&gl=DE&ceid=DE:en',
     'https://news.google.com/rss/search?q=German+economy+OR+Deutsche+OR+Lufthansa+OR+ECB&hl=en&gl=DE&ceid=DE:en',
-    'https://rss.dw.com/xml/rss-en-ger',
-    'https://rss.dw.com/xml/rss-en-all',
-    'https://rss.dw.com/xml/rss-en-bus',
-    'https://rss.dw.com/xml/rss-en-eu',
-    'https://www.thelocal.de/feed/',
-    'https://www.spiegel.de/international/index.rss',
-    'https://www.euronews.com/tag/germany/feed',
-    'https://www.politico.eu/feed/',
+    // Germany-specific DW feeds (English)
+    'https://rss.dw.com/xml/rss-en-ger',              // DW — Germany section
+    'https://rss.dw.com/xml/rss-en-all',               // DW — general
+    'https://rss.dw.com/xml/rss-en-bus',               // DW — business
+    'https://rss.dw.com/xml/rss-en-eu',                // DW — Europe
+    'https://www.thelocal.de/feed/',                    // The Local — expat/daily life Germany
+    'https://www.spiegel.de/international/index.rss',   // Spiegel International
+    'https://www.euronews.com/tag/germany/feed',        // Euronews — Germany tag
+    'https://www.politico.eu/feed/',                    // Politico EU
   ],
+  // City-keyed local feeds (May 2026 city pivot). Each city pulls its OWN
+  // hyperlocal feeds (named neighborhoods, named local incidents, local
+  // institutions). Plus de_national (defined below) gets concatenated to
+  // every city's pool so federal/EU stories with German angle still flow.
+  //
+  // Wiring: newsletter.js requests `?country=berlin_local` or `?country=frankfurt_local`,
+  // we return city + national pool merged. `de_local` is the legacy alias —
+  // returns Berlin + national (most subscribers are Berlin).
+  berlin_local: [
+    // Berlin hyperlocal — named neighborhoods, named local institutions, named incidents
+    'https://www.tagesspiegel.de/contentexport/feed/berlin',  // Tagesspiegel Berlin section
+    'https://www.berliner-zeitung.de/feed.xml',                // Berliner Zeitung
+    'https://www.bz-berlin.de/feed',                           // B.Z. Berlin — verified May 2026, tabloid-flavoured but hyperlocal
+    'https://www.rbb24.de/aktuell/index.xml/feed=rss.xml',     // rbb24 — verified May 2026 (note: /rss path 404s, THIS path works). Berlin+Brandenburg public broadcaster.
+    'https://www.morgenpost.de/berlin/rss',                    // Berliner Morgenpost Berlin section — verified May 2026, pure Berlin hyperlocal (S-Bahn, Freibäder, local incidents)
+  ],
+  frankfurt_local: [
+    // Frankfurt hyperlocal — FAZ Rhein-Main has 8+ named-Frankfurt stories per fetch
+    'https://www.faz.net/rss/aktuell/rhein-main/',             // FAZ Rhein-Main section — verified May 2026
+  ],
+  bonn_local: [
+    // Bonn hyperlocal — General-Anzeiger Bonn subfeeds. Verified May 2026.
+    // ga.de/bonn = pure Bonn city; ga.de/region = Bonn + surrounding region.
+    // Note: feed includes some [GA+] paywalled articles (headline/summary still usable).
+    'https://ga.de/bonn/feed.rss',
+    'https://ga.de/region/feed.rss',
+  ],
+  de_national: [
+    // National German press — every city gets these alongside its local feeds.
+    'https://www.tagesschau.de/index~rss2.xml',
+    'https://www.tagesspiegel.de/contentexport/feed/home',
+    'https://rss.sueddeutsche.de/rss/Topthemen',
+    'https://www.faz.net/rss/aktuell/',
+    'https://www.handelsblatt.com/contentexport/feed/top',
+    'https://www.spiegel.de/schlagzeilen/index.rss',
+    'https://www.zeit.de/index',
+  ],
+  // Legacy alias — kept so old `?country=de_local` calls don't break. Defaults to Berlin.
   de_local: [
     'https://www.tagesschau.de/index~rss2.xml',
     'https://www.tagesspiegel.de/contentexport/feed/home',
@@ -148,9 +198,13 @@ const COUNTRY_FEEDS = {
 
 const BAD_SOURCES = ['news', 'unknown', 'feedburner', ''];
 
-// ── Non-Latin / CJK script detection ──
+// ── Non-Latin / CJK script detection — filters headlines that slip through ──
+// Hits: CJK, Cyrillic, Arabic, Hebrew, Devanagari, Thai.
+// Miss by design: Latin-1 supplement (German ä/ö/ü/ß, French accents, Spanish ñ).
 const NON_LATIN_SCRIPT = /[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
 
+// German-specific markers — common words/chars that appear in German but not English.
+// Used as a secondary filter for feeds that might mix languages
 const GERMAN_MARKER = /\b(der|die|das|und|ist|für|mit|nicht|auch|sich|sind|wurde|werden|einen|einer|eines|schon|zwischen|während|beschlüsse|koalition|wirtschaft|regierung)\b/i;
 const FRENCH_MARKER = /\b(les|des|une|est|sont|pour|dans|avec|cette|par|sur|aux|qui|ont|ses|mais|leur|selon|après|avant|lors|entre|plus|vers|peut|fait|été|très|tous|dont|sans|comme|depuis|nous|vous|aussi|deux|sous|encore|autre|même|chez|boucler|négociations|budgétaires|présidentielle|française)\b/i;
 const SPANISH_MARKER = /\b(los|las|una|del|por|con|para|más|pero|como|está|son|han|fue|desde|entre|sobre|todo|esta|ese|otro|puede|tiene|también|según|después|durante)\b/i;
@@ -159,7 +213,9 @@ const DUTCH_MARKER = /\b(het|een|van|voor|met|niet|ook|zijn|worden|naar|maar|hee
 
 function isEnglishHeadline(title) {
   if (!title) return false;
+  // Reject anything with non-Latin scripts outright
   if (NON_LATIN_SCRIPT.test(title)) return false;
+  // Reject headlines with 2+ markers from any non-English European language
   const germanHits = (title.match(new RegExp(GERMAN_MARKER.source, 'gi')) || []).length;
   if (germanHits >= 2) return false;
   const frenchHits = (title.match(new RegExp(FRENCH_MARKER.source, 'gi')) || []).length;
@@ -195,6 +251,7 @@ module.exports = async function handler(req, res) {
 
   // ── ACTION: news ──────────────────────────────────────────────
   if (action === 'news') {
+    // A5: Rate limit GNews calls
     const rl = await checkRateLimit(supabase, sessionId, 'gnews');
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded. Try again later.', resetAt: rl.resetAt });
 
@@ -218,6 +275,7 @@ module.exports = async function handler(req, res) {
     try {
       const fetches = [];
 
+      // GNews — lang=en enforced, but also filter defensively below
       if (GNEWS_KEY) {
         fetches.push(
           fetch(`https://gnews.io/api/v4/top-headlines?category=${category}&lang=en&country=${country}&max=${max}&apikey=${GNEWS_KEY}`)
@@ -225,6 +283,7 @@ module.exports = async function handler(req, res) {
         );
       }
 
+      // Mediastack — languages=en enforced, but also filter defensively below
       if (MEDIASTACK) {
         const sources = COUNTRY_SOURCES[country]?.join(',') || '';
         const msUrl = sources
@@ -233,6 +292,7 @@ module.exports = async function handler(req, res) {
         fetches.push(fetch(msUrl).then(r => r.json()).then(d => ({ src: 'ms', data: d })).catch(() => ({ src: 'ms', data: {} })));
       }
 
+      // NYT Top Stories API — only for English-primary countries (B5 fix)
       const NYT_COUNTRIES = ['us', 'gb', 'au', 'in'];
       if (NYT_KEY && NYT_COUNTRIES.includes(country)) {
         const nytSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'science' ? 'science' : category === 'sports' ? 'sports' : 'world';
@@ -242,6 +302,7 @@ module.exports = async function handler(req, res) {
         );
       }
 
+      // Guardian API — only for English-primary countries (B5 fix)
       const GUARDIAN_COUNTRIES = ['gb', 'us', 'au', 'in'];
       if (GUARDIAN_KEY && GUARDIAN_COUNTRIES.includes(country)) {
         const gSection = category === 'technology' ? 'technology' : category === 'business' ? 'business' : category === 'sports' ? 'sport' : 'world';
@@ -261,8 +322,10 @@ module.exports = async function handler(req, res) {
         if (src === 'gnews' && data?.articles) {
           for (const a of data.articles) {
             const t = inferTopic(a.title, a.description);
+            // Filter out low-quality lifestyle/celebrity/sports from GNews
             const skipPatterns = /taylor swift|kardashian|celebrity|red carpet|nfl draft|nba trade|iheartradio|oscars|emmys|grammys|recipe|horoscope|zodiac|best buy|sale deal|review.*car|suv reveal/i;
             if (skipPatterns.test(a.title)) continue;
+            // English-only defence — skip non-English headlines
             if (!isEnglishHeadline(a.title)) continue;
             articles.push({
               id: `gnews-${country}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
@@ -325,6 +388,7 @@ module.exports = async function handler(req, res) {
           }
         }
       }
+      // Dedup by headline
       const seen = new Set();
       const deduped = articles.filter(a => {
         const k = a.headline?.slice(0, 50).toLowerCase().replace(/[^a-z]/g, '');
@@ -345,28 +409,10 @@ module.exports = async function handler(req, res) {
     if (!rl.allowed) return res.status(429).json({ error: 'Rate limit exceeded.', resetAt: rl.resetAt });
 
     const { country = 'us', max = '15' } = req.query;
+    const feeds = COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
 
-    // City-local feed resolution. Previously `{city}_local` codes (berlin_local,
-    // frankfurt_local, bonn_local) weren't COUNTRY_FEEDS keys and fell back to
-    // US feeds. Now they resolve to city-specific German feeds (translated
-    // downstream by the app's translate step). Bonn uses General-Anzeiger.
-    const CITY_LOCAL_FEEDS = {
-      berlin_local: [
-        'https://www.tagesspiegel.de/contentexport/feed/berlin',
-        'https://www.berliner-zeitung.de/feed.xml',
-        'https://www.tagesschau.de/index~rss2.xml',
-      ],
-      frankfurt_local: [
-        'https://www.faz.net/rss/aktuell/rhein-main/',
-        'https://www.tagesschau.de/index~rss2.xml',
-      ],
-      bonn_local: [
-        'https://ga.de/feed.rss',
-        'https://www.tagesschau.de/index~rss2.xml',
-      ],
-    };
-    const feeds = CITY_LOCAL_FEEDS[country] || COUNTRY_FEEDS[country] || COUNTRY_FEEDS['us'];
-
+    // Country keys ending in `_local` are local-language feeds. Skip the
+    // English-only filter for these — they're translated downstream.
     const isLocalLanguageFeed = /_local$/.test(country);
 
     try {
@@ -394,10 +440,13 @@ module.exports = async function handler(req, res) {
         for (const item of items) {
           const title       = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
           const link        = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
+          // Try content:encoded first (full abstract), fall back to description
           const rawEncoded   = (item.match(/<content:encoded>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/content:encoded>/) || [])[1] || '';
           const rawDesc_     = (item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '';
+          // Prefer content:encoded if it exists and is longer
           const rawBest      = rawEncoded.length > rawDesc_.length ? rawEncoded : rawDesc_;
           const cleanedDesc_ = cleanText(rawBest);
+          // Discard if cleaned result is still HTML-like
           const description  = /^<[a-z]/i.test(cleanedDesc_.trim()) ? '' : cleanedDesc_;
           const pubDate     = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
           const sourceName  = cleanText((item.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1] || feeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0]);
@@ -408,6 +457,10 @@ module.exports = async function handler(req, res) {
           if (!title || title.length < 15) continue;
           if (/<[a-z]/i.test(title)) continue;
           if (BAD_SOURCES.includes(sourceName.toLowerCase().trim())) continue;
+          // English-only defence — BUT skip for `_local` feeds (translated downstream).
+          // Without this bypass, Tagesschau/FAZ/SZ headlines like
+          // "Die Koalition streitet über das Bürgergeld" would get dropped here
+          // (2+ German marker hits) and never reach the translator.
           if (!isLocalLanguageFeed && !isEnglishHeadline(title)) continue;
           const pub = pubDate ? new Date(pubDate) : new Date();
           if (isNaN(pub.getTime())) continue;
@@ -451,6 +504,7 @@ module.exports = async function handler(req, res) {
     const terms = q.toLowerCase().trim().split(/\s+/).filter(t => t.length > 2);
     if (!terms.length) return res.status(400).json({ error: 'Query too short.' });
 
+    // Search across major RSS feeds — broad coverage, no quota
     const SEARCH_FEEDS = [
       'https://feeds.bbci.co.uk/news/rss.xml',
       'https://www.theguardian.com/world/rss',
@@ -465,6 +519,7 @@ module.exports = async function handler(req, res) {
       'https://www.straitstimes.com/news/singapore/rss.xml',
     ];
 
+    // Add country-specific feeds
     const COUNTRY_FEEDS_EXTRA = {
       in: ['https://feeds.feedburner.com/ndtvnews-top-stories'],
       de: ['https://www.thelocal.de/feed/'],
@@ -477,6 +532,7 @@ module.exports = async function handler(req, res) {
     const allFeeds = [...new Set([...SEARCH_FEEDS, ...extraFeeds])];
 
     try {
+      // Fetch all feeds in parallel
       const feedResults = await Promise.all(
         allFeeds.map(url =>
           fetch(url, {
@@ -508,16 +564,20 @@ module.exports = async function handler(req, res) {
           const image = imgM ? imgM[1] : null;
 
           if (!title || title.length < 10) continue;
+          // English-only defence for search too
           if (!isEnglishHeadline(title)) continue;
 
+          // Match against search terms — headline OR description must contain term
           const searchText = (title + ' ' + desc).toLowerCase();
           const matches = terms.every(term => searchText.includes(term));
           if (!matches) continue;
 
           const pubDate = pub ? new Date(pub) : new Date();
           if (isNaN(pubDate.getTime())) continue;
+          // Only last 7 days
           if ((Date.now() - pubDate) > 7 * 24 * 60 * 60 * 1000) continue;
 
+          // Get source name from feed URL
           const feedDomain = allFeeds[fi].replace(/https?:\/\/(www\.)?/, '').split('/')[0];
           const sourceMap = {
             'feeds.bbci.co.uk': 'BBC News', 'bbc.co.uk': 'BBC News',
@@ -556,6 +616,7 @@ module.exports = async function handler(req, res) {
         }
       }
 
+      // Dedup + sort by recency
       const seen = new Set();
       const deduped = articles
         .filter(a => {
@@ -571,338 +632,6 @@ module.exports = async function handler(req, res) {
       await logError(supabase, { endpoint: "content", action: "search", error: e, sessionId });
       return res.status(500).json({ error: e.message });
     }
-  }
-
-  // ── ACTION: citynews ───────────────────────────────────────
-  // Returns city-specific articles from The Local DE city feeds.
-  // Each article tagged sourceCity. Caches 1h in digest_cache.
-  // Folded into content.js due to Vercel Hobby plan 12-function limit.
-  if (action === 'citynews') {
-    const CITY_FEEDS = {
-      berlin: 'https://feeds.thelocal.com/rss/de/berlin',
-      munich: 'https://feeds.thelocal.com/rss/de/munich',
-      hamburg: 'https://feeds.thelocal.com/rss/de/hamburg',
-      frankfurt: 'https://feeds.thelocal.com/rss/de/frankfurt',
-    };
-    const SOURCE_NAMES = {
-      berlin: 'The Local Berlin',
-      munich: 'The Local Munich',
-      hamburg: 'The Local Hamburg',
-      frankfurt: 'The Local Frankfurt',
-    };
-
-    const cityKey = String(req.query.city || '').toLowerCase().trim();
-    const maxN = Math.min(25, Math.max(1, parseInt(req.query.max) || 15));
-    const feedUrl = CITY_FEEDS[cityKey];
-
-    if (!feedUrl) {
-      return res.status(200).json({
-        success: true, articles: [],
-        reason: cityKey ? 'no_feed_for_city' : 'no_city_provided',
-      });
-    }
-
-    const cacheKey = `citynews-${cityKey}`;
-
-    // Try cache first (1h TTL)
-    try {
-      const { data: cached } = await supabase
-        .from('digest_cache')
-        .select('digest')
-        .eq('cache_key', cacheKey)
-        .gt('expires_at', new Date().toISOString())
-        .single();
-      if (cached?.digest?.articles?.length) {
-        return res.status(200).json({
-          success: true, fromCache: true,
-          articles: cached.digest.articles.slice(0, maxN),
-        });
-      }
-    } catch (e) {}
-
-    // Fetch fresh
-    try {
-      const r = await fetch(feedUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!r.ok) {
-        return res.status(200).json({ success: true, articles: [], reason: `feed_${r.status}` });
-      }
-      const xml = await r.text();
-      const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
-      const sourceName = SOURCE_NAMES[cityKey] || 'The Local';
-
-      const articles = items.slice(0, 25).map((item, i) => {
-        const title = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
-        const desc = cleanText((item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1]);
-        const link = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
-        const pubDate = (item.match(/<pubDate[^>]*>([^<]+)<\/pubDate>/) || [])[1] || '';
-        const imgMatch = item.match(/url="([^"]+\.(jpg|jpeg|png|webp)[^"]*)"/i) ||
-                         item.match(/<media:content[^>]+url="([^"]+)"/i);
-        const image = imgMatch ? imgMatch[1] : null;
-        let publishedAt;
-        try { publishedAt = pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(); }
-        catch (e) { publishedAt = new Date().toISOString(); }
-        return {
-          id: `city-${cityKey}-${Date.now()}-${i}`,
-          headline: title,
-          summary: desc.slice(0, 300),
-          source: sourceName,
-          sourceUrl: link,
-          image,
-          publishedAt,
-          time: getRelativeTime(publishedAt),
-          country: 'DE',
-          sourceCity: cityKey,
-          isLocal: true,
-          topic: 'world',
-          topicLabel: 'Germany',
-        };
-      }).filter(a => a.headline && a.headline.length > 10);
-
-      // Cache 1h
-      try {
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        await supabase.from('digest_cache').upsert({
-          cache_key: cacheKey,
-          digest: { articles },
-          fetched_at: new Date().toISOString(),
-          expires_at: expiresAt,
-        }, { onConflict: 'cache_key' });
-      } catch (e) {}
-
-      return res.status(200).json({
-        success: true, fromCache: false,
-        articles: articles.slice(0, maxN),
-      });
-    } catch (e) {
-      await logError(supabase, { endpoint: "content", action: "citynews", error: e, sessionId });
-      return res.status(200).json({ success: true, articles: [], error: e.message });
-    }
-  }
-
-  // ── ACTION: topicnews ──────────────────────────────────────
-  // English, expat-focused Germany news matched to the user's topics, last 7
-  // days. Powers the Topics tab. High-precision: Germany-relevance gate +
-  // word-boundary keyword matching + relevance scoring.
-  //
-  // USAGE: /api/content?action=topicnews&topics=transport,housing,visa&city=berlin
-  if (action === 'topicnews') {
-    // ── High-precision keyword sets ──
-    // Single words are matched with WORD BOUNDARIES (so "strike" won't fire on
-    // "strikes in Iran" unless it's a standalone word — and we drop bare generic
-    // words entirely). Multi-word phrases use substring (already specific).
-    // German terms are kept untranslated — they're high-signal and rarely
-    // produce false positives.
-    // 5 broad buckets (consolidated May 2026). Each unions its former
-    // sub-topics so a single chip pulls plenty of stories from the same pool.
-    const TOPIC_KEYWORDS = {
-      // daily = old daily + culture + fashion + healthcare
-      daily: ['cost of living','life in germany','new to germany','moving to germany','living in germany','expat life','price rise','prices rise','consumer prices','public holiday','weather warning','heat wave','heatwave','expat','expats','ausländer','auslaender','integration','feiertag','aldi','lidl','rewe','edeka','supermarket','art exhibition','film festival','christmas market','food scene','museum island','berlin film','museum','ausstellung','berlinale','oktoberfest','weihnachtsmarkt','theater','konzert','gallery','festival','fashion week','fashion industry','fashion','mode','health insurance','public health','private insurance','health system','krankenkasse','krankenversicherung','aok','barmer','arzt','ärzte','aerzte','hausarzt','krankenhaus','apotheke','rezept','krankschreibung','pflege','gesundheit','hospital','doctor'],
-      // money = old work + energy
-      money: ['minimum wage','parental leave','collective bargaining','trade union','labor market','labour market','job market','short-time work','wage talks','pay rise','wage rise','cost of living','gehalt','tarif','tarifvertrag','mindestlohn','kurzarbeit','arbeitsamt','arbeitsagentur','arbeitslos','kündigung','kuendigung','elterngeld','bürgergeld','buergergeld','verdi','ig metall','gewerkschaft','gas price','electricity price','power price','energy price','heat pump','climate target','climate goal','renewable energy','energy transition','heizungsgesetz','energiewende','wärmepumpe','waermepumpe','strompreis','gaspreis','klimaziel','atomkraft','windkraft','solar power'],
-      // visa = old visa + bureaucracy
-      visa: ['residence permit','blue card','work permit','opportunity card','skilled worker','work visa','student visa','family reunification','visa','visas','aufenthaltstitel','aufenthalt','einbürgerung','einbuergerung','naturalization','naturalisation','citizenship','staatsbürgerschaft','staatsbuergerschaft','ausländerbehörde','auslaenderbehoerde','immigration','chancenkarte','niederlassung','fachkräfte','fachkraefte','residency','tax return','tax declaration','residence registration','anmeldung','ummeldung','abmeldung','finanzamt','steuererklärung','steuererklaerung','bürgeramt','buergeramt','elster','bürokratie','buerokratie','rundfunkbeitrag','gez','termin'],
-      // living = old housing + transport
-      living: ['rent cap','rent control','rent rise','rents rise','rent increase','rental market','rental contract','housing shortage','housing market','housing crisis','housing chaos','real estate','property market','serviced apartment','first month housing','mietpreisbremse','nebenkosten','wohnungssuche','mietvertrag','kaution','schufa','immobilien','miete','mieten','mieter','vermieter','wohnung','wohnungen','landlord','tenant','rent','rents','rental','wbs','deutsche bahn','s-bahn','u-bahn','rail strike','train strike','transport strike','warning strike','rail network','public transport','air travel','flight cancel','flight delay','aviation','bvg','autobahn','lufthansa','flixbus','streik','warnstreik','bahnstreik','deutschlandticket','49-euro ticket','mvg','rmv','hvv','bahn','flughafen','hauptbahnhof'],
-      // politics = old politics
-      politics: ['german government','german election','german politics','coalition government','bundestag','bundesrat','bundesregierung','cdu','csu','spd','fdp','grüne','gruene','afd','merz','scholz','habeck','lindner','weidel','koalition','bundeswehr','kanzler','chancellor merz','minister','parliament'],
-    };
-
-    // Germany-relevance gate — same spirit as cron.js. Expat-core sources
-    // (The Local, IamExpat) auto-pass; everything else must mention a Germany signal.
-    const STRONG_GERMANY = /\b(germany|german|berlin|munich|münchen|hamburg|frankfurt|cologne|köln|stuttgart|düsseldorf|duesseldorf|leipzig|dresden|bremen|hannover|nuremberg|nürnberg|bundestag|bundesrat|bundesregierung|bundesbank|bundesliga|bundeswehr|cdu|csu|spd|fdp|grüne|gruene|afd|merz|scholz|habeck|lindner|deutsche bahn|lufthansa|volkswagen|mercedes|siemens|dax|krankenkasse|bürgergeld|mietpreisbremse|heizungsgesetz|bvg|s-bahn|u-bahn|autobahn|anmeldung|finanzamt|aufenthalt|einbürgerung|elterngeld)\b/i;
-
-    const requestedTopics = String(req.query.topics || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
-    const cityKey = String(req.query.city || '').toLowerCase().trim();
-
-    if (requestedTopics.length === 0) {
-      return res.status(200).json({ success: true, articles: [], reason: 'no_topics' });
-    }
-
-    // English expat-focused Germany feeds ONLY. No DW-EU, no DW-business,
-    // no Politico — those carry global news that pollutes relevancy.
-    const EXPAT_CORE = new Set(['The Local', 'IamExpat']);
-    const TOPIC_FEEDS = [
-      { url: 'https://www.thelocal.de/feed/', name: 'The Local' },
-      { url: 'https://feeds.thelocal.com/rss/de', name: 'The Local' },
-      { url: 'https://feeds.thelocal.com/rss/de/politics', name: 'The Local' },
-      { url: 'https://feeds.thelocal.com/rss/de/money', name: 'The Local' },
-      { url: 'https://feeds.thelocal.com/rss/de/news', name: 'The Local' },
-      { url: 'https://www.iamexpat.de/rss/news-germany', name: 'IamExpat' },
-      { url: 'https://www.iamexpat.de/rss/expat-news', name: 'IamExpat' },
-      { url: 'https://www.iamexpat.de/rss/lifestyle-news', name: 'IamExpat' },
-      { url: 'https://rss.dw.com/xml/rss-en-ger', name: 'Deutsche Welle' },
-    ];
-    const CITY_TOPIC_FEEDS = {
-      berlin: { url: 'https://feeds.thelocal.com/rss/de/berlin', name: 'The Local' },
-      frankfurt: { url: 'https://feeds.thelocal.com/rss/de/frankfurt', name: 'The Local' },
-      munich: { url: 'https://feeds.thelocal.com/rss/de/munich', name: 'The Local' },
-      hamburg: { url: 'https://feeds.thelocal.com/rss/de/hamburg', name: 'The Local' },
-    };
-    const feeds = [...TOPIC_FEEDS];
-    if (cityKey && CITY_TOPIC_FEEDS[cityKey]) feeds.push(CITY_TOPIC_FEEDS[cityKey]);
-
-    const poolCacheKey = `topicnews-pool-v4-${cityKey || 'none'}`;
-    let pool = null;
-
-    try {
-      const { data: cached } = await supabase
-        .from('digest_cache').select('digest')
-        .eq('cache_key', poolCacheKey)
-        .gt('expires_at', new Date().toISOString())
-        .single();
-      if (cached?.digest?.articles?.length) pool = cached.digest.articles;
-    } catch (e) {}
-
-    if (!pool) {
-      try {
-        const results = await Promise.all(
-          feeds.map(f =>
-            fetch(f.url, {
-              headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-              signal: AbortSignal.timeout(10000),
-            }).then(r => r.text()).catch(() => '')
-          )
-        );
-        pool = [];
-        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        for (let fi = 0; fi < results.length; fi++) {
-          const xml = results[fi];
-          if (!xml) continue;
-          const feed = feeds[fi];
-          const items = xml.match(/<item[\s\S]*?<\/item>/g) || [];
-          for (const item of items) {
-            const title = cleanText((item.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]);
-            const rawDesc = (item.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '';
-            const desc = cleanText(rawDesc);
-            const link = ((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '').trim();
-            const pubDate = (item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
-            const imgMatch = item.match(/url="([^"]+\.(jpg|jpeg|png|webp)[^"]*)"/i) ||
-                             item.match(/<media:content[^>]+url="([^"]+)"/i) ||
-                             item.match(/<enclosure[^>]+url="([^"]+)"/i) ||
-                             item.match(/<media:thumbnail[^>]+url="([^"]+)"/i);
-            const image = imgMatch ? imgMatch[1] : null;
-            if (!title || title.length < 12) continue;
-            if (/<[a-z]/i.test(title)) continue;
-            if (!isEnglishHeadline(title)) continue;
-
-            // Skip multi-topic roundups / live blogs — they mention many topics
-            // in passing and always cause keyword mismatches.
-            // DW live blogs have "/live-" in the URL; DW daily roundups start
-            // with "Germany news:" or "Germany updates:".
-            if (/\/live-/i.test(link)) continue;
-            if (/^germany (news|updates|headlines)\s*:/i.test(title)) continue;
-            if (/^(the week|this week) in germany/i.test(title)) continue;
-
-            const pub = pubDate ? new Date(pubDate) : new Date();
-            if (isNaN(pub.getTime()) || pub.getTime() < sevenDaysAgo) continue;
-
-            const isExpatCore = EXPAT_CORE.has(feed.name);
-            const isCityFeed = cityKey && CITY_TOPIC_FEEDS[cityKey] && feed.url === CITY_TOPIC_FEEDS[cityKey].url;
-
-            // Germany-relevance gate: expat-core sources auto-pass; others must
-            // mention a Germany signal in headline or summary.
-            if (!isExpatCore) {
-              const text = (title + ' ' + desc);
-              if (!STRONG_GERMANY.test(text)) continue;
-            }
-
-            pool.push({
-              id: `topic-${fi}-${Math.random().toString(36).slice(2, 9)}`,
-              headline: title,
-              summary: /^<[a-z]/i.test(desc.trim()) ? '' : desc.slice(0, 300),
-              source: feed.name,
-              sourceUrl: link,
-              image,
-              publishedAt: pub.toISOString(),
-              time: getRelativeTime(pub),
-              country: 'DE',
-              sourceCity: isCityFeed ? cityKey : 'nationwide',
-              _expatCore: isExpatCore,
-              _cityLocal: !!isCityFeed,
-            });
-          }
-        }
-        const seen = new Set();
-        pool = pool.filter(a => {
-          const k = a.headline.slice(0, 60).toLowerCase().replace(/[^a-z0-9]/g, '');
-          if (seen.has(k)) return false;
-          seen.add(k); return true;
-        });
-        try {
-          await supabase.from('digest_cache').upsert({
-            cache_key: poolCacheKey,
-            digest: { articles: pool },
-            fetched_at: new Date().toISOString(),
-            expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-          }, { onConflict: 'cache_key' });
-        } catch (e) {}
-      } catch (e) {
-        await logError(supabase, { endpoint: 'content', action: 'topicnews', error: e, sessionId });
-        return res.status(200).json({ success: true, articles: [], error: e.message });
-      }
-    }
-
-    // ── Keyword matcher: phrases use substring, single words use word-boundary ──
-    function matchTopic(text, topic) {
-      const kws = TOPIC_KEYWORDS[topic] || [topic];
-      for (const kw of kws) {
-        if (kw.includes(' ') || kw.includes('-')) {
-          if (text.includes(kw)) return true;
-        } else {
-          // word boundary for single tokens (handles ä/ö/ü)
-          const re = new RegExp(`(^|[^a-zäöüß])${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-zäöüß]|$)`, 'i');
-          if (re.test(text)) return true;
-        }
-      }
-      return false;
-    }
-
-    // Match + score every pooled article against requested topics.
-    const matched = [];
-    for (const a of pool) {
-      const headline = (' ' + (a.headline || '') + ' ').toLowerCase();
-      const summary = (' ' + (a.summary || '') + ' ').toLowerCase();
-      const matchedTopics = [];
-      let score = 0;
-      for (const topic of requestedTopics) {
-        const inHeadline = matchTopic(headline, topic);
-        const inSummary = matchTopic(summary, topic);
-        if (inHeadline || inSummary) {
-          matchedTopics.push(topic);
-          score += inHeadline ? 3 : 1; // headline match is much stronger
-        }
-      }
-      if (matchedTopics.length > 0) {
-        // Source quality + locality boosts
-        if (a._expatCore) score += 2;
-        if (a._cityLocal) score += 1;
-        if (a.image) score += 0.5; // prefer stories with art, mild boost
-        const { _expatCore, _cityLocal, ...clean } = a;
-        matched.push({ ...clean, matchedTopics, _score: score });
-      }
-    }
-
-    // Sort by score desc, then recency desc
-    matched.sort((a, b) => (b._score - a._score) || (new Date(b.publishedAt) - new Date(a.publishedAt)));
-
-    // Strip internal score before returning
-    const out = matched.map(({ _score, ...rest }) => rest);
-
-    const topicCounts = {};
-    for (const t of requestedTopics) topicCounts[t] = 0;
-    for (const a of out) {
-      for (const t of a.matchedTopics) topicCounts[t] = (topicCounts[t] || 0) + 1;
-    }
-
-    return res.status(200).json({
-      success: true,
-      articles: out,
-      topicCounts,
-      poolSize: pool.length,
-    });
   }
 
   // ── ACTION: image ─────────────────────────────────────────────
@@ -952,9 +681,11 @@ module.exports = async function handler(req, res) {
 
 
   // ── ACTION: article — REMOVED (L5 compliance) ────────────────
+  // Server-side article extraction was a copyright risk.
+  // ArticleReader now uses publisher WebView directly.
   if (action === 'article') {
     return res.status(410).json({ error: 'Article extraction removed. Use publisher URL directly.' });
   }
 
-  return res.status(400).json({ error: `Unknown action: ${action}. Use: news | rss | search | citynews | topicnews | image` });
+  return res.status(400).json({ error: `Unknown action: ${action}. Use: news | rss | search | image` });
 };
