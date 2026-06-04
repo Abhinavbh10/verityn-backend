@@ -677,9 +677,11 @@ async function generateFreshBriefing(supabase, city) {
     // Same-event dedup (two sources reporting one event → keep one).
     allArticles = dedupeSameEvent(allArticles);
     var afterDedup = allArticles.length;
-    // Per-source cap. Default 3, but single-source cities (Frankfurt) bump to 8.
+    // Per-source cap. Default 5, but single-source cities (Frankfurt) bump to 8.
+    // Cap=3 was too tight given Berlin has only 4 working sources — dedupe + cap=3
+    // was shrinking pool to ~9 articles before briefing, causing under-fill.
     var singleSourceCities = { frankfurt: true };
-    var sourceCapN = singleSourceCities[city] ? 8 : 3;
+    var sourceCapN = singleSourceCities[city] ? 8 : 5;
     allArticles = capPerSource(allArticles, sourceCapN);
 
     // Headline-must-mention-city filter (June 2026). Even though we fetch only
