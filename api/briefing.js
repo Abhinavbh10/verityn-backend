@@ -180,7 +180,9 @@ module.exports = async function handler(req, res) {
                 + '- Politician severance payouts, university building closures, abstract budget items, pure ceremonial politics — these are technically local but readers do not feel them.\n'
                 + '- Stories that are mostly about another city even if they mention ' + (cityNameStr || locationStr) + ' once.\n'
                 + '- Sports coverage of away games against other cities.\n'
-                + '- Pure weather descriptions ("warm weekend") unless they carry a material impact (heatwave warning, transit shutdown, forest fire restrictions, weekend swimming-pool openings).\n\n')
+                + '- Pure weather descriptions ("warm weekend") unless they carry a material impact (heatwave warning, transit shutdown, forest fire restrictions, weekend swimming-pool openings).\n\n'
+
+                + 'HARD RULE — WEATHER NEVER LEADS: A weather story (storms, temperature, rain, sun, hail, heat warnings, etc.) is NEVER allowed in slot 1, no matter how dramatic. Weather can earn slot 2 through 7 ONLY if it has a material impact (transit shutdown, school closure, named-event cancellation, forest fire restriction). The lead slot is reserved for news about the city. If the strongest pick in your pool is a weather story, find the SECOND strongest and lead with that instead.\n\n')
 
                 : ('HARD RULES (non-negotiable):\n\n'
             + '1. SOURCE CAP. Maximum 2 stories from any one source. If your picks include 3 stories from FAZ (or Tagesspiegel, NYT, anyone), DROP the weakest and replace with a different source. Cap is not optional.\n\n'
