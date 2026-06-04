@@ -782,7 +782,7 @@ async function enrichStories(stories, city) {
             },
             body: JSON.stringify({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 2500,
+                max_tokens: 4500,
                 messages: [{
                     role: 'user',
                     content: 'You write for Verityn, a morning news email for ' + context + '\n\nFor each story below, write two things:\n\n'
