@@ -142,8 +142,10 @@ function dedupeSameEvent(articles) {
             var overlap = 0;
             var prev = keptEntitySets[k];
             entSet.forEach(function(e) { if (prev.has(e)) overlap++; });
-            // 2+ shared salient entities = same event
-            if (overlap >= 2) { isDup = true; break; }
+            // 3+ shared salient entities = same event. (Was 2+ originally —
+            // bumped June 2026 because 2+ was over-merging related-but-distinct
+            // stories like two caterpillar articles about different neighborhoods.)
+            if (overlap >= 3) { isDup = true; break; }
         }
         if (!isDup) {
             kept.push(articles[i]);
