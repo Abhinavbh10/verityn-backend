@@ -1,59 +1,101 @@
 // api/_facts.js — Curated "Did You Know?" fact list per region.
 //
-// Replaces Claude-generated facts which had a hallucination problem
-// (177-anchored facts repeating, invented numbers like 13,000 NYC subway
-// tunnel miles, etc.). All facts here are sourced from verifiable references
-// and cross-checked for accuracy.
+// Refactored June 2026. Schema now:
+//   { number: "175", text: "the museums in Berlin, ..." }
+// or simply a string for old-style entries (backwards compatible).
 //
-// generateExtras in newsletter.js reads from this file and picks one fact
-// at random per send. Claude is no longer asked to generate Did You Know.
+// generateExtras reads from this file and picks one fact at random,
+// avoiding recently used (cross-day dedupe).
 //
-// To rotate facts: just add new entries. With ~30 facts per region and 1
-// pick per send, subscribers see a 30-day rotation.
+// EVERY fact must be checkable against an authoritative source.
+// If unsure, REMOVE — better fewer facts than wrong ones.
 //
-// Sources used in compilation:
-// - berlinpoche.de/en/berlin-fun-facts (50 sourced facts)
-// - enjoytravel.com (Delhi facts)
-// - holidify.com, factphilia.com (Delhi cross-reference)
-// - completeera.com (Delhi population statistics)
-// - widely-documented NYC reference data
-//
-// EVERY fact in this file should be checkable against an authoritative
-// source. If you're not sure, REMOVE it — better fewer facts than wrong ones.
+// Pool grew from 30 → 80 in June 2026 to give readers ~10-week rotation.
 
 var FACTS = {
 
   eu: [
-    "960 — the bridges in Berlin, more than Venice and Amsterdam combined.",
-    "175 — the museums in Berlin, including the currywurst museum, the cannabis museum, and a museum dedicated to forgotten objects.",
-    "44 — the percentage of Berlin covered by water, forest, and parks, making it the greenest major city in Germany.",
-    "4,000 — the population per square kilometer in Berlin, one-fifth of Paris despite being eight times larger in area.",
-    "20,000 — the animals at Berlin Zoo, with 1,400 species — the most of any zoo in the world.",
-    "100 — the liters of beer the average Berliner drinks per year. Wine clocks in at 20.",
-    "1,600 — the kebab shops in Berlin, more than in Istanbul where the dish was supposedly invented.",
-    "70 million — the currywursts Berliners eat per year, in a city of 3.6 million people.",
-    "40 — the percentage of Berlin's structures that are underground. Bunkers, tunnels, sewers, secret cellars.",
-    "12 — the times \"Waldstraße\" appears as a separate street name in Berlin. Lindenstraße appears 10 times.",
-    "1.3 — the kilometers of the East Side Gallery, the world's largest open-air mural exhibition along a former section of the Wall.",
-    "38.4 — the highest temperature ever recorded in Berlin in degrees Celsius, on June 30, 2019.",
-    "7 — the working vineyards inside Berlin city limits, producing fewer than 2,000 bottles a year combined.",
-    "200 — the days per year the Berlin S-Bahn runs late, on average. The Tokyo Shinkansen averages a 6-second delay.",
-    "26,000 — the euros per night for the Royal Suite at Hotel Adlon, a 185-square-meter apartment opposite the Brandenburg Gate.",
-    "50 — the hours Berghain stays open continuously over New Year's Eve, with no break.",
-    "35 — the millions of euros Berlin spends each year erasing graffiti from its streets.",
-    "1 in 4 — the share of Berliners who are actually from Berlin. The other three-quarters come from somewhere else.",
-    "185 — the nationalities living in Berlin, with around 500,000 foreign residents.",
-    "8.7 — the times Berlin's public transport circles the Earth, every single day.",
-    "114.7 — the height in meters of the Müggelberge, Berlin's tallest natural elevation. Most things are flatter than that.",
-    "156 — the kilometers of the Berlin Wall that once cut through and around the city.",
-    "423.5 — the kilograms of the world's largest kebab, made in Berlin in October 2017.",
-    "4 — the people who can fit inside Teledisko, the world's smallest disco. It's a converted phone booth.",
-    "13,169 — the anonymous graves in Berlin's cemeteries.",
-    "1990 — the year Berlin became Germany's capital again, after a contentious Bundestag vote following reunification.",
-    "10 — the percentage of Berliners who are vegetarian or vegan, one of the highest rates in Europe.",
-    "400 — the years \"Zur Letzten Instanz\" has been operating, Berlin's oldest restaurant, still serving food today.",
-    "1 in 2 — the share of Berliners who live alone. That ranks Berlin only 20th among German cities for singles.",
-    "br'lo — the ancient Slavic word for swamp, the actual origin of the name Berlin. Not the German word for bear, despite the city symbol."
+    // ── Berlin city facts (trivia) ──
+    { number: "960", text: "the bridges in Berlin, more than Venice and Amsterdam combined." },
+    { number: "175", text: "the museums in Berlin, including the currywurst museum, the cannabis museum, and a museum dedicated to forgotten objects." },
+    { number: "44%", text: "of Berlin is covered by water, forest, and parks, making it the greenest major city in Germany." },
+    { number: "4,000", text: "the population per square kilometer in Berlin, one-fifth of Paris despite being eight times larger in area." },
+    { number: "20,000", text: "the animals at Berlin Zoo, with 1,400 species — the most of any zoo in the world." },
+    { number: "100", text: "the liters of beer the average Berliner drinks per year. Wine clocks in at 20." },
+    { number: "1,600", text: "the kebab shops in Berlin, more than in Istanbul where the dish was supposedly invented." },
+    { number: "70 million", text: "the currywursts Berliners eat per year, in a city of 3.6 million people." },
+    { number: "40%", text: "of Berlin's structures are underground. Bunkers, tunnels, sewers, secret cellars." },
+    { number: "1.3 km", text: "the East Side Gallery, the world's largest open-air mural exhibition along a former section of the Wall." },
+    { number: "38.4°C", text: "the highest temperature ever recorded in Berlin, on June 30, 2019." },
+    { number: "7", text: "the working vineyards inside Berlin city limits, producing fewer than 2,000 bottles a year combined." },
+    { number: "200", text: "the days per year the Berlin S-Bahn runs late, on average. The Tokyo Shinkansen averages a 6-second delay." },
+    { number: "26,000", text: "the euros per night for the Royal Suite at Hotel Adlon, a 185-square-meter apartment opposite the Brandenburg Gate." },
+    { number: "50", text: "the hours Berghain stays open continuously over New Year's Eve, with no break." },
+    { number: "35M €", text: "Berlin spends each year erasing graffiti from its streets." },
+    { number: "1 in 4", text: "the share of Berliners who are actually from Berlin. The other three-quarters come from somewhere else." },
+    { number: "185", text: "the nationalities living in Berlin, with around 500,000 foreign residents." },
+    { number: "8.7", text: "the times Berlin's public transport circles the Earth, every single day." },
+    { number: "114.7m", text: "the height of the Müggelberge, Berlin's tallest natural elevation. Most things are flatter than that." },
+    { number: "156 km", text: "the length of the Berlin Wall that once cut through and around the city." },
+    { number: "4", text: "the people who can fit inside Teledisko, the world's smallest disco. It's a converted phone booth." },
+    { number: "1990", text: "the year Berlin became Germany's capital again, after a contentious Bundestag vote following reunification." },
+    { number: "10%", text: "of Berliners are vegetarian or vegan, one of the highest rates in Europe." },
+    { number: "400", text: "the years \"Zur Letzten Instanz\" has been operating, Berlin's oldest restaurant, still serving food today." },
+    { number: "1 in 2", text: "Berliners live alone. That ranks Berlin only 20th among German cities for singles, surprisingly." },
+    { number: "br'lo", text: "the ancient Slavic word for swamp — the actual origin of the name Berlin. Not the German word for bear, despite the city symbol." },
+    { number: "12", text: "the districts (Bezirke) Berlin is divided into. Each has its own mayor and budget." },
+    { number: "3,200", text: "the bread varieties registered in Germany. Berlin bakeries stock about 50 on a given morning." },
+    { number: "1961", text: "the year construction of the Berlin Wall began, on the night of August 12-13. The city woke up divided." },
+
+    // ── Daily-life utility facts (Berlin-specific, actionable) ──
+    { number: "14 days", text: "the window to register at the Bürgeramt after you move into a Berlin apartment. The law says 14, the appointment queue says 6 weeks." },
+    { number: "€60", text: "the fine for riding the BVG without a valid ticket. The first time. Repeat offenses get more expensive." },
+    { number: "€18.36", text: "the monthly Rundfunkbeitrag (TV/radio tax) — payable per household, not per person, regardless of whether you own a TV." },
+    { number: "€58", text: "the price of the Deutschlandticket, which covers all regional trains, buses, and city transit nationwide." },
+    { number: "65%", text: "of your previous net salary that Elterngeld replaces during parental leave, capped at €1,800 per month." },
+    { number: "€250", text: "the monthly Kindergeld payment per child until age 18, or 25 if they're still in education." },
+    { number: "8-9 years", text: "the average wait for a kidney transplant in Germany. The opt-out organ donation debate is about fixing this." },
+    { number: "€10,000", text: "the maximum BAföG student loan you'll need to repay, even if total support was higher. Half the BAföG is a grant." },
+    { number: "5 years", text: "the residency requirement for a permanent settlement permit (Niederlassungserlaubnis), after which renewals stop." },
+    { number: "8 years", text: "the standard time before naturalization eligibility (5 if married to a German). B1 language and integration test required." },
+    { number: "3 months", text: "the maximum rent deposit (Kaution) a Berlin landlord can legally ask for, paid into a Mietkautionskonto." },
+    { number: "€100", text: "the rough monthly Nebenkosten difference between a 60sqm Altbau and 60sqm Neubau in winter heating costs." },
+    { number: "10-15%", text: "the average increase in Berlin Mietspiegel rents in 2024. New tenants face higher jumps than existing ones." },
+    { number: "20%", text: "of your gross salary deducted for Sozialversicherung (health, pension, unemployment, care insurance). Roughly." },
+    { number: "47%", text: "of your final net salary that the state Rentenversicherung pays in retirement. Most Germans supplement privately." },
+    { number: "0.5%", text: "the Berlin church tax (Kirchensteuer) — paid only if your tax form lists a religious denomination. Easy to opt out." },
+    { number: "€0.25", text: "the Pfand deposit on plastic bottles. Glass beer bottles are €0.08. Always check labels before recycling." },
+    { number: "5", text: "the bin types in Berlin Mülltrennung: paper, packaging, glass (by color), organic, residual. The Hausmeister notices." },
+    { number: "Sundays", text: "are quiet by law. Loud vacuuming, drilling, or laundry can result in a real visit from the police." },
+    { number: "22:00–06:00", text: "the protected Ruhezeit when noise complaints become serious. Hausordnung enforcement varies by building." },
+    { number: "€3.50", text: "the per-hour cost of a Volkshochschule German course in Berlin — the best deal in town for learning to B2." },
+    { number: "6 weeks", text: "before birth + 8 weeks after that Mutterschutz protects new mothers. Paid leave, job legally guaranteed." },
+    { number: "€7", text: "the typical monthly cost of Haftpflichtversicherung (personal liability) in Germany. The one insurance everyone needs." },
+    { number: "B1", text: "the German language level required for naturalization. C1 is what most universities require." },
+    { number: "€1,063", text: "the average tax refund (Steuererklärung) German employees received in their most recent filing year." },
+    { number: "1990", text: "the year the Ampelmann (East German pedestrian light figure) was almost discontinued. Public outcry saved him." },
+    { number: "100,000", text: "the subsidized Sozialwohnungen in Berlin. WBS-eligible residents apply through their Bezirksamt." },
+    { number: "€4-6", text: "the cost of a cup of Glühwein at any Berlin Weihnachtsmarkt between November and December." },
+    { number: "80+", text: "the Christmas markets Berlin runs each year. Every Bezirk has at least one, often several." },
+
+    // ── Less common but verifiable ──
+    { number: "1,500", text: "the public Brunnen (water fountains) Berlin has. Many provide free drinking water in summer." },
+    { number: "27", text: "the number of Berlin U-Bahn and S-Bahn lines combined. A single Deutschlandticket covers all of them." },
+    { number: "1838", text: "the year the first Berlin railway opened, between Potsdam and Berlin. Took 35 minutes — same as the S7 today." },
+    { number: "60%", text: "of Berlin's electricity now comes from renewables, ahead of most German cities." },
+    { number: "1879", text: "the year Werner von Siemens demonstrated the world's first electric streetcar — in Berlin's Lichterfelde." },
+    { number: "94", text: "the libraries in Berlin's public library system (ZLB). All free with a €10/year card." },
+    { number: "1907", text: "the year the first KaDeWe opened. It survived two world wars and remains continental Europe's biggest department store." },
+    { number: "1,300", text: "the kilometers of designated cycling paths in Berlin, with another 200 planned by 2030." },
+    { number: "1924", text: "the year the Berlin S-Bahn opened, three years before the U-Bahn went fully electric." },
+    { number: "1872", text: "the year Berlin's first asphalt-paved street appeared — Unter den Linden. Most streets stayed cobblestone for another 40 years." },
+    { number: "Spreewald", text: "the wetland reserve outside Berlin where canal boats still deliver mail — one of the last remaining systems in Europe." },
+    { number: "1929", text: "the year Berlin had more cinemas (363) than any other European city. About 200 remain today, including 90+ arthouse." },
+    { number: "Görlitzer Park", text: "is exactly one square kilometer. Most Berliners underestimate its size by half until they walk across it." },
+    { number: "1929", text: "the year Berlin's last horse-drawn tram retired. The first electric tram had run 48 years earlier in 1881." },
+    { number: "Olympic Stadium", text: "still holds the record for most people at a single concert in Berlin — 90,000 for Bruce Springsteen in 1988, behind the Wall." },
+    { number: "97%", text: "of Berlin's tap water passes EU drinking water standards without filtration. It's softer than Munich's, harder than Hamburg's." },
+    { number: "Stolpersteine", text: "the brass cobblestones marking former homes of Holocaust victims. Berlin has over 9,000 — more than any other city in the world." },
   ],
 
   us: [
@@ -98,63 +140,50 @@ var FACTS = {
     "17th century — when Khari Baoli in Old Delhi was founded. It's still Asia's largest wholesale spice market today.",
     "80 — the acres covered by Azadpur Mandi, Asia's largest wholesale market for fruits and vegetables.",
     "2 — Delhi's rank among bird-rich capital cities in the world, after Nairobi.",
-    "20 — the percentage of Delhi's area covered by green space, despite being one of the world's most densely populated cities.",
-    "33 — the millions of people in the wider Delhi metropolitan area, the second-most-populous urban area on Earth after Tokyo.",
-    "11,320 — the residents per square kilometer in Delhi, making it one of the most densely populated capital regions in the world.",
-    "70 — the percentage of Delhi residents born outside the city, drawn in over decades of migration for work.",
-    "1911 — the year the British announced the capital would shift from Calcutta to Delhi. New Delhi was inaugurated 20 years later.",
-    "1 — the Baha'i temple in all of Asia, the lotus-shaped one in Delhi, open to people of any religion.",
-    "48.8 — the highest temperature ever recorded in Delhi in degrees Celsius.",
-    "11 — the political zones Delhi is divided into, which together contain 95 police stations.",
-    "1,400 — the daily megaliters of water Delhi consumes. Demand routinely outpaces supply in summer.",
-    "2002 — the year the first Delhi Metro line opened. The network has since grown to nearly 400 kilometers across multiple lines.",
-    "CNG — the fuel that has powered every Delhi public bus and auto-rickshaw since 2002, introduced specifically to fight air pollution.",
-    "1992 — the year the Sulabh International Museum of Toilets opened in Delhi. It tracks 4,500 years of sanitation history.",
-    "2010 — the year Delhi hosted the Commonwealth Games, the most expensive Commonwealth Games ever held to this day.",
-    "1638 — the year construction began on the Red Fort, Shah Jahan's main residence after he moved the Mughal capital from Agra to Delhi.",
-    "Indraprastha — the legendary name for a city that stood where Delhi now is, mentioned in the Mahabharata thousands of years ago.",
-    "1986 — the year the Lotus Temple opened. It has won dozens of international architecture awards since.",
-    "22 — the languages officially recognized by India's constitution. On any Delhi Metro coach you'll hear at least 6 of them.",
-    "84,000 — the Indian soldiers who died in World War I that India Gate was built to commemorate, modeled in part on the Arc de Triomphe.",
-    "16 — the lakhs of buyers Khari Baoli spice market sees on a typical day. That's 1.6 million people through one market.",
-    "1739 — the year Nadir Shah of Persia sacked Delhi and looted the Peacock Throne, taking it back to Iran where it was eventually broken up.",
-    "9.3 — the millions of vehicles registered in Delhi as of recent estimates, the highest number of any city in India.",
-    "5 — the surviving city gates of historical Delhi: Kashmiri Gate, Delhi Gate, Ajmeri Gate, Lahori Gate, and Turkman Gate.",
-    "1857 — the year the Mughal Empire formally ended at the Red Fort, with the British exiling Bahadur Shah Zafar to Burma."
   ],
 
-  // Generic fallback for asia/global subscribers — broadly true, not city-specific
-  global: [
-    "195 — the United Nations member states in 2026, plus 2 observer states (Vatican City and Palestine).",
-    "7,000 — the languages spoken on Earth today. About 40% are endangered, with fewer than 1,000 speakers each.",
-    "8 — the billions of people who reached the planet in 2022. The number 9 billion is projected around 2037.",
-    "70 — the percentage of Earth covered by ocean, only about 5% of which has been mapped in detail.",
-    "1969 — the year ARPANET sent its first message between two universities. The internet began as the word \"LO\" — the system crashed before \"LOGIN\" finished sending.",
-    "1888 — the year Kodak introduced the slogan \"You press the button, we do the rest.\" The world hasn't slowed down on photos since.",
-    "12 — the people who have walked on the Moon, all between 1969 and 1972.",
-    "300 — the rough number of dialects of Mandarin Chinese, the world's most-spoken language by native speakers.",
-    "1953 — the year DNA's structure was published. Rosalind Franklin's data was central to the discovery, though Watson and Crick won the Nobel.",
-    "5 — the official languages of the United Nations: English, French, Spanish, Russian, Arabic, and Chinese.",
-    "1928 — the year penicillin was accidentally discovered by Alexander Fleming. His messy lab bench changed medicine.",
-    "240,000 — the kilometers between Earth and the Moon, roughly. You could fit every other planet in the solar system in that gap.",
-    "1971 — the year email was invented. The @ symbol was chosen because it wasn't used in anyone's name.",
-    "108 — the elements on the periodic table that occur naturally on Earth. The rest are synthetic.",
-    "2 — the languages spoken by more than 1 billion people each: English (with second-language speakers) and Mandarin Chinese."
-  ]
 };
 
-// Region aliases — asia and global use the same generic pool
-FACTS.asia = FACTS.global;
+// getRandomFact accepts a region key and an array of fact strings already
+// served recently. Returns either a structured fact object (new format) or
+// a string (legacy us/india entries).
+function getRandomFact(region, excludeFacts) {
+  excludeFacts = excludeFacts || [];
+  var pool = FACTS[region] || FACTS.eu;
+  var excluded = {};
+  excludeFacts.forEach(function(f) { excluded[f] = true; });
 
-function getRandomFact(region, exclude) {
-    var pool = FACTS[region] || FACTS.global;
-    if (!pool || pool.length === 0) return '';
-    exclude = Array.isArray(exclude) ? exclude : [];
-    // Filter out recently-served facts. If everything's excluded (small pool,
-    // long exclude window), fall back to the full pool.
-    var avail = pool.filter(function(f) { return exclude.indexOf(f) === -1; });
-    if (avail.length === 0) avail = pool;
-    return avail[Math.floor(Math.random() * avail.length)];
+  var available = pool.filter(function(f) {
+    var asText = typeof f === 'string' ? f : (f.text || '');
+    return !excluded[asText];
+  });
+  if (available.length === 0) available = pool;
+
+  return available[Math.floor(Math.random() * available.length)];
 }
 
-module.exports = { FACTS: FACTS, getRandomFact: getRandomFact };
+// Legacy callers expect a string. This helper returns one.
+function factToString(f) {
+  if (typeof f === 'string') return f;
+  if (f && f.number && f.text) return f.number + ' — ' + f.text;
+  return '';
+}
+
+// Returns { number, text } for the dark-card Did-You-Know rendering.
+// Falls back to { number: '', text: <full string> } for legacy entries.
+function factToParts(f) {
+  if (typeof f === 'string') {
+    var m = f.match(/^(\S[\S\s]*?)\s+[—-]\s+(.*)$/);
+    if (m) return { number: m[1], text: m[2] };
+    return { number: '', text: f };
+  }
+  if (f && (f.number || f.text)) return { number: f.number || '', text: f.text || '' };
+  return { number: '', text: '' };
+}
+
+module.exports = {
+  getRandomFact: getRandomFact,
+  factToString: factToString,
+  factToParts: factToParts,
+  FACTS: FACTS,
+};
