@@ -343,101 +343,309 @@ function buildSubjectLine(stories) {
 function buildEmailHTML(stories, recipientName, email, extras) {
     var name = cleanName(recipientName);
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    var dayNum = new Date().toLocaleDateString('en-GB', { day: '2-digit' });
+    var dayMonth = new Date().toLocaleDateString('en-GB', { weekday: 'short', month: 'short' });
     var hour = new Date().getUTCHours() + 2;
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
 
     var ext = extras || {};
     var weather = ext.weather || { line1: '', details: '' };
+    var pollen = ext.pollen || '';                  // e.g. "Pollen: Grass HIGH" — pill renders only when set
+    var alerts = Array.isArray(ext.alerts) ? ext.alerts : []; // array of strings; section hides when empty
+    var events = Array.isArray(ext.events) ? ext.events : []; // [{when,title,detail}]
     var didYouKnow = ext.did_you_know || '';
-    var watching = ext.watching || '';
+    var didYouKnowBig = ext.did_you_know_number || '';   // optional, large display number
+    var word = ext.word_of_day || null;             // {german, literal, meaning, example}
+    var holiday = ext.holiday || null;              // {name, daysUntil, dateLabel} or null
+    var closer = ext.closer || 'You\'re caught up.';
 
-    var storyCards = '';
-    for (var i2 = 0; i2 < stories.length; i2++) {
-        if (i2 === 5 && stories.length > 5) {
-            storyCards += '<tr><td style="padding:12px 0 8px">'
-                + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                + '<td style="font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#C0392B;padding-right:12px;white-space:nowrap">Quick hits</td>'
-                + '<td style="border-bottom:1px solid rgba(0,0,0,0.08);width:100%"></td>'
-                + '</tr></table></td></tr>';
+    // ── Strike / disruption alert (top, red) — renders only if alerts present ──
+    var alertHtml = '';
+    if (alerts.length > 0) {
+        var alertItems = alerts.map(function(a) { return escapeHtml(a); }).join(' &middot; ');
+        alertHtml = '<tr><td style="background-color:#D14A28;color:#FBF5E8;padding:14px 24px">'
+            + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            + '<td style="vertical-align:top;width:28px;font-family:Georgia,serif;font-size:22px;line-height:1;color:#FBF5E8">!</td>'
+            + '<td style="padding-left:8px">'
+            + '<div style="font-size:9px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;margin-bottom:3px">Heads up — Today in Berlin</div>'
+            + '<div style="font-size:13.5px;line-height:1.45">' + alertItems + '</div>'
+            + '</td></tr></table></td></tr>';
+    }
+
+    // ── Pollen pill in weather strip ──
+    var pollenHtml = '';
+    if (pollen) {
+        // Color: high/very-high = red, moderate = amber, low = green
+        var low = /low/i.test(pollen);
+        var bg = low ? 'rgba(67,123,67,0.15)' : 'rgba(209,74,40,0.12)';
+        var fg = low ? '#3F6E3F' : '#A03A20';
+        pollenHtml = '<span style="background:' + bg + ';color:' + fg + ';padding:3px 10px;border-radius:14px;font-size:11px;font-weight:700;letter-spacing:0.5px;margin-left:8px">' + escapeHtml(pollen) + '</span>';
+    }
+
+    // ── Build story sections: lead (slot 0) + deep-dives (slot 1-3) + quick hits (slot 4+) ──
+    var leadHtml = '';
+    var deepDivesHtml = '';
+    var quickHitsHtml = '';
+
+    var leadStory = stories.length > 0 ? stories[0] : null;
+    var deepStart = leadStory ? 1 : 0;
+    var deepStories = [];
+    var quickStories = [];
+
+    // Lead is slot 0, deep-dives next 3 (max), rest become quick hits
+    for (var si = deepStart; si < stories.length && deepStories.length < 3; si++) {
+        deepStories.push(stories[si]);
+    }
+    var qStart = deepStart + deepStories.length;
+    for (var qi = qStart; qi < stories.length; qi++) {
+        quickStories.push(stories[qi]);
+    }
+
+    // -- Lead (large headline, body, why-line, read more) --
+    if (leadStory) {
+        leadHtml = '<tr><td style="background-color:#FBF5E8;padding:24px 36px 0">'
+            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">Today\'s lead</span>'
+            + '</td></tr>'
+            + '<tr><td style="background-color:#FBF5E8;padding:18px 36px 28px">'
+            + buildLeadStory(leadStory) + '</td></tr>';
+    }
+
+    // -- Deep dives --
+    if (deepStories.length > 0) {
+        deepDivesHtml = '<tr><td style="background-color:#FBF5E8;padding:24px 36px 0">'
+            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">Also worth knowing</span>'
+            + '</td></tr>';
+        for (var di = 0; di < deepStories.length; di++) {
+            deepDivesHtml += '<tr><td style="background-color:#FBF5E8;padding:24px 36px;border-top:1px solid rgba(122,106,80,0.25)">'
+                + buildDeepStory(deepStories[di]) + '</td></tr>';
         }
-        var sz = i2 === 0 ? 'large' : (i2 >= 5 ? 'small' : 'medium');
-        storyCards += buildStoryCard(stories[i2], i2, sz);
     }
 
-    var numberHtml = '';
+    // -- Quick hits --
+    if (quickStories.length > 0) {
+        quickHitsHtml = '<tr><td style="background-color:#FBF5E8;padding:24px 36px 0">'
+            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">Quick hits</span>'
+            + '</td></tr>'
+            + '<tr><td style="background-color:#FBF5E8;padding:8px 36px 28px">';
+        for (var qhi = 0; qhi < quickStories.length; qhi++) {
+            quickHitsHtml += buildQuickHit(quickStories[qhi], qhi === quickStories.length - 1);
+        }
+        quickHitsHtml += '</td></tr>';
+    }
+
+    // -- Events (This weekend) — renders only if events exist --
+    var eventsHtml = '';
+    if (events.length > 0) {
+        eventsHtml = '<tr><td style="background-color:#FBF5E8;padding:24px 36px 0">'
+            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">This weekend</span>'
+            + '</td></tr>'
+            + '<tr><td style="background-color:#FBF5E8;padding:8px 36px 28px">';
+        for (var ei = 0; ei < events.length; ei++) {
+            var ev = events[ei];
+            var isLast = ei === events.length - 1;
+            eventsHtml += '<div style="padding:16px 0' + (isLast ? '' : ';border-bottom:1px dotted rgba(122,106,80,0.4)') + '">'
+                + '<div style="font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#D14A28;margin-bottom:4px">' + escapeHtml(ev.when || '') + '</div>'
+                + '<div style="font-family:Georgia,serif;font-size:18px;font-weight:400;color:#1F1810;line-height:1.2;margin-bottom:4px">' + escapeHtml(ev.title || '') + '</div>'
+                + (ev.detail ? '<div style="font-size:13px;color:#5A4A30;line-height:1.5">' + escapeHtml(ev.detail) + '</div>' : '')
+                + '</div>';
+        }
+        eventsHtml += '</td></tr>';
+    }
+
+    // -- Did You Know (dark card with optional big number) --
+    var didYouKnowHtml = '';
     if (didYouKnow) {
-        numberHtml = '<tr><td style="padding:6px 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:12px"><tr>'
-            + '<td style="padding:18px 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-            + '<tr><td style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#C0392B;padding-bottom:8px">&#128161; Did you know?</td></tr>'
-            + '<tr><td style="font-family:Georgia,serif;font-size:15px;color:rgba(245,240,232,0.85);line-height:1.55">' + escapeHtml(didYouKnow) + '</td></tr>'
-            + '</table></td></tr></table></td></tr>';
+        var bigNum = didYouKnowBig ? '<div style="font-family:Georgia,serif;font-size:64px;line-height:0.9;margin-bottom:10px;color:#FBF5E8;font-weight:400">' + escapeHtml(didYouKnowBig) + '</div>' : '';
+        didYouKnowHtml = '<tr><td style="background-color:#FBF5E8;padding:0 36px;margin:24px 0">'
+            + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#1F1810"><tr><td style="padding:28px 32px;color:#FBF5E8">'
+            + '<div style="font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#D14A28;margin-bottom:18px">Did You Know</div>'
+            + bigNum
+            + '<div style="font-size:14px;line-height:1.55;color:#D0C5AE">' + escapeHtml(didYouKnow) + '</div>'
+            + '</td></tr></table></td></tr>'
+            + '<tr><td style="background-color:#FBF5E8;height:24px;font-size:0">&nbsp;</td></tr>';
     }
 
-    var watchHtml = '';
-    if (watching) {
-        watchHtml = '<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(192,57,43,0.05);border-radius:10px"><tr>'
-            + '<td style="padding:14px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-            + '<tr><td style="font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#C0392B;padding-bottom:5px">&#128065; What we\'re watching</td></tr>'
-            + '<tr><td style="font-size:13px;color:#444444;line-height:1.55">' + escapeHtml(watching) + '</td></tr>'
-            + '</table></td></tr></table></td></tr>';
+    // -- Word of the Day (cream card with red left border) --
+    var wordHtml = '';
+    if (word && word.german) {
+        var wordMeta = '';
+        if (word.literal) wordMeta += 'literal: "' + escapeHtml(word.literal) + '"';
+        if (word.literal && word.meaning) wordMeta += ' · ';
+        if (word.meaning) wordMeta += 'meaning: ' + escapeHtml(word.meaning);
+        wordHtml = '<tr><td style="background-color:#FBF5E8;padding:0 36px">'
+            + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3E9D2"><tr>'
+            + '<td style="padding:24px 28px;border-left:5px solid #D14A28">'
+            + '<div style="font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:#D14A28;margin-bottom:10px">Word of the Day</div>'
+            + '<div style="font-family:Georgia,serif;font-size:32px;font-weight:400;color:#1F1810;line-height:1;margin-bottom:6px">' + escapeHtml(word.german) + '</div>'
+            + (wordMeta ? '<div style="font-size:12px;color:#7A6A50;margin-bottom:12px;font-style:italic">' + wordMeta + '</div>' : '')
+            + (word.example ? '<div style="font-size:13.5px;color:#3A2E18;line-height:1.55;padding:12px 16px;background:rgba(31,24,16,0.05);border-left:3px solid #D14A28;font-style:italic">' + escapeHtml(word.example) + '</div>' : '')
+            + '</td></tr></table></td></tr>'
+            + '<tr><td style="background-color:#FBF5E8;height:24px;font-size:0">&nbsp;</td></tr>';
     }
 
+    // -- Holiday countdown (subtle centered strip) --
+    var holidayHtml = '';
+    if (holiday && holiday.name && holiday.daysUntil) {
+        holidayHtml = '<tr><td style="background-color:#FBF5E8;padding:20px 36px;text-align:center;border-top:1px solid rgba(122,106,80,0.25);border-bottom:1px solid rgba(122,106,80,0.25)">'
+            + '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#9A7E50;margin-bottom:6px">Next public holiday</div>'
+            + '<div style="font-size:14px;color:#3A2E18;line-height:1.5">'
+            + '<span style="font-family:Georgia,serif;font-style:italic;font-size:17px;color:#1F1810">' + escapeHtml(holiday.name) + '</span>'
+            + ' in <span style="color:#D14A28;font-weight:700">' + escapeHtml(String(holiday.daysUntil)) + ' day' + (holiday.daysUntil === 1 ? '' : 's') + '</span>'
+            + (holiday.dateLabel ? ' — ' + escapeHtml(holiday.dateLabel) : '')
+            + '</div></td></tr>';
+    }
+
+    // -- Curated closer + V-mark --
+    var closerHtml = '<tr><td style="background-color:#FBF5E8;padding:48px 36px 36px;text-align:center">'
+        + '<div style="font-family:Georgia,serif;font-size:42px;line-height:1;margin-bottom:16px;color:#1F1810">V<span style="color:#D14A28">.</span></div>'
+        + '<div style="font-family:Georgia,serif;font-style:italic;font-size:20px;color:#3A2E18;line-height:1.4;max-width:420px;margin:0 auto 18px">' + escapeHtml(closer) + '</div>'
+        + '<div style="font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#9A7E50">You\'re caught up</div>'
+        + '</td></tr>';
+
+    // -- Feedback row --
     var feedbackBase = 'https://verityn-backend-ten.vercel.app/api/newsletter?action=feedback&email=' + encodeURIComponent(email || '') + '&rating=';
-    var feedbackHtml = '<tr><td style="padding:8px 0 16px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + '<tr><td style="font-size:12px;color:#999999;padding-bottom:10px;text-align:center">How was today\'s briefing?</td></tr>'
-        + '<tr><td style="text-align:center">'
-        + '<a href="' + feedbackBase + 'good" style="text-decoration:none;padding:8px 16px;background:#F0F0F0;border-radius:16px;font-size:14px;margin:0 4px">&#128077; Loved it</a> &nbsp; '
-        + '<a href="' + feedbackBase + 'ok" style="text-decoration:none;padding:8px 16px;background:#F0F0F0;border-radius:16px;font-size:14px;margin:0 4px">&#129335; Okay</a> &nbsp; '
-        + '<a href="' + feedbackBase + 'bad" style="text-decoration:none;padding:8px 16px;background:#F0F0F0;border-radius:16px;font-size:14px;margin:0 4px">&#128078; Nah</a>'
-        + '</td></tr></table></td></tr>';
+    var feedbackHtml = '<tr><td style="background-color:#FBF5E8;padding:0 36px 28px;text-align:center">'
+        + '<div style="font-size:11px;color:#9A7E50;padding-bottom:10px;letter-spacing:0.5px">How was today\'s briefing?</div>'
+        + '<a href="' + feedbackBase + 'good" style="text-decoration:none;padding:8px 16px;background:#F3E9D2;border-radius:16px;font-size:13px;margin:0 4px;color:#3A2E18">&#128077; Loved it</a> &nbsp; '
+        + '<a href="' + feedbackBase + 'ok" style="text-decoration:none;padding:8px 16px;background:#F3E9D2;border-radius:16px;font-size:13px;margin:0 4px;color:#3A2E18">&#129335; Okay</a> &nbsp; '
+        + '<a href="' + feedbackBase + 'bad" style="text-decoration:none;padding:8px 16px;background:#F3E9D2;border-radius:16px;font-size:13px;margin:0 4px;color:#3A2E18">&#128078; Nah</a>'
+        + '</td></tr>';
 
     return '<!DOCTYPE html>'
         + '<html lang="en"><head>'
         + '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">'
         + '<meta name="x-apple-disable-message-reformatting">'
         + '<title>Verityn Daily Brief</title>'
-        + '<style>body,table,td{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}body{margin:0;padding:0;background-color:#F2EDE5}table{border-collapse:collapse}a{color:inherit}</style>'
-        + '</head><body style="margin:0;padding:0;background-color:#F2EDE5">'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F2EDE5">'
+        + '<style>body,table,td{font-family:Karla,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1F1810}body{margin:0;padding:0;background-color:#E8DDC9}table{border-collapse:collapse}a{color:inherit}</style>'
+        + '</head><body style="margin:0;padding:0;background-color:#E8DDC9">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#E8DDC9">'
         + '<tr><td align="center" style="padding:24px 16px">'
-        + '<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">'
-        + '<tr><td style="background-color:#C0392B;height:4px;border-radius:12px 12px 0 0;font-size:0"></td></tr>'
-        + '<tr><td style="background-color:#FFFFFF;padding:20px 24px;border-bottom:1px solid rgba(0,0,0,0.06)"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-        + '<td style="vertical-align:middle"><span style="font-family:Georgia,serif;font-size:26px;font-weight:700;color:#C0392B">V</span><span style="font-size:20px;font-weight:800;color:#111111">erityn</span></td>'
-        + '<td style="text-align:right;vertical-align:middle"><span style="font-size:12px;color:#999999">' + today + '</span></td>'
+        + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background-color:#FBF5E8">'
+
+        // STRIKE / DISRUPTION ALERT (top, conditional)
+        + alertHtml
+
+        // HEADER — logo + date stamp
+        + '<tr><td style="background-color:#FBF5E8;padding:36px 36px 24px;border-bottom:3px double #1F1810;position:relative">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+        + '<td style="vertical-align:top">'
+        + '<div style="font-family:Georgia,serif;font-size:42px;line-height:1;font-weight:400;color:#1F1810;margin-bottom:4px">Verityn<span style="color:#D14A28">.</span></div>'
+        + '<div style="font-size:12px;font-weight:500;letter-spacing:1px;color:#7A6A50;text-transform:uppercase">Berlin\'s daily for English speakers</div>'
+        + '</td>'
+        + '<td style="vertical-align:top;text-align:right;width:80px">'
+        + '<div style="font-family:Georgia,serif;font-size:28px;line-height:1;color:#1F1810">' + dayNum + '</div>'
+        + '<div style="font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#7A6A50;margin-top:4px">' + dayMonth + '</div>'
+        + '</td>'
         + '</tr></table></td></tr>'
-        + '<tr><td style="background-color:#FFFFFF;padding:20px 24px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + '<tr><td style="font-family:Georgia,serif;font-size:20px;font-weight:700;color:#111111;padding-bottom:6px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
-        + (weather.line1 ? '<tr><td style="font-size:15px;color:#444444;padding-bottom:4px">' + weather.line1 + '</td></tr>' : '')
-        + (weather.details ? '<tr><td style="font-size:12px;color:#999999;padding-bottom:6px">' + weather.details + '</td></tr>' : '')
-        + '<tr><td style="font-size:12px;color:#AAAAAA">We read 100+ articles this morning. You get the day&#39;s best.</td></tr>'
-        + '</table></td></tr>'
-        + '<tr><td style="background-color:#FFFFFF;padding:0 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-bottom:1px solid rgba(0,0,0,0.06)"></td></tr></table></td></tr>'
-        + '<tr><td style="background-color:#FFFFFF;padding:16px 24px 8px">'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + storyCards
-        + '</table></td></tr>'
-        + '<tr><td style="background-color:#FFFFFF;padding:10px 24px 16px;text-align:center">'
-        + '<span style="font-family:Georgia,serif;font-size:15px;font-weight:700;color:#111111">You\'re caught up. &#9996;</span>'
+
+        // WEATHER STRIP with optional pollen
+        + (weather.line1 || weather.details
+            ? '<tr><td style="background-color:#F3E9D2;padding:16px 36px;font-size:13px;color:#5A4A30">'
+                + (weather.line1 ? '<span style="font-family:Georgia,serif;font-size:18px;color:#1F1810">' + weather.line1 + '</span>' : '')
+                + (weather.details ? ' <span style="color:#C9B98A">·</span> <span style="font-style:italic;color:#7A6A50">' + weather.details + '</span>' : '')
+                + pollenHtml
+                + '</td></tr>'
+            : '')
+
+        // OPENING NOTE
+        + '<tr><td style="background-color:#FBF5E8;padding:32px 36px 24px;font-size:16px;line-height:1.55;color:#3A2E18;font-family:Georgia,serif;font-style:italic">'
+        + '<span style="font-style:normal;font-weight:700">' + greeting + ', ' + escapeHtml(name) + '.</span> 100+ articles read this morning. The day\'s best, below.'
         + '</td></tr>'
-        + '<tr><td style="padding:16px 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + numberHtml
-        + watchHtml
+
+        + leadHtml
+        + deepDivesHtml
+        + quickHitsHtml
+        + eventsHtml
+        + didYouKnowHtml
+        + wordHtml
+        + holidayHtml
+        + closerHtml
         + feedbackHtml
-        + '</table></td></tr>'
-        + '<tr><td style="padding:0 0 14px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(0,0,0,0.03);border-radius:10px"><tr>'
-        + '<td style="padding:14px 16px;text-align:center;font-size:12px;color:#999999">Want Deep Dive, AI Search, and Topics? <a href="https://verityn.news" style="color:#C0392B;font-weight:600;text-decoration:none">Get the app &#8250;</a></td>'
+
+        // CTA row
+        + '<tr><td style="background-color:#FBF5E8;padding:0 36px 14px;text-align:center">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:rgba(31,24,16,0.04);border-radius:8px"><tr>'
+        + '<td style="padding:14px 16px;text-align:center;font-size:12px;color:#7A6A50">Want Deep Dive, AI Search, and Topics? <a href="https://verityn.news" style="color:#D14A28;font-weight:600;text-decoration:none">Get the app &#8250;</a></td>'
         + '</tr></table></td></tr>'
-        + '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#111111;border-radius:0 0 12px 12px">'
-        + '<tr><td style="padding:20px 24px;text-align:center"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + '<tr><td style="text-align:center;padding-bottom:8px"><span style="font-family:Georgia,serif;font-size:14px;font-weight:700;color:#C0392B">V</span><span style="font-size:12px;font-weight:800;color:rgba(245,240,232,0.6)">erityn</span></td></tr>'
-        + '<tr><td style="text-align:center;font-size:11px;color:rgba(245,240,232,0.3);line-height:2">'
-        + '<a href="' + unsubLink + '" style="color:rgba(245,240,232,0.3);text-decoration:underline">Unsubscribe</a> &middot; '
-        + '<a href="https://verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">verityn.news</a> &middot; '
-        + '<a href="https://instagram.com/verityn.news" style="color:rgba(245,240,232,0.3);text-decoration:underline">Instagram</a></td></tr>'
-        + '</table></td></tr></table></td></tr>'
+
+        // FOOTER
+        + '<tr><td style="background-color:#F3E9D2;padding:24px 36px 32px;text-align:center">'
+        + '<div style="font-family:Georgia,serif;font-size:20px;color:#1F1810;margin-bottom:6px">Verityn<span style="color:#D14A28">.</span></div>'
+        + '<div style="font-size:11px;color:#7A6A50;letter-spacing:0.5px">'
+        + '<a href="' + unsubLink + '" style="color:#7A6A50;text-decoration:underline">Unsubscribe</a> &middot; '
+        + '<a href="https://verityn.news" style="color:#7A6A50;text-decoration:underline">verityn.news</a> &middot; '
+        + '<a href="https://instagram.com/verityn.news" style="color:#7A6A50;text-decoration:underline">Instagram</a>'
+        + '</div></td></tr>'
         + '</table></td></tr></table></body></html>';
+}
+
+// Helper: render lead story (big serif headline, body, why-line, read more)
+function buildLeadStory(s) {
+    var src = (s.source || '').toUpperCase();
+    var body = escapeHtml(s.body || s.summary || '');
+    var why = escapeHtml(s.why || '');
+    var headline = escapeHtml(s.headline || '');
+    var url = s.sourceUrl || s.url || '#';
+    return '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#9A7E50;margin-bottom:10px">' + src + '</div>'
+        + '<h1 style="font-family:Georgia,serif;font-size:30px;font-weight:400;line-height:1.15;color:#1F1810;margin:0 0 16px">' + headline + '</h1>'
+        + (body ? '<p style="font-size:15px;line-height:1.65;color:#3A2E18;margin:0 0 18px">' + body + '</p>' : '')
+        + (why
+            ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3E9D2;margin-bottom:14px"><tr><td style="padding:18px 22px">'
+                + '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#D14A28;margin-bottom:8px">Why this matters</div>'
+                + '<div style="font-size:13.5px;line-height:1.55;color:#3A2E18;font-style:italic">' + why + '</div>'
+                + '</td></tr></table>'
+            : '')
+        + '<a href="' + url + '" style="font-size:12px;font-weight:700;color:#1F1810;text-decoration:none;letter-spacing:0.5px;text-transform:uppercase;border-bottom:2px solid #D14A28;padding-bottom:1px">Read the full story &rarr;</a>';
+}
+
+// Helper: render deep-dive story (medium headline, body, why-line, read more)
+function buildDeepStory(s) {
+    var src = (s.source || '').toUpperCase();
+    var body = escapeHtml(s.body || s.summary || '');
+    var why = escapeHtml(s.why || '');
+    var headline = escapeHtml(s.headline || '');
+    var url = s.sourceUrl || s.url || '#';
+    return '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#9A7E50;margin-bottom:8px">' + src + '</div>'
+        + '<h2 style="font-family:Georgia,serif;font-size:22px;font-weight:400;line-height:1.2;color:#1F1810;margin:0 0 12px">' + headline + '</h2>'
+        + (body ? '<p style="font-size:14px;line-height:1.6;color:#3A2E18;margin:0 0 14px">' + body + '</p>' : '')
+        + (why
+            ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3E9D2;margin-bottom:14px"><tr><td style="padding:16px 20px">'
+                + '<div style="font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:#D14A28;margin-bottom:6px">Why this matters</div>'
+                + '<div style="font-size:13px;line-height:1.55;color:#3A2E18;font-style:italic">' + why + '</div>'
+                + '</td></tr></table>'
+            : '')
+        + '<a href="' + url + '" style="font-size:11px;font-weight:700;color:#1F1810;text-decoration:none;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #D14A28;padding-bottom:1px">Read &rarr;</a>';
+}
+
+// Helper: render quick-hit (V-mark + headline + 1-line summary)
+function buildQuickHit(s, isLast) {
+    var headline = escapeHtml(s.headline || '');
+    var summary = s.body ? escapeHtml(truncate(s.body, 140)) : (s.summary ? escapeHtml(truncate(s.summary, 140)) : '');
+    var src = (s.source || '').toUpperCase();
+    var url = s.sourceUrl || s.url || '#';
+    var border = isLast ? '' : 'border-bottom:1px dotted rgba(122,106,80,0.4);';
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="' + border + '"><tr>'
+        + '<td style="padding:14px 0;width:24px;vertical-align:top">'
+        + '<span style="font-family:Georgia,serif;font-size:18px;color:#D14A28;line-height:1.2;font-weight:400">V.</span>'
+        + '</td>'
+        + '<td style="padding:14px 0 14px 6px;vertical-align:top">'
+        + '<div style="font-size:14px;font-weight:700;line-height:1.35;color:#1F1810;margin-bottom:4px">'
+        + '<a href="' + url + '" style="color:#1F1810;text-decoration:none">' + headline + '</a>'
+        + (src ? ' <span style="font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#9A7E50;margin-left:8px">' + src + '</span>' : '')
+        + '</div>'
+        + (summary ? '<div style="font-size:12.5px;color:#5A4A30;line-height:1.5">' + summary + '</div>' : '')
+        + '</td></tr></table>';
+}
+
+// Helper: truncate text to N chars at word boundary
+function truncate(s, n) {
+    if (!s) return '';
+    if (s.length <= n) return s;
+    var cut = s.slice(0, n);
+    var sp = cut.lastIndexOf(' ');
+    if (sp > n * 0.6) cut = cut.slice(0, sp);
+    return cut + '…';
 }
 
 async function getWeather(city) {
