@@ -691,59 +691,83 @@ function cleanName(raw) {
     return name || 'there';
 }
 
-async function generateExtras(stories, city, excludeFacts) {
-    if (!stories || stories.length < 3) return { did_you_know: '', watching: '' };
+async function generateExtras(stories, city, excludeFacts, supabase) {
+    if (!stories || stories.length < 3) return { did_you_know: '', closer: '' };
     city = city || 'berlin';
 
-    // Did You Know pulls from the curated 'eu' pool in _facts.js — currently
-    // Germany/Berlin facts. Frankfurt subscribers see the same pool for now.
-    // excludeFacts is the list of facts served in recent sends (cross-day dedup)
-    // so the same fact doesn't appear two days running.
+    var extras = {};
+
+    // ── 1. Did You Know (curated, cross-day dedup) ──
     var facts = require('./_facts.js');
-    var didYouKnow = facts.getRandomFact('eu', excludeFacts || []);
+    var factObj = facts.getRandomFact('eu', excludeFacts || []);
+    var factParts = facts.factToParts(factObj);
+    extras.did_you_know = factParts.text;
+    extras.did_you_know_number = factParts.number;
 
-    // "What we're watching" is still Claude-generated since it's news-derived
-    // and benefits from real-time context. Tightened the prompt to push for
-    // forward-looking content (was recapping top stories).
-    var headlines = stories.slice(0, 7).map(function(s, i) {
-        return (i + 1) + '. ' + s.headline;
-    }).join('\n');
-
-    var watching = '';
+    // ── 2. Word of the Day (curated) ──
     try {
-        var r = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': process.env.ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 150,
-                messages: [{
-                    role: 'user',
-                    content: 'Below are 7 news headlines from this morning. Write ONE forward-looking sentence about something developing in the coming days or week. Do NOT recap any of these stories. Point at what to watch NEXT.\n\n'
-                        + 'WRONG (recap): "Bengal voting Phase 2 continues this week with over 1,000 candidates."\n'
-                        + 'WRONG (recap): "Italian rail company Italo is launching German operations with 26 trains."\n'
-                        + 'RIGHT (forward-looking): "Watch the ECB on Thursday — inflation data lands Wednesday and a rate decision follows."\n'
-                        + 'RIGHT (forward-looking): "Q1 earnings from BASF and Bayer drop this week. Both sit downstream of the Iran-driven chemical cost spike."\n'
-                        + 'RIGHT (forward-looking): "The Bundestag debates the Gebäudemodernisierungsgesetz next Wednesday. Watch how the heating cost split lands."\n\n'
-                        + 'Headlines:\n' + headlines + '\n\n'
-                        + 'Respond with ONLY the one sentence. No JSON, no markdown, no preamble.',
-                }],
-            }),
-        });
-        var data = await r.json();
-        var text = (data.content && data.content[0] && data.content[0].text) || '';
-        watching = text.replace(/```/g, '').trim();
-        // Strip any leading "What we're watching:" or quote marks the model might add
-        watching = watching.replace(/^["'\s]*(what.*?watching\s*[:\-–—]?\s*)?["']?/i, '').replace(/["']\s*$/, '').trim();
+        var words = require('./_words.js');
+        extras.word_of_day = words.getRandomWord([]);
     } catch (e) {
-        watching = '';
+        console.log('[newsletter] words.js missing: ' + e.message);
     }
 
-    return { did_you_know: didYouKnow, watching: watching };
+    // ── 3. Curated closer ──
+    try {
+        var closers = require('./_closers.js');
+        extras.closer = closers.getRandomCloser([]);
+    } catch (e) {
+        extras.closer = 'You\'re caught up.';
+    }
+
+    // ── 4. Holiday countdown (renders only if upcoming holiday within 14 days) ──
+    try {
+        var holidays = require('./_holidays.js');
+        var nextHoliday = holidays.getNextHoliday(new Date(), 14);
+        if (nextHoliday) extras.holiday = nextHoliday;
+    } catch (e) {
+        console.log('[newsletter] holidays.js missing: ' + e.message);
+    }
+
+    // ── 5. Active alerts (read from Supabase) ──
+    // Renders the red strike-alert strip at the top of the email.
+    if (supabase) {
+        try {
+            var alertsResp = await supabase
+                .from('active_alerts')
+                .select('text, expires_at')
+                .or('expires_at.is.null,expires_at.gte.' + new Date().toISOString())
+                .order('priority', { ascending: false });
+            if (alertsResp.data && alertsResp.data.length > 0) {
+                extras.alerts = alertsResp.data.map(function(a) { return a.text; }).filter(Boolean);
+            }
+        } catch (e) {
+            console.log('[newsletter] alerts fetch failed (non-fatal): ' + e.message);
+        }
+    }
+
+    // ── 6. Events (read from Supabase) ──
+    // Renders the "This weekend" section. Past events auto-purged.
+    if (supabase) {
+        try {
+            var todayStr = new Date().toISOString().slice(0, 10);
+            var eventsResp = await supabase
+                .from('events')
+                .select('when_label, title, detail, sort_date')
+                .gte('sort_date', todayStr)
+                .order('sort_date', { ascending: true })
+                .limit(5);
+            if (eventsResp.data && eventsResp.data.length > 0) {
+                extras.events = eventsResp.data.map(function(e) {
+                    return { when: e.when_label, title: e.title, detail: e.detail };
+                });
+            }
+        } catch (e) {
+            console.log('[newsletter] events fetch failed (non-fatal): ' + e.message);
+        }
+    }
+
+    return extras;
 }
 
 var TRANSLATE_LIMIT = 12;
@@ -950,7 +974,42 @@ async function generateFreshBriefing(supabase, city) {
         var d2 = await r2.json();
         if (d2.stories && d2.stories.length >= 3) {
             console.log('[newsletter] city=' + city + ' picked=' + d2.stories.length);
-            return d2.stories;
+
+            // Backfill with quick hits from remaining pool if briefing returned <7.
+            // The first 4 stories (lead + 3 deep dives) come from briefing's editorial
+            // picks. Slots 5-7 fill from leftover pool articles whose headlines aren't
+            // already in the picked set. Cheaper than a second briefing call and
+            // ensures Quick Hits section never empty.
+            var picked = d2.stories;
+            var pickedHeadlines = {};
+            picked.forEach(function(s) {
+                if (s.headline) pickedHeadlines[s.headline.toLowerCase().trim()] = true;
+            });
+
+            var quickHitsNeeded = 7 - picked.length;
+            if (quickHitsNeeded > 0) {
+                var pool = allArticles.filter(function(a) {
+                    var key = (a.headline || '').toLowerCase().trim();
+                    return key && !pickedHeadlines[key];
+                });
+                // Take up to N quick hits, formatted to look like briefing-picked stories
+                // (briefing returns {headline, summary, source, sourceUrl, image, why?})
+                var quickHits = pool.slice(0, quickHitsNeeded).map(function(a) {
+                    return {
+                        headline: a.headline,
+                        summary: a.summary || a.description || '',
+                        body: a.summary || a.description || '',  // truncated by buildQuickHit
+                        why: '',                                     // intentionally empty for quick hits
+                        source: a.source,
+                        sourceUrl: a.url,
+                        image: a.image || null,
+                        isQuickHit: true,
+                    };
+                });
+                console.log('[newsletter] city=' + city + ' backfilled ' + quickHits.length + ' quick hits');
+                return picked.concat(quickHits);
+            }
+            return picked;
         } else if (d2.error) {
             console.log('[newsletter] city=' + city + ' briefing error: ' + d2.error);
         }
@@ -1147,7 +1206,7 @@ module.exports = async function handler(req, res) {
             if (!stories) return res.json({ error: 'No briefing available yet.', city: previewCity });
             stories = await enrichStories(stories, previewCity);
             var pvMemory = await getRecentMemory(supabase, previewCity, 7);
-            var extras = await generateExtras(stories, previewCity, pvMemory.facts);
+            var extras = await generateExtras(stories, previewCity, pvMemory.facts, supabase);
             extras.weather = await getWeather(previewCity);
             res.setHeader('Content-Type', 'text/html');
             return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
@@ -1213,7 +1272,7 @@ module.exports = async function handler(req, res) {
 
             stories2 = await enrichStories(stories2, testCity);
             var tMemory = await getRecentMemory(supabase, testCity, 7);
-            var extras2 = await generateExtras(stories2, testCity, tMemory.facts);
+            var extras2 = await generateExtras(stories2, testCity, tMemory.facts, supabase);
             extras2.weather = await getWeather(testCity);
 
             var transporter = getTransporter();
@@ -1327,7 +1386,7 @@ module.exports = async function handler(req, res) {
                 cStories = await enrichStories(cStories, cCity);
                 // Fetch recently-served facts for this city so we don't repeat one
                 var cMemory = await getRecentMemory(supabase, cCity, 7);
-                var cExtras = await generateExtras(cStories, cCity, cMemory.facts);
+                var cExtras = await generateExtras(cStories, cCity, cMemory.facts, supabase);
                 cExtras.weather = await getWeather(cCity);
                 var cSubject = buildSubjectLine(cStories);
 
