@@ -499,8 +499,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
     // -- Curated closer + V-mark --
     var closerHtml = '<tr><td style="background-color:#FBF5E8;padding:48px 36px 36px;text-align:center">'
         + '<div style="font-family:Georgia,serif;font-size:42px;line-height:1;margin-bottom:16px;color:#1F1810">V<span style="color:#D14A28">.</span></div>'
-        + '<div style="font-family:Georgia,serif;font-style:italic;font-size:20px;color:#3A2E18;line-height:1.4;max-width:420px;margin:0 auto 18px">' + escapeHtml(closer) + '</div>'
-        + '<div style="font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#9A7E50">You\'re caught up</div>'
+        + '<div style="font-family:Georgia,serif;font-style:italic;font-size:20px;color:#3A2E18;line-height:1.4;max-width:420px;margin:0 auto">' + escapeHtml(closer) + '</div>'
         + '</td></tr>';
 
     // -- Feedback row --
