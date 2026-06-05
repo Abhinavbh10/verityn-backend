@@ -411,7 +411,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '<tr><td style="font-family:Georgia,serif;font-size:20px;font-weight:700;color:#111111;padding-bottom:6px">' + greeting + ', ' + escapeHtml(name) + '</td></tr>'
         + (weather.line1 ? '<tr><td style="font-size:15px;color:#444444;padding-bottom:4px">' + weather.line1 + '</td></tr>' : '')
         + (weather.details ? '<tr><td style="font-size:12px;color:#999999;padding-bottom:6px">' + weather.details + '</td></tr>' : '')
-        + '<tr><td style="font-size:12px;color:#AAAAAA">We read 100+ articles this morning. You get 7.</td></tr>'
+        + '<tr><td style="font-size:12px;color:#AAAAAA">We read 100+ articles this morning. You get the day&#39;s best.</td></tr>'
         + '</table></td></tr>'
         + '<tr><td style="background-color:#FFFFFF;padding:0 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="border-bottom:1px solid rgba(0,0,0,0.06)"></td></tr></table></td></tr>'
         + '<tr><td style="background-color:#FFFFFF;padding:16px 24px 8px">'
