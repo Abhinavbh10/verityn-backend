@@ -1304,7 +1304,19 @@ module.exports = async function handler(req, res) {
                 var rows = qResp.data;
                 var submitUrl = '/api/newsletter?action=editor-select&key=' + encodeURIComponent(evKey) + '&pick_date=' + viewPickDate;
 
-                // Group by source
+                // Build JSON payload of all rows for the client-side picker UI
+                var clientRows = rows.map(function(r) {
+                    return {
+                        id: r.id,
+                        headline: r.headline || '',
+                        summary: r.summary ? truncate(r.summary, 180) : '',
+                        source: (r.source || 'OTHER').toUpperCase(),
+                        selected: !!r.selected,
+                    };
+                });
+                var clientRowsJson = JSON.stringify(clientRows).replace(/</g, '\\u003c');
+
+                // Group raw rows by source for left-pane display
                 var bySource = {};
                 rows.forEach(function(r) {
                     var src = (r.source || 'OTHER').toUpperCase();
@@ -1313,53 +1325,189 @@ module.exports = async function handler(req, res) {
                 });
 
                 var alreadySelected = rows.filter(function(r) { return r.selected; }).length;
+                var alreadyOrderedIds = rows
+                    .filter(function(r) { return r.selected; })
+                    .sort(function(a, b) { return (a.sort_order || 0) - (b.sort_order || 0); })
+                    .map(function(r) { return r.id; });
+                var alreadyOrderedJson = JSON.stringify(alreadyOrderedIds);
 
-                var rowsHtml = '';
+                var poolHtml = '';
                 Object.keys(bySource).sort().forEach(function(src) {
-                    rowsHtml += '<div style="margin-top:24px;padding-bottom:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#D14A28;border-bottom:1px solid rgba(31,24,16,0.1)">' + escapeHtml(src) + ' &middot; ' + bySource[src].length + '</div>';
+                    poolHtml += '<div class="src-label">' + escapeHtml(src) + ' &middot; ' + bySource[src].length + '</div>';
                     bySource[src].forEach(function(r) {
-                        var checked = r.selected ? 'checked' : '';
                         var headline = escapeHtml(r.headline || '');
                         var summary = r.summary ? escapeHtml(truncate(r.summary, 180)) : '';
-                        rowsHtml += '<label style="display:flex;gap:12px;padding:12px 4px;border-bottom:1px dotted rgba(122,106,80,0.3);cursor:pointer;align-items:flex-start">'
-                            + '<input type="checkbox" name="pick" value="' + r.id + '" ' + checked + ' style="width:20px;height:20px;cursor:pointer;margin-top:2px;flex-shrink:0">'
-                            + '<div>'
-                            + '<div style="font-size:14px;line-height:1.4;color:#1F1810">' + headline + '</div>'
-                            + (summary ? '<div style="font-size:12px;line-height:1.5;color:#7A6A50;margin-top:4px">' + summary + '</div>' : '')
+                        poolHtml += '<div class="pool-item" data-id="' + r.id + '">'
+                            + '<button type="button" class="pick-btn" onclick="pickItem(' + r.id + ')">+</button>'
+                            + '<div class="pool-content">'
+                            + '<div class="pool-headline">' + headline + '</div>'
+                            + (summary ? '<div class="pool-summary">' + summary + '</div>' : '')
                             + '</div>'
-                            + '</label>';
+                            + '</div>';
                     });
                 });
 
                 var statusBanner = alreadySelected > 0
-                    ? '<div style="margin-top:14px;padding:10px 14px;background:#E6F2E0;color:#3F6E3F;border-radius:4px;font-size:13px">Currently ' + alreadySelected + ' picks selected. Submitting will overwrite.</div>'
+                    ? '<div class="status-banner">Currently ' + alreadySelected + ' picks locked. Drag to reorder, or modify and resubmit.</div>'
                     : '';
 
                 var pageHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Picker</title>'
-                    + '<style>body{font-family:-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1F1810;background:#FBF5E8;font-size:15px}'
-                    + 'h1{font-family:Georgia,serif;font-size:32px;font-weight:400;margin-bottom:6px}'
+                    + '<style>'
+                    + '*{box-sizing:border-box}'
+                    + 'body{font-family:-apple-system,sans-serif;margin:0;padding:0;color:#1F1810;background:#E8DDC9;font-size:15px}'
+                    + '.frame{max-width:1240px;margin:0 auto;padding:24px}'
+                    + '.header{padding:8px 0 24px}'
+                    + 'h1{font-family:Georgia,serif;font-size:32px;font-weight:400;margin:0 0 6px;color:#1F1810}'
                     + 'h1 .v{color:#D14A28}'
                     + '.sub{font-size:13px;color:#7A6A50;letter-spacing:0.5px}'
-                    + '.intro{margin:24px 0;font-size:14px;line-height:1.55;color:#3A2E18}'
+                    + '.intro{margin:14px 0 18px;font-size:14px;line-height:1.55;color:#3A2E18;max-width:760px}'
                     + '.intro strong{color:#D14A28}'
-                    + 'input[type=checkbox]{accent-color:#D14A28}'
-                    + 'button{background:#1F1810;color:#FBF5E8;border:none;padding:14px 36px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;border-radius:2px;margin-top:32px}'
-                    + 'button:hover{background:#D14A28}'
-                    + '.actions{text-align:center;padding:32px 0 60px}'
-                    + '.count{display:inline-block;margin-right:24px;font-size:13px;color:#7A6A50}'
-                    + '.count strong{color:#D14A28;font-size:18px;font-weight:700}'
+                    + '.status-banner{margin:10px 0 18px;padding:10px 14px;background:#E6F2E0;color:#3F6E3F;border-radius:4px;font-size:13px;max-width:760px}'
+
+                    + '.workspace{display:grid;grid-template-columns:1fr 480px;gap:24px;align-items:start}'
+                    + '@media (max-width:920px){.workspace{grid-template-columns:1fr}}'
+
+                    + '.pane{background:#FBF5E8;border-radius:6px;padding:20px;min-height:400px}'
+                    + '.pane-header{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:12px;border-bottom:2px solid #1F1810;margin-bottom:10px}'
+                    + '.pane-title{font-family:Georgia,serif;font-size:20px;font-weight:400}'
+                    + '.pane-count{font-size:12px;color:#7A6A50;letter-spacing:0.5px}'
+
+                    + '.src-label{margin-top:16px;padding-bottom:4px;font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#D14A28;border-bottom:1px solid rgba(31,24,16,0.1)}'
+                    + '.src-label:first-child{margin-top:0}'
+
+                    + '.pool-item{display:flex;gap:10px;padding:10px 4px;border-bottom:1px dotted rgba(122,106,80,0.3);align-items:flex-start}'
+                    + '.pool-item.picked{opacity:0.4}'
+                    + '.pool-item.picked .pick-btn{background:#7A6A50;cursor:not-allowed}'
+                    + '.pick-btn{flex-shrink:0;width:28px;height:28px;border:none;border-radius:50%;background:#D14A28;color:#fff;font-size:18px;font-weight:600;cursor:pointer;line-height:1}'
+                    + '.pick-btn:hover{background:#1F1810}'
+                    + '.pool-content{flex:1;min-width:0}'
+                    + '.pool-headline{font-size:14px;line-height:1.4;color:#1F1810}'
+                    + '.pool-summary{font-size:12px;line-height:1.5;color:#7A6A50;margin-top:4px}'
+
+                    + '.picks-list{margin-top:8px;min-height:200px}'
+                    + '.pick-card{display:flex;gap:12px;padding:14px;margin-bottom:10px;background:#fff;border-radius:4px;border-left:4px solid #D14A28;align-items:flex-start;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,0.04)}'
+                    + '.pick-card.dragging{opacity:0.4;cursor:grabbing}'
+                    + '.pick-card.lead{border-left-color:#1F1810;background:#F3E9D2}'
+                    + '.pick-num{flex-shrink:0;width:28px;height:28px;border-radius:50%;background:#1F1810;color:#FBF5E8;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-size:14px;font-weight:400}'
+                    + '.pick-card.lead .pick-num{background:#D14A28}'
+                    + '.pick-content{flex:1;min-width:0}'
+                    + '.pick-headline{font-size:13px;line-height:1.35;color:#1F1810}'
+                    + '.pick-meta{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#D14A28;margin-top:4px}'
+                    + '.remove-btn{flex-shrink:0;width:24px;height:24px;border:none;border-radius:50%;background:transparent;color:#7A6A50;font-size:18px;cursor:pointer;line-height:1}'
+                    + '.remove-btn:hover{background:rgba(209,74,40,0.15);color:#D14A28}'
+
+                    + '.empty-state{padding:60px 20px;text-align:center;color:#9A7E50;font-size:14px;font-style:italic}'
+
+                    + '.actions{margin-top:24px;padding-top:18px;border-top:1px solid rgba(31,24,16,0.08);text-align:center}'
+                    + '.lead-hint{font-size:11px;color:#9A7E50;margin-bottom:14px;letter-spacing:0.5px}'
+                    + 'button.lock{background:#1F1810;color:#FBF5E8;border:none;padding:14px 36px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;border-radius:2px;width:100%}'
+                    + 'button.lock:hover{background:#D14A28}'
+                    + 'button.lock:disabled{background:#9A7E50;cursor:not-allowed}'
                     + '</style></head><body>'
+
+                    + '<div class="frame">'
+                    + '<div class="header">'
                     + '<h1>Picker<span class="v">.</span></h1>'
                     + '<div class="sub">For ' + viewPickDate + ' &middot; ' + rows.length + ' stories in pool</div>'
-                    + '<div class="intro">Tick the stories you want in tomorrow morning\'s newsletter. Aim for <strong>7</strong> — minimum 5, or the system falls back to automated. Submit before <strong>04:00 Berlin time</strong> tomorrow.</div>'
+                    + '<div class="intro">Click <strong>+</strong> on the left to pick. Drag picks on the right to reorder. The top card becomes <strong>tomorrow\'s lead</strong>. Aim for 7. Submit before 04:00 Berlin time.</div>'
                     + statusBanner
-                    + '<form method="POST" action="' + submitUrl + '">'
-                    + rowsHtml
-                    + '<div class="actions"><span class="count" id="count"><strong id="n">0</strong> selected</span><button type="submit">Lock my picks</button></div>'
+                    + '</div>'
+
+                    + '<div class="workspace">'
+
+                    + '<div class="pane">'
+                    + '<div class="pane-header"><span class="pane-title">Pool</span><span class="pane-count" id="pool-count">' + rows.length + ' stories</span></div>'
+                    + poolHtml
+                    + '</div>'
+
+                    + '<div class="pane">'
+                    + '<div class="pane-header"><span class="pane-title">Your picks</span><span class="pane-count"><strong id="pick-n" style="color:#D14A28;font-size:18px">0</strong> / 7</span></div>'
+                    + '<div class="lead-hint">↕ Drag to reorder &middot; top card is tomorrow\'s lead</div>'
+                    + '<div class="picks-list" id="picks-list">'
+                    + '<div class="empty-state" id="empty-state">No picks yet. Click <strong>+</strong> on the left to start.</div>'
+                    + '</div>'
+                    + '<form id="lock-form" method="POST" action="' + submitUrl + '">'
+                    + '<input type="hidden" name="ids" id="ids-input" value="">'
+                    + '<div class="actions">'
+                    + '<button type="submit" class="lock" id="lock-btn" disabled>Lock my picks</button>'
+                    + '</div>'
                     + '</form>'
+                    + '</div>'
+
+                    + '</div>'
+                    + '</div>'
+
                     + '<script>'
-                    + 'function refresh(){var n=document.querySelectorAll(\'input[name=pick]:checked\').length;document.getElementById("n").textContent=n;}'
-                    + 'document.querySelectorAll(\'input[name=pick]\').forEach(function(el){el.addEventListener("change",refresh)});refresh();'
+                    + 'var ROWS=' + clientRowsJson + ';'
+                    + 'var rowMap={};ROWS.forEach(function(r){rowMap[r.id]=r});'
+                    + 'var picks=' + alreadyOrderedJson + ';'
+                    + 'var listEl=document.getElementById("picks-list");'
+                    + 'var emptyEl=document.getElementById("empty-state");'
+                    + 'var lockBtn=document.getElementById("lock-btn");'
+                    + 'var idsInput=document.getElementById("ids-input");'
+                    + 'var pickN=document.getElementById("pick-n");'
+
+                    + 'function render(){'
+                    + '  Array.from(listEl.querySelectorAll(".pick-card")).forEach(function(n){n.remove()});'
+                    + '  if(picks.length===0){emptyEl.style.display="block"}else{emptyEl.style.display="none"}'
+                    + '  picks.forEach(function(id,i){'
+                    + '    var r=rowMap[id];if(!r)return;'
+                    + '    var card=document.createElement("div");'
+                    + '    card.className="pick-card"+(i===0?" lead":"");'
+                    + '    card.draggable=true;'
+                    + '    card.dataset.id=id;'
+                    + '    card.innerHTML="<div class=\\"pick-num\\">"+(i+1)+"</div>"+'
+                    + '      "<div class=\\"pick-content\\">"+'
+                    + '      "<div class=\\"pick-headline\\">"+escapeHtml(r.headline)+"</div>"+'
+                    + '      "<div class=\\"pick-meta\\">"+escapeHtml(r.source)+(i===0?" &middot; lead":"")+"</div>"+'
+                    + '      "</div>"+'
+                    + '      "<button type=\\"button\\" class=\\"remove-btn\\" title=\\"Remove\\">\u00d7</button>";'
+                    + '    card.addEventListener("dragstart",dragStart);'
+                    + '    card.addEventListener("dragover",dragOver);'
+                    + '    card.addEventListener("drop",drop);'
+                    + '    card.addEventListener("dragend",dragEnd);'
+                    + '    card.querySelector(".remove-btn").addEventListener("click",function(e){e.stopPropagation();removePick(id)});'
+                    + '    listEl.appendChild(card);'
+                    + '  });'
+                    + '  Array.from(document.querySelectorAll(".pool-item")).forEach(function(it){'
+                    + '    var id=parseInt(it.dataset.id,10);'
+                    + '    if(picks.indexOf(id)!==-1){it.classList.add("picked")}else{it.classList.remove("picked")}'
+                    + '  });'
+                    + '  pickN.textContent=picks.length;'
+                    + '  idsInput.value=picks.join(",");'
+                    + '  lockBtn.disabled=picks.length<1;'
+                    + '  lockBtn.textContent="Lock my picks ("+picks.length+")";'
+                    + '}'
+
+                    + 'function escapeHtml(s){return String(s||"").replace(/[&<>"\']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c]})}'
+
+                    + 'function pickItem(id){'
+                    + '  if(picks.indexOf(id)!==-1)return;'
+                    + '  picks.push(id);render();'
+                    + '}'
+
+                    + 'function removePick(id){'
+                    + '  picks=picks.filter(function(p){return p!==id});render();'
+                    + '}'
+
+                    + 'var dragSrcId=null;'
+                    + 'function dragStart(e){dragSrcId=parseInt(e.currentTarget.dataset.id,10);e.currentTarget.classList.add("dragging");e.dataTransfer.effectAllowed="move"}'
+                    + 'function dragOver(e){e.preventDefault();e.dataTransfer.dropEffect="move";return false}'
+                    + 'function dragEnd(e){e.currentTarget.classList.remove("dragging")}'
+                    + 'function drop(e){'
+                    + '  e.preventDefault();e.stopPropagation();'
+                    + '  var targetId=parseInt(e.currentTarget.dataset.id,10);'
+                    + '  if(dragSrcId===null||dragSrcId===targetId)return false;'
+                    + '  var fromIdx=picks.indexOf(dragSrcId);'
+                    + '  var toIdx=picks.indexOf(targetId);'
+                    + '  if(fromIdx<0||toIdx<0)return false;'
+                    + '  picks.splice(fromIdx,1);'
+                    + '  picks.splice(toIdx,0,dragSrcId);'
+                    + '  render();'
+                    + '  return false;'
+                    + '}'
+
+                    + 'render();'
                     + '</script>'
                     + '</body></html>';
 
@@ -1509,22 +1657,27 @@ module.exports = async function handler(req, res) {
                 }
 
                 // Reset all picks for this date first (allows re-submission to overwrite)
+                // Also reset sort_order on previously-picked rows back to original pool order.
                 await supabase
                     .from('editor_queue')
                     .update({ selected: false })
                     .eq('city', 'berlin')
                     .eq('pick_date', pickDateQ);
 
-                // Mark the chosen ids as selected
-                var upd = await supabase
-                    .from('editor_queue')
-                    .update({ selected: true })
-                    .in('id', ids)
-                    .eq('pick_date', pickDateQ);
+                // Write picks one at a time with the correct sort_order from the
+                // submitted ids array. Order in `ids` = display order in email.
+                // (Bulk UPDATE with .in() would lose per-row order.)
+                for (var pi = 0; pi < ids.length; pi++) {
+                    var pickedId = ids[pi];
+                    var upd = await supabase
+                        .from('editor_queue')
+                        .update({ selected: true, sort_order: pi })
+                        .eq('id', pickedId)
+                        .eq('pick_date', pickDateQ);
+                    if (upd.error) throw new Error(upd.error.message);
+                }
 
-                if (upd.error) throw new Error(upd.error.message);
-
-                console.log('[editor-select] pick_date=' + pickDateQ + ' picked=' + ids.length);
+                console.log('[editor-select] pick_date=' + pickDateQ + ' picked=' + ids.length + ' ordered');
 
                 // Confirmation HTML page
                 var fallbackNote = ids.length < 5
