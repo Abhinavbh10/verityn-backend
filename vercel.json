@@ -12,6 +12,10 @@
     {
       "path": "/api/cron",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/newsletter?action=editor-generate&key=veritynkey",
+      "schedule": "0 20 * * *"
     }
   ],
   "headers": [
