@@ -647,61 +647,42 @@ function truncate(s, n) {
     return cut + '…';
 }
 
-// Helper: build the picker email HTML (50 headlines + checkboxes + submit form).
-// Sent to hello@verityn.news at 22:00 Berlin. User ticks 5-10 boxes, hits
-// Submit, which POSTs to /api/newsletter?action=editor-select with the picked
-// row ids. The form posts as application/x-www-form-urlencoded (works in
-// email clients without JS).
-function buildPickerEmail(rows, submitUrl, pickDate) {
-    // Group by source for visual scanning
-    var bySource = {};
+// Helper: build a short notification email pointing to the hosted picker page.
+// Webmail clients block <form action="..."> inside email HTML, so we host the
+// real picker at /api/newsletter?action=editor-view and email a link instead.
+function buildPickerEmail(rows, viewUrl, pickDate) {
+    var bySrc = {};
     rows.forEach(function(r) {
-        var src = (r.source || 'OTHER').toUpperCase();
-        if (!bySource[src]) bySource[src] = [];
-        bySource[src].push(r);
+        var s = (r.source || 'OTHER').toUpperCase();
+        bySrc[s] = (bySrc[s] || 0) + 1;
     });
-
-    var rowsHtml = '';
-    Object.keys(bySource).sort().forEach(function(src) {
-        rowsHtml += '<tr><td style="padding:20px 0 8px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#D14A28;border-bottom:1px solid rgba(31,24,16,0.1)">' + escapeHtml(src) + ' &middot; ' + bySource[src].length + '</td></tr>';
-        bySource[src].forEach(function(r) {
-            var headline = escapeHtml(r.headline || '');
-            rowsHtml += '<tr><td style="padding:10px 0;border-bottom:1px dotted rgba(122,106,80,0.3)">'
-                + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                + '<td style="width:32px;vertical-align:top;padding-top:2px">'
-                + '<input type="checkbox" name="pick" value="' + r.id + '" style="width:20px;height:20px;cursor:pointer">'
-                + '</td>'
-                + '<td style="vertical-align:top">'
-                + '<label style="font-size:14px;line-height:1.4;color:#1F1810;cursor:pointer">' + headline + '</label>'
-                + '</td>'
-                + '</tr></table></td></tr>';
-        });
-    });
+    var summary = Object.keys(bySrc).sort().map(function(s) { return s + ' ' + bySrc[s]; }).join(' &middot; ');
 
     return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Picker</title></head>'
         + '<body style="margin:0;padding:0;background:#E8DDC9;font-family:-apple-system,Segoe UI,Roboto,sans-serif">'
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E8DDC9">'
-        + '<tr><td align="center" style="padding:24px 16px">'
-        + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FBF5E8;padding:36px">'
+        + '<tr><td align="center" style="padding:40px 16px">'
+        + '<table role="presentation" width="500" cellpadding="0" cellspacing="0" style="max-width:500px;background:#FBF5E8;padding:40px">'
 
-        + '<tr><td>'
+        + '<tr><td style="padding-bottom:18px">'
         + '<div style="font-family:Georgia,serif;font-size:32px;color:#1F1810">Picker<span style="color:#D14A28">.</span></div>'
-        + '<div style="font-size:13px;color:#7A6A50;margin-top:6px">For tomorrow\'s send — ' + escapeHtml(pickDate) + '</div>'
+        + '<div style="font-size:13px;color:#7A6A50;margin-top:6px;letter-spacing:0.5px">For tomorrow\'s send &middot; ' + escapeHtml(pickDate) + '</div>'
         + '</td></tr>'
 
-        + '<tr><td style="padding-top:18px;padding-bottom:14px;font-size:14px;color:#3A2E18;line-height:1.55">'
-        + 'Tick the stories you want in tomorrow morning\'s newsletter. Aim for <strong>7</strong> &mdash; minimum 5, or the system falls back to automated. Submit before <strong>04:00 Berlin time</strong> tomorrow.'
+        + '<tr><td style="font-size:15px;color:#3A2E18;line-height:1.6;padding-bottom:24px">'
+        + rows.length + ' stories ready for tomorrow morning. Open the picker, tick about <strong>7</strong>, lock your picks.'
         + '</td></tr>'
 
-        + '<tr><td><form action="' + submitUrl + '" method="POST">'
-        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
-        + rowsHtml
-        + '</table>'
-        + '<div style="text-align:center;padding-top:28px"><button type="submit" style="background:#1F1810;color:#FBF5E8;border:none;padding:14px 36px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;border-radius:2px">Submit picks</button></div>'
-        + '</form></td></tr>'
+        + '<tr><td style="font-size:12px;color:#7A6A50;line-height:1.6;padding-bottom:24px;border-left:3px solid #D14A28;padding-left:14px">'
+        + escapeHtml(summary)
+        + '</td></tr>'
 
-        + '<tr><td style="padding-top:32px;font-size:11px;color:#9A7E50;text-align:center;border-top:1px solid rgba(31,24,16,0.08);padding-top:18px">'
-        + 'Verityn editor &middot; ' + rows.length + ' stories shown'
+        + '<tr><td style="padding:8px 0 12px">'
+        + '<a href="' + viewUrl + '" style="display:inline-block;background:#1F1810;color:#FBF5E8;padding:14px 32px;font-size:14px;font-weight:600;letter-spacing:0.5px;text-decoration:none;border-radius:2px">Open picker &rarr;</a>'
+        + '</td></tr>'
+
+        + '<tr><td style="font-size:12px;color:#9A7E50;line-height:1.55;padding-top:18px;border-top:1px solid rgba(31,24,16,0.08);margin-top:24px">'
+        + 'Submit before <strong>04:00 Berlin</strong> — after that, the morning send falls back to automated. Minimum 5 picks needed.'
         + '</td></tr>'
 
         + '</table></td></tr></table></body></html>';
@@ -1267,6 +1248,103 @@ module.exports = async function handler(req, res) {
         // for Berlin checks editor_queue first: if ≥5 selected for today, use
         // those. Else fall back to automated briefing.
 
+        if (action === 'editor-view') {
+            var evKey = req.query.key || '';
+            var evExpected = process.env.ADMIN_KEY;
+            if (!evExpected || evKey !== evExpected) {
+                res.statusCode = 401;
+                return res.json({ ok: false, error: 'Unauthorized' });
+            }
+            try {
+                // Default to tomorrow's pick_date — that's the queue we're picking for
+                var todayBerlinV = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+                var tomorrowV = new Date(todayBerlinV + 'T00:00:00Z');
+                tomorrowV.setUTCDate(tomorrowV.getUTCDate() + 1);
+                var defaultPick = tomorrowV.toISOString().slice(0, 10);
+                var viewPickDate = req.query.pick_date || defaultPick;
+
+                var qResp = await supabase
+                    .from('editor_queue')
+                    .select('id, headline, summary, source, selected, sort_order')
+                    .eq('city', 'berlin')
+                    .eq('pick_date', viewPickDate)
+                    .order('sort_order', { ascending: true });
+
+                if (!qResp.data || qResp.data.length === 0) {
+                    res.setHeader('Content-Type', 'text/html');
+                    return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#FBF5E8;color:#1F1810"><h2>No picker queue for ' + viewPickDate + '</h2><p style="color:#7A6A50">Either no picker has been generated yet, or you\'re looking at the wrong date.</p></body></html>');
+                }
+
+                var rows = qResp.data;
+                var submitUrl = '/api/newsletter?action=editor-select&key=' + encodeURIComponent(evKey) + '&pick_date=' + viewPickDate;
+
+                // Group by source
+                var bySource = {};
+                rows.forEach(function(r) {
+                    var src = (r.source || 'OTHER').toUpperCase();
+                    if (!bySource[src]) bySource[src] = [];
+                    bySource[src].push(r);
+                });
+
+                var alreadySelected = rows.filter(function(r) { return r.selected; }).length;
+
+                var rowsHtml = '';
+                Object.keys(bySource).sort().forEach(function(src) {
+                    rowsHtml += '<div style="margin-top:24px;padding-bottom:6px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#D14A28;border-bottom:1px solid rgba(31,24,16,0.1)">' + escapeHtml(src) + ' &middot; ' + bySource[src].length + '</div>';
+                    bySource[src].forEach(function(r) {
+                        var checked = r.selected ? 'checked' : '';
+                        var headline = escapeHtml(r.headline || '');
+                        var summary = r.summary ? escapeHtml(truncate(r.summary, 180)) : '';
+                        rowsHtml += '<label style="display:flex;gap:12px;padding:12px 4px;border-bottom:1px dotted rgba(122,106,80,0.3);cursor:pointer;align-items:flex-start">'
+                            + '<input type="checkbox" name="pick" value="' + r.id + '" ' + checked + ' style="width:20px;height:20px;cursor:pointer;margin-top:2px;flex-shrink:0">'
+                            + '<div>'
+                            + '<div style="font-size:14px;line-height:1.4;color:#1F1810">' + headline + '</div>'
+                            + (summary ? '<div style="font-size:12px;line-height:1.5;color:#7A6A50;margin-top:4px">' + summary + '</div>' : '')
+                            + '</div>'
+                            + '</label>';
+                    });
+                });
+
+                var statusBanner = alreadySelected > 0
+                    ? '<div style="margin-top:14px;padding:10px 14px;background:#E6F2E0;color:#3F6E3F;border-radius:4px;font-size:13px">Currently ' + alreadySelected + ' picks selected. Submitting will overwrite.</div>'
+                    : '';
+
+                var pageHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Picker</title>'
+                    + '<style>body{font-family:-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1F1810;background:#FBF5E8;font-size:15px}'
+                    + 'h1{font-family:Georgia,serif;font-size:32px;font-weight:400;margin-bottom:6px}'
+                    + 'h1 .v{color:#D14A28}'
+                    + '.sub{font-size:13px;color:#7A6A50;letter-spacing:0.5px}'
+                    + '.intro{margin:24px 0;font-size:14px;line-height:1.55;color:#3A2E18}'
+                    + '.intro strong{color:#D14A28}'
+                    + 'input[type=checkbox]{accent-color:#D14A28}'
+                    + 'button{background:#1F1810;color:#FBF5E8;border:none;padding:14px 36px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;border-radius:2px;margin-top:32px}'
+                    + 'button:hover{background:#D14A28}'
+                    + '.actions{text-align:center;padding:32px 0 60px}'
+                    + '.count{display:inline-block;margin-right:24px;font-size:13px;color:#7A6A50}'
+                    + '.count strong{color:#D14A28;font-size:18px;font-weight:700}'
+                    + '</style></head><body>'
+                    + '<h1>Picker<span class="v">.</span></h1>'
+                    + '<div class="sub">For ' + viewPickDate + ' &middot; ' + rows.length + ' stories in pool</div>'
+                    + '<div class="intro">Tick the stories you want in tomorrow morning\'s newsletter. Aim for <strong>7</strong> — minimum 5, or the system falls back to automated. Submit before <strong>04:00 Berlin time</strong> tomorrow.</div>'
+                    + statusBanner
+                    + '<form method="POST" action="' + submitUrl + '">'
+                    + rowsHtml
+                    + '<div class="actions"><span class="count" id="count"><strong id="n">0</strong> selected</span><button type="submit">Lock my picks</button></div>'
+                    + '</form>'
+                    + '<script>'
+                    + 'function refresh(){var n=document.querySelectorAll(\'input[name=pick]:checked\').length;document.getElementById("n").textContent=n;}'
+                    + 'document.querySelectorAll(\'input[name=pick]\').forEach(function(el){el.addEventListener("change",refresh)});refresh();'
+                    + '</script>'
+                    + '</body></html>';
+
+                res.setHeader('Content-Type', 'text/html');
+                return res.send(pageHtml);
+            } catch (e) {
+                res.statusCode = 500;
+                return res.json({ ok: false, error: e.message });
+            }
+        }
+
         if (action === 'editor-generate') {
             var egKey = req.query.key || '';
             var egExpected = process.env.ADMIN_KEY;
@@ -1326,10 +1404,10 @@ module.exports = async function handler(req, res) {
 
                 console.log('[editor-generate] saved ' + ins.data.length + ' rows');
 
-                // Build picker HTML email
+                // Build picker URL (view page) and notification email
                 var BASE = 'https://verityn-backend-ten.vercel.app';
-                var submitUrl = BASE + '/api/newsletter?action=editor-select&key=' + encodeURIComponent(egKey) + '&pick_date=' + pickDate;
-                var pickerHtml = buildPickerEmail(ins.data, submitUrl, pickDate);
+                var viewUrl = BASE + '/api/newsletter?action=editor-view&key=' + encodeURIComponent(egKey) + '&pick_date=' + pickDate;
+                var pickerHtml = buildPickerEmail(ins.data, viewUrl, pickDate);
 
                 // Send to hello@verityn.news
                 var pTransporter = getTransporter();
@@ -1347,7 +1425,7 @@ module.exports = async function handler(req, res) {
                     return res.json({ ok: false, error: 'Picker saved but email send failed: ' + e.message, savedRows: ins.data.length, pickDate: pickDate });
                 }
 
-                return res.json({ ok: true, savedRows: ins.data.length, pickDate: pickDate, emailedTo: FROM_EMAIL });
+                return res.json({ ok: true, savedRows: ins.data.length, pickDate: pickDate, emailedTo: FROM_EMAIL, viewUrl: viewUrl });
             } catch (e) {
                 res.statusCode = 500;
                 return res.json({ ok: false, error: e.message });
