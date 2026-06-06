@@ -819,46 +819,65 @@ async function translateArticles(articles) {
     if (!articles || !articles.length) return [];
 
     var slice = articles.slice(0, TRANSLATE_LIMIT);
-    var toTranslate = slice.map(function(a, i) {
-        return (i + 1) + '. HEADLINE: ' + (a.headline || '') + '\n   SUMMARY: ' + (a.summary || '').slice(0, 150);
-    }).join('\n\n');
 
-    try {
-        var r = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': process.env.ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 2000,
-                messages: [{
-                    role: 'user',
-                    content: 'Translate these German news headlines and summaries to English. Keep translations natural and news-style, not word-for-word. If a headline or summary is already in English, keep it as-is.\n\n' + toTranslate + '\n\nRespond with ONLY a JSON array of objects, each with "headline" and "summary" keys. Same order as input. No markdown, no backticks.',
-                }],
-            }),
-        });
-        var data = await r.json();
-        var text = (data.content && data.content[0] && data.content[0].text) || '';
-        var clean = text.replace(/```json|```/g, '').trim();
-        var translated = JSON.parse(clean);
-
-        if (Array.isArray(translated) && translated.length === slice.length) {
-            return slice.map(function(a, i) {
-                return Object.assign({}, a, {
-                    headline: translated[i].headline || a.headline,
-                    summary: translated[i].summary || a.summary,
-                    translated: true,
-                });
-            });
-        }
-    } catch (e) {
-        console.log('[newsletter] translateArticles failed:', e.message);
+    // Batch in chunks. Single Anthropic call with 50 articles overflows
+    // max_tokens (~5000 tokens of JSON needed). Chunk by 15 → safe per call,
+    // run chunks in parallel, concatenate.
+    var CHUNK_SIZE = 15;
+    var chunks = [];
+    for (var ci = 0; ci < slice.length; ci += CHUNK_SIZE) {
+        chunks.push(slice.slice(ci, ci + CHUNK_SIZE));
     }
 
-    return [];
+    async function translateChunk(chunk, chunkIdx) {
+        var toTranslate = chunk.map(function(a, i) {
+            return (i + 1) + '. HEADLINE: ' + (a.headline || '') + '\n   SUMMARY: ' + (a.summary || '').slice(0, 150);
+        }).join('\n\n');
+
+        try {
+            var r = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': process.env.ANTHROPIC_API_KEY,
+                    'anthropic-version': '2023-06-01',
+                },
+                body: JSON.stringify({
+                    model: 'claude-sonnet-4-20250514',
+                    max_tokens: 3000,
+                    messages: [{
+                        role: 'user',
+                        content: 'Translate these German news headlines and summaries to English. Keep translations natural and news-style, not word-for-word. If a headline or summary is already in English, keep it as-is.\n\n' + toTranslate + '\n\nRespond with ONLY a JSON array of objects, each with "headline" and "summary" keys. Same order as input. No markdown, no backticks.',
+                    }],
+                }),
+            });
+            var data = await r.json();
+            var text = (data.content && data.content[0] && data.content[0].text) || '';
+            var clean = text.replace(/```json|```/g, '').trim();
+            var translated = JSON.parse(clean);
+
+            if (Array.isArray(translated) && translated.length === chunk.length) {
+                return chunk.map(function(a, i) {
+                    return Object.assign({}, a, {
+                        headline: translated[i].headline || a.headline,
+                        summary: translated[i].summary || a.summary,
+                        translated: true,
+                    });
+                });
+            }
+            console.log('[translate] chunk ' + chunkIdx + ' size mismatch: got ' + (translated && translated.length) + ' expected ' + chunk.length);
+            return chunk;     // fall through to raw German if mismatch
+        } catch (e) {
+            console.log('[translate] chunk ' + chunkIdx + ' failed: ' + e.message);
+            return chunk;     // partial fallback — better than total empty
+        }
+    }
+
+    var results = await Promise.all(chunks.map(function(c, idx) { return translateChunk(c, idx); }));
+    var flat = [];
+    results.forEach(function(arr) { flat = flat.concat(arr); });
+    console.log('[translate] returning ' + flat.length + ' articles across ' + chunks.length + ' chunks');
+    return flat;
 }
 
 // ── Bucket classification (Architecture B, June 2026) ──────────────────────
