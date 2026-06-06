@@ -813,7 +813,7 @@ async function generateExtras(stories, city, excludeFacts, supabase) {
     return extras;
 }
 
-var TRANSLATE_LIMIT = 12;
+var TRANSLATE_LIMIT = 50;
 
 async function translateArticles(articles) {
     if (!articles || !articles.length) return [];
@@ -918,18 +918,21 @@ function bucketArticles(articles, city) {
 // picker. Pool from this function is what briefing.js would see, OR what the
 // picker email shows you as headlines to choose from. Returning the exact
 // same data ensures parity between auto and human-curated workflows.
-async function buildCityPool(city) {
+async function buildCityPool(city, opts) {
     city = city || 'berlin';
+    opts = opts || {};
+    var skipFilter = !!opts.skipFilter;       // picker path: show me everything
+    var skipDedup = !!opts.skipDedup;         // picker path: I'll dedup mentally
     var BASE = 'https://verityn-backend-ten.vercel.app';
     var sid = 'pool-' + city + '-' + Date.now();
     var cityLocalKey = city + '_local';
 
-    var cityFetch = await fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=25&sessionId=' + sid)
+    var cityFetch = await fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=60&sessionId=' + sid)
         .then(function(r) { return r.json(); })
         .catch(function() { return { articles: [] }; });
 
     var cityLocalArticles = (cityFetch.articles && Array.isArray(cityFetch.articles)) ? cityFetch.articles : [];
-    console.log('[pool] city=' + city + ' rawCityArticles=' + cityLocalArticles.length);
+    console.log('[pool] city=' + city + ' rawCityArticles=' + cityLocalArticles.length + ' skipFilter=' + skipFilter);
 
     var allArticles = [];
     if (cityLocalArticles.length > 0) {
@@ -942,15 +945,19 @@ async function buildCityPool(city) {
     }
 
     var beforeCap = allArticles.length;
-    allArticles = dedupeSameEvent(allArticles);
+    if (!skipDedup) {
+        allArticles = dedupeSameEvent(allArticles);
+    }
     var afterDedup = allArticles.length;
 
     var singleSourceCities = { frankfurt: true };
     var sourceCapN = singleSourceCities[city] ? 8 : 5;
+    // For picker: loosen per-source cap to give wider variety
+    if (skipFilter) sourceCapN = 12;
     allArticles = capPerSource(allArticles, sourceCapN);
 
     var afterCityFilter = allArticles.length;
-    if (CITY_PLACE_PATTERNS[city]) {
+    if (CITY_PLACE_PATTERNS[city] && !skipFilter) {
         var placePat = CITY_PLACE_PATTERNS[city];
         var filtered = allArticles.filter(function(a) {
             return placePat.test(a.headline || '');
@@ -1370,8 +1377,9 @@ module.exports = async function handler(req, res) {
 
                 console.log('[editor-generate] pick_date=' + pickDate);
 
-                // Build Berlin pool — identical to what briefing would see
-                var pool = await buildCityPool('berlin');
+                // Build Berlin pool — LOOSE for picker (skip dedup + skip city-mention filter).
+                // You're the editor — you'll dedup and topic-filter mentally. Show more.
+                var pool = await buildCityPool('berlin', { skipFilter: true, skipDedup: true });
                 if (!pool || pool.length < 5) {
                     return res.json({ ok: false, error: 'Pool too small (' + (pool ? pool.length : 0) + '). Cannot generate picker.' });
                 }
