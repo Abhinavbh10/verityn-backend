@@ -1,16 +1,19 @@
 // ============================================================
 // FILE: api/cron.js
-// PURPOSE: Cache warming + topic thread generation + cleanup
+// PURPOSE: Cache warming + topic thread generation + cleanup + newsletter send
 // Runs: GitHub Actions every 3h + Vercel cron 5am UTC daily
 //
-// GERMANY-ONLY (May 2026): Verityn is now focused on news for English speakers
+// GERMANY-ONLY (May 2026): Verityn is focused on news for English speakers
 // living in Germany. Multi-country fetching has been removed.
 //
 // CITY TAGGING (May 2026): Each source is tagged with a `city` field.
 // Berlin/Munich/Hamburg/Frankfurt come from city-specific Local DE feeds;
 // everything else is `nationwide`. Articles inherit their source's city tag.
-// Topic clusters store the dominant city via topic_threads.city for downstream
-// per-user filtering in api/ai.js rank.
+//
+// NEWSLETTER SEND (Jun 2026): At the end, this cron POSTs to
+// /api/newsletter?action=send. The send endpoint has same-day idempotency
+// (won't double-send within a single UTC day) and requires
+// NEWSLETTER_ENABLED=true (safety guard).
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
@@ -131,9 +134,6 @@ const BROAD_ENTITIES = new Set([
   'markets','banking',
 ]);
 
-// Germany city entities — used to derive a cluster's dominant city tag.
-// Order matters: if a cluster has both 'berlin' and 'munich' entities (rare),
-// the first match wins.
 const CITY_ENTITIES = ['berlin','munich','hamburg','frankfurt','cologne','stuttgart','duesseldorf','leipzig','dresden','bremen','hannover','nuremberg'];
 
 function getEntities(headline) {
@@ -196,13 +196,10 @@ function makeTopicLabel(entities) {
     .join(' & ');
 }
 
-// Derive a cluster's dominant city from its entities and source mix.
-// Priority: explicit city entity > most-common source city > 'nationwide'.
 function deriveClusterCity(entities, articles) {
   for (const e of entities) {
     if (CITY_ENTITIES.includes(e)) return e;
   }
-  // Fall back to source-tag majority
   const sourceCityCounts = {};
   for (const a of articles) {
     const sc = a.sourceCity || 'nationwide';
@@ -214,7 +211,6 @@ function deriveClusterCity(entities, articles) {
     if (c === 'nationwide') continue;
     if (n > bestCount) { bestCity = c; bestCount = n; }
   }
-  // If a city dominates >= 60% of articles, tag it; otherwise nationwide
   if (bestCount / articles.length >= 0.6) return bestCity;
   return 'nationwide';
 }
@@ -295,7 +291,6 @@ function clusterArticles(articles) {
     .sort((a, b) => b.articles.length - a.articles.length);
 }
 
-// Parse RSS, optionally tagging each article with a sourceCity.
 function parseRssHeadlines(xml, sourceName, sourceCity = 'nationwide') {
   const items = xml.match(/<item[^>]*>[\s\S]*?<\/item>/g) || [];
   return items.slice(0, 15).map(item => {
@@ -341,7 +336,7 @@ module.exports = async function handler(request, response) {
   const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  const results = { cacheWarmed: [], threadsGenerated: [], threadsSkipped: [], errors: [], debug: {} };
+  const results = { cacheWarmed: [], threadsGenerated: [], threadsSkipped: [], errors: [], debug: {}, newsletterSend: null };
 
   try {
     await cleanupRateLimits(supabase);
@@ -365,10 +360,6 @@ module.exports = async function handler(request, response) {
   }
 
   // ── Topic thread generation ────────────────────────────────
-  // Sources are tagged with `city` so articles inherit a `sourceCity` value.
-  // Berlin/Munich/Hamburg/Frankfurt come from city-specific Local DE feeds;
-  // everything else is `nationwide`. Cluster city is derived from entities
-  // first, source-mix majority second.
   try {
     const GERMANY_SEARCH_QUERIES = [
       'Germany Bundestag OR Scholz OR Merz OR Habeck',
@@ -379,7 +370,6 @@ module.exports = async function handler(request, response) {
     ];
 
     const headlineFetches = [
-      // GNews country=de top headlines (nationwide)
       fetch(`https://gnews.io/api/v4/top-headlines?category=general&lang=en&country=de&max=10&apikey=${GNEWS_KEY}`)
         .then(r => r.json())
         .then(d => (d.articles || []).map(a => ({
@@ -388,7 +378,6 @@ module.exports = async function handler(request, response) {
           source: a.source?.name || 'Unknown', sourceCity: 'nationwide', url: a.url,
         }))).catch(() => []),
 
-      // GNews targeted searches (nationwide unless headline says otherwise)
       ...(GNEWS_KEY ? GERMANY_SEARCH_QUERIES.map(q =>
         fetch(`https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=8&apikey=${GNEWS_KEY}`)
           .then(r => r.json())
@@ -399,31 +388,26 @@ module.exports = async function handler(request, response) {
           }))).catch(() => [])
       ) : []),
 
-      // BBC Europe (nationwide)
       fetch('https://feeds.bbci.co.uk/news/world/europe/rss.xml', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'BBC', 'nationwide')).catch(() => []),
 
-      // Deutsche Welle English (nationwide)
       fetch('https://rss.dw.com/xml/rss-en-all', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'Deutsche Welle', 'nationwide')).catch(() => []),
 
-      // The Local DE main (nationwide)
       fetch('https://feeds.thelocal.com/rss/de', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local', 'nationwide')).catch(() => []),
 
-      // The Local DE Politics (nationwide)
       fetch('https://feeds.thelocal.com/rss/de/politics', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Politics', 'nationwide')).catch(() => []),
 
-      // The Local DE — city-specific feeds (city-tagged)
       fetch('https://feeds.thelocal.com/rss/de/berlin', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
@@ -444,13 +428,11 @@ module.exports = async function handler(request, response) {
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'The Local Frankfurt', 'frankfurt')).catch(() => []),
 
-      // IamExpat Germany (nationwide — expat-life focus)
       fetch('https://www.iamexpat.de/rss/news-germany', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
       }).then(r => r.text()).then(x => parseRssHeadlines(x, 'IamExpat', 'nationwide')).catch(() => []),
 
-      // POLITICO Europe (nationwide)
       fetch('https://www.politico.eu/feed/', {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
         signal: AbortSignal.timeout(8000),
@@ -500,9 +482,7 @@ module.exports = async function handler(request, response) {
 
     const today = new Date().toISOString().slice(0, 10);
 
-    // Fetch last 7 days of event_text for ALL topics, so we can detect
-    // "same story restated" within the same topic and skip duplicates.
-    const historyMap = {};  // topic_key → array of recent event_texts (newest first)
+    const historyMap = {};
     try {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const { data: recentThreads } = await supabase
@@ -515,9 +495,6 @@ module.exports = async function handler(request, response) {
       }
     } catch (e) {}
 
-    // Word-overlap similarity check.
-    // Two event_texts share too much if 60%+ of one's content words appear
-    // in the other (excluding stopwords).
     function tokenize(s) {
       const STOP = new Set(['the','a','an','and','or','but','of','to','in','on','for','at','by','with','from','as','is','was','are','were','will','would','said','says','has','have','had','this','that','these','those','his','her','its','their','it']);
       return (s || '').toLowerCase()
@@ -621,7 +598,6 @@ One sentence on the single most important development:`;
           continue;
         }
 
-        // Programmatic dedup: reject if too similar to any of last 7 days' entries.
         if (history.length > 0 && isTooSimilar(eventText, history)) {
           results.threadsSkipped.push(`${cluster.label} (too similar to recent entries)`);
           continue;
@@ -650,6 +626,25 @@ One sentence on the single most important development:`;
   } catch (e) {
     results.errors.push(`thread-generation: ${e.message}`);
     await logError(supabase, { endpoint: 'cron', action: 'thread-generation', error: e });
+  }
+
+  // ── Newsletter send (Jun 2026) ──────────────────────────────
+  // POST to /api/newsletter?action=send after cache + threads complete.
+  // The send endpoint has same-day idempotency (won't double-send within a
+  // single UTC day), so GitHub Actions 3h runs are safe — only the first
+  // call each day actually fires the send.
+  // NEWSLETTER_ENABLED env var must = 'true' for it to actually send.
+  try {
+    const sendResp = await fetch(`${VERCEL_URL}/api/newsletter?action=send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const sendJson = await sendResp.json().catch(() => ({ ok: false, error: 'invalid JSON response' }));
+    results.newsletterSend = sendJson;
+    console.log('[cron] newsletter send result:', JSON.stringify(sendJson).slice(0, 300));
+  } catch (e) {
+    results.errors.push(`newsletter-send: ${e.message}`);
+    results.newsletterSend = { ok: false, error: e.message };
   }
 
   return response.status(200).json({
