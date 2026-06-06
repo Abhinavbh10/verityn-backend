@@ -729,13 +729,14 @@ async function generateExtras(stories, city, excludeFacts, supabase) {
         console.log('[newsletter] holidays.js missing: ' + e.message);
     }
 
-    // ── 5. Active alerts (read from Supabase) ──
+    // ── 5. Active alerts (read from Supabase, scoped by city) ──
     // Renders the red strike-alert strip at the top of the email.
     if (supabase) {
         try {
             var alertsResp = await supabase
                 .from('active_alerts')
                 .select('text, expires_at')
+                .eq('city', city)
                 .or('expires_at.is.null,expires_at.gte.' + new Date().toISOString())
                 .order('priority', { ascending: false });
             if (alertsResp.data && alertsResp.data.length > 0) {
@@ -746,7 +747,7 @@ async function generateExtras(stories, city, excludeFacts, supabase) {
         }
     }
 
-    // ── 6. Events (read from Supabase) ──
+    // ── 6. Events (read from Supabase, scoped by city) ──
     // Renders the "This weekend" section. Past events auto-purged.
     if (supabase) {
         try {
@@ -754,6 +755,7 @@ async function generateExtras(stories, city, excludeFacts, supabase) {
             var eventsResp = await supabase
                 .from('events')
                 .select('when_label, title, detail, sort_date')
+                .eq('city', city)
                 .gte('sort_date', todayStr)
                 .order('sort_date', { ascending: true })
                 .limit(5);
@@ -1144,17 +1146,24 @@ module.exports = async function handler(req, res) {
 
             // GET → render admin page with current alerts + events loaded
             if (req.method === 'GET' && !subaction) {
+                // City selector — defaults to berlin
+                var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
+                var adminCity = (req.query.city || 'berlin').toLowerCase();
+                if (SUPPORTED_CITIES.indexOf(adminCity) === -1) adminCity = 'berlin';
+
                 var alertsResp, eventsResp;
                 try {
                     alertsResp = await supabase
                         .from('active_alerts')
                         .select('text, expires_at')
+                        .eq('city', adminCity)
                         .order('priority', { ascending: false });
                 } catch (e) { alertsResp = { data: [] }; }
                 try {
                     eventsResp = await supabase
                         .from('events')
                         .select('sort_date, when_label, title, detail')
+                        .eq('city', adminCity)
                         .gte('sort_date', new Date().toISOString().slice(0, 10))
                         .order('sort_date', { ascending: true });
                 } catch (e) { eventsResp = { data: [] }; }
@@ -1165,6 +1174,21 @@ module.exports = async function handler(req, res) {
                 }).join('\n');
 
                 var k = adminKey;
+
+                // City selector — radio buttons. Switching reloads the page with new ?city=
+                var citySelector = '<div style="margin-bottom:24px;padding:14px 16px;background:#F3E9D2;border-radius:4px">'
+                    + '<strong style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#7A6A50;display:block;margin-bottom:8px">Editing for city:</strong>';
+                SUPPORTED_CITIES.forEach(function(c) {
+                    var active = c === adminCity;
+                    var label = c.charAt(0).toUpperCase() + c.slice(1);
+                    var href = '/api/newsletter?action=admin&key=' + encodeURIComponent(adminKey) + '&city=' + c;
+                    var style = active
+                        ? 'background:#1F1810;color:#FBF5E8;padding:6px 14px;border-radius:14px;font-size:13px;font-weight:700;text-decoration:none;margin-right:6px'
+                        : 'background:#fff;color:#1F1810;padding:6px 14px;border-radius:14px;font-size:13px;font-weight:500;text-decoration:none;margin-right:6px;border:1px solid #C9B98A';
+                    citySelector += '<a href="' + href + '" style="' + style + '">' + label + '</a>';
+                });
+                citySelector += '</div>';
+
                 var pageHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Admin</title>'
                     + '<style>body{font-family:-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1F1810;background:#FBF5E8}'
                     + 'h1{font-family:Georgia,serif;font-size:28px;font-weight:400;border-bottom:3px solid #D14A28;padding-bottom:8px;margin-bottom:24px}'
@@ -1178,28 +1202,30 @@ module.exports = async function handler(req, res) {
                     + '.status.err{background:#FBE0DC;color:#A03A20;display:block}'
                     + '</style></head><body>'
                     + '<h1>Verityn Admin</h1>'
-                    + '<h2>Active Alerts</h2>'
+                    + citySelector
+                    + '<h2>Active Alerts <span style="font-size:13px;color:#7A6A50;font-weight:400">— ' + adminCity + '</span></h2>'
                     + '<p>One alert per line. Renders as the red strip at the top of the email. Empty input = no alerts shown.</p>'
                     + '<p><strong>Example:</strong><br><code>S-Bahn S1 partial closure Wannsee&ndash;Potsdam until 18:00</code></p>'
                     + '<textarea id="alerts" placeholder="One alert per line">' + escapeHtml(alertLines) + '</textarea>'
-                    + '<div><button onclick="save(\'alerts\')">Save alerts</button></div>'
+                    + '<div><button onclick="save(\'alerts\')">Save alerts for ' + adminCity + '</button></div>'
                     + '<div class="status" id="alerts-status"></div>'
-                    + '<h2>Events</h2>'
+                    + '<h2>Events <span style="font-size:13px;color:#7A6A50;font-weight:400">— ' + adminCity + '</span></h2>'
                     + '<p>One event per line, pipe-separated: <code>YYYY-MM-DD | when_label | title | detail</code>. Past events auto-purged.</p>'
                     + '<p><strong>Example:</strong><br><code>2026-06-07 | Sat 7 June &middot; 13:00 &middot; Kreuzberg | Karneval der Kulturen | Free entry.</code></p>'
                     + '<textarea id="events" placeholder="YYYY-MM-DD | when_label | title | detail (one per line)">' + escapeHtml(eventLines) + '</textarea>'
-                    + '<div><button onclick="save(\'events\')">Save events</button></div>'
+                    + '<div><button onclick="save(\'events\')">Save events for ' + adminCity + '</button></div>'
                     + '<div class="status" id="events-status"></div>'
                     + '<script>'
                     + 'var key=' + JSON.stringify(k) + ';'
+                    + 'var city=' + JSON.stringify(adminCity) + ';'
                     + 'async function save(kind){'
                     + '  var text=document.getElementById(kind).value;'
                     + '  var st=document.getElementById(kind+"-status");'
                     + '  st.className="status";st.textContent="Saving\u2026";'
                     + '  try{'
-                    + '    var r=await fetch("/api/newsletter?action=admin&subaction="+kind+"&key="+encodeURIComponent(key),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:text})});'
+                    + '    var r=await fetch("/api/newsletter?action=admin&subaction="+kind+"&key="+encodeURIComponent(key)+"&city="+encodeURIComponent(city),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:text})});'
                     + '    var d=await r.json();'
-                    + '    if(d.ok){st.className="status ok";st.textContent="Saved "+d.count+" rows.";}'
+                    + '    if(d.ok){st.className="status ok";st.textContent="Saved "+d.count+" rows for "+city+".";}'
                     + '    else{st.className="status err";st.textContent="Error: "+(d.error||"unknown");}'
                     + '  }catch(e){st.className="status err";st.textContent="Error: "+e.message;}'
                     + '}'
@@ -1211,18 +1237,25 @@ module.exports = async function handler(req, res) {
             // POST alerts
             if (req.method === 'POST' && subaction === 'alerts') {
                 try {
+                    var SUPPORTED_CITIES_A = ['berlin', 'frankfurt', 'bonn'];
+                    var alertsCity = (req.query.city || 'berlin').toLowerCase();
+                    if (SUPPORTED_CITIES_A.indexOf(alertsCity) === -1) alertsCity = 'berlin';
+
                     var b1 = req.body && typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
                     var text1 = (b1.text || '').trim();
                     var lines1 = text1.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
-                    await supabase.from('active_alerts').delete().gte('id', 0);
+
+                    // Delete only THIS city's rows. Other cities' alerts remain.
+                    await supabase.from('active_alerts').delete().eq('city', alertsCity);
+
                     if (lines1.length > 0) {
                         var rows1 = lines1.map(function(line, i) {
-                            return { text: line, priority: lines1.length - i, expires_at: null };
+                            return { text: line, priority: lines1.length - i, expires_at: null, city: alertsCity };
                         });
                         var ins1 = await supabase.from('active_alerts').insert(rows1);
                         if (ins1.error) throw new Error(ins1.error.message);
                     }
-                    return res.json({ ok: true, count: lines1.length });
+                    return res.json({ ok: true, count: lines1.length, city: alertsCity });
                 } catch (e) {
                     res.statusCode = 500;
                     return res.json({ ok: false, error: e.message });
@@ -1232,6 +1265,10 @@ module.exports = async function handler(req, res) {
             // POST events
             if (req.method === 'POST' && subaction === 'events') {
                 try {
+                    var SUPPORTED_CITIES_E = ['berlin', 'frankfurt', 'bonn'];
+                    var eventsCity = (req.query.city || 'berlin').toLowerCase();
+                    if (SUPPORTED_CITIES_E.indexOf(eventsCity) === -1) eventsCity = 'berlin';
+
                     var b2 = req.body && typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
                     var text2 = (b2.text || '').trim();
                     var lines2 = text2.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
@@ -1244,14 +1281,18 @@ module.exports = async function handler(req, res) {
                             when_label: parts[1] || '',
                             title: parts[2] || '',
                             detail: parts[3] || '',
+                            city: eventsCity,
                         };
                     }).filter(Boolean);
-                    await supabase.from('events').delete().gte('id', 0);
+
+                    // Delete only THIS city's events. Other cities' events remain.
+                    await supabase.from('events').delete().eq('city', eventsCity);
+
                     if (parsed.length > 0) {
                         var ins2 = await supabase.from('events').insert(parsed);
                         if (ins2.error) throw new Error(ins2.error.message);
                     }
-                    return res.json({ ok: true, count: parsed.length });
+                    return res.json({ ok: true, count: parsed.length, city: eventsCity });
                 } catch (e) {
                     res.statusCode = 500;
                     return res.json({ ok: false, error: e.message });
