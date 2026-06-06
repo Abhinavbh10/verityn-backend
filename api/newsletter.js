@@ -647,6 +647,66 @@ function truncate(s, n) {
     return cut + '…';
 }
 
+// Helper: build the picker email HTML (50 headlines + checkboxes + submit form).
+// Sent to hello@verityn.news at 22:00 Berlin. User ticks 5-10 boxes, hits
+// Submit, which POSTs to /api/newsletter?action=editor-select with the picked
+// row ids. The form posts as application/x-www-form-urlencoded (works in
+// email clients without JS).
+function buildPickerEmail(rows, submitUrl, pickDate) {
+    // Group by source for visual scanning
+    var bySource = {};
+    rows.forEach(function(r) {
+        var src = (r.source || 'OTHER').toUpperCase();
+        if (!bySource[src]) bySource[src] = [];
+        bySource[src].push(r);
+    });
+
+    var rowsHtml = '';
+    Object.keys(bySource).sort().forEach(function(src) {
+        rowsHtml += '<tr><td style="padding:20px 0 8px;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#D14A28;border-bottom:1px solid rgba(31,24,16,0.1)">' + escapeHtml(src) + ' &middot; ' + bySource[src].length + '</td></tr>';
+        bySource[src].forEach(function(r) {
+            var headline = escapeHtml(r.headline || '');
+            rowsHtml += '<tr><td style="padding:10px 0;border-bottom:1px dotted rgba(122,106,80,0.3)">'
+                + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                + '<td style="width:32px;vertical-align:top;padding-top:2px">'
+                + '<input type="checkbox" name="pick" value="' + r.id + '" style="width:20px;height:20px;cursor:pointer">'
+                + '</td>'
+                + '<td style="vertical-align:top">'
+                + '<label style="font-size:14px;line-height:1.4;color:#1F1810;cursor:pointer">' + headline + '</label>'
+                + '</td>'
+                + '</tr></table></td></tr>';
+        });
+    });
+
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Picker</title></head>'
+        + '<body style="margin:0;padding:0;background:#E8DDC9;font-family:-apple-system,Segoe UI,Roboto,sans-serif">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E8DDC9">'
+        + '<tr><td align="center" style="padding:24px 16px">'
+        + '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FBF5E8;padding:36px">'
+
+        + '<tr><td>'
+        + '<div style="font-family:Georgia,serif;font-size:32px;color:#1F1810">Picker<span style="color:#D14A28">.</span></div>'
+        + '<div style="font-size:13px;color:#7A6A50;margin-top:6px">For tomorrow\'s send — ' + escapeHtml(pickDate) + '</div>'
+        + '</td></tr>'
+
+        + '<tr><td style="padding-top:18px;padding-bottom:14px;font-size:14px;color:#3A2E18;line-height:1.55">'
+        + 'Tick the stories you want in tomorrow morning\'s newsletter. Aim for <strong>7</strong> &mdash; minimum 5, or the system falls back to automated. Submit before <strong>04:00 Berlin time</strong> tomorrow.'
+        + '</td></tr>'
+
+        + '<tr><td><form action="' + submitUrl + '" method="POST">'
+        + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">'
+        + rowsHtml
+        + '</table>'
+        + '<div style="text-align:center;padding-top:28px"><button type="submit" style="background:#1F1810;color:#FBF5E8;border:none;padding:14px 36px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;border-radius:2px">Submit picks</button></div>'
+        + '</form></td></tr>'
+
+        + '<tr><td style="padding-top:32px;font-size:11px;color:#9A7E50;text-align:center;border-top:1px solid rgba(31,24,16,0.08);padding-top:18px">'
+        + 'Verityn editor &middot; ' + rows.length + ' stories shown'
+        + '</td></tr>'
+
+        + '</table></td></tr></table></body></html>';
+}
+
 async function getWeather(city) {
     // City-keyed weather (May 2026 city pivot). Adding a new city requires adding
     // coords here AND a feed in content.js AND a cityContext entry in enrichStories.
@@ -872,31 +932,23 @@ function bucketArticles(articles, city) {
     return { place: place, money: money, context: context };
 }
 
-async function generateFreshBriefing(supabase, city) {
-    // City-keyed pipeline (May 2026 city pivot).
-    // Fetches: GB+DE English wires (broad context) + {city}_local (hyperlocal)
-    //          + de_national (federal stories every city wants).
-    // city must be a supported city slug. Defaults to 'berlin' if not provided
-    // (legacy callers from before city-keying).
+// Builds the candidate pool for a city — fetch RSS, translate, dedup, cap,
+// city-filter. Same logic for both the automated briefing AND the editor
+// picker. Pool from this function is what briefing.js would see, OR what the
+// picker email shows you as headlines to choose from. Returning the exact
+// same data ensures parity between auto and human-curated workflows.
+async function buildCityPool(city) {
     city = city || 'berlin';
-
-    var countries = ['gb', 'de'];
     var BASE = 'https://verityn-backend-ten.vercel.app';
-    var sid = 'newsletter-' + city + '-' + Date.now();
-
-    // CITY-ONLY POOL (June 2026 pivot to pure-hyperlocal product).
-    // Verityn's job: Berlin news for English speakers in Berlin. Frankfurt news
-    // for Frankfurt. Bonn news for Bonn. No English wires, no de_national,
-    // no international, no buckets. The pool IS the city. Briefing picks 7.
-    // Other architectural complexity (Place/Money/Context, conflict cap, etc.)
-    // is unnecessary when the pool itself is already focused.
+    var sid = 'pool-' + city + '-' + Date.now();
     var cityLocalKey = city + '_local';
+
     var cityFetch = await fetch(BASE + '/api/content?action=rss&country=' + cityLocalKey + '&max=25&sessionId=' + sid)
         .then(function(r) { return r.json(); })
         .catch(function() { return { articles: [] }; });
 
     var cityLocalArticles = (cityFetch.articles && Array.isArray(cityFetch.articles)) ? cityFetch.articles : [];
-    console.log('[newsletter] city=' + city + ' rawCityArticles=' + cityLocalArticles.length);
+    console.log('[pool] city=' + city + ' rawCityArticles=' + cityLocalArticles.length);
 
     var allArticles = [];
     if (cityLocalArticles.length > 0) {
@@ -909,54 +961,118 @@ async function generateFreshBriefing(supabase, city) {
     }
 
     var beforeCap = allArticles.length;
-    // Same-event dedup (two sources reporting one event → keep one).
     allArticles = dedupeSameEvent(allArticles);
     var afterDedup = allArticles.length;
-    // Per-source cap. Default 5, but single-source cities (Frankfurt) bump to 8.
-    // Cap=3 was too tight given Berlin has only 4 working sources — dedupe + cap=3
-    // was shrinking pool to ~9 articles before briefing, causing under-fill.
+
     var singleSourceCities = { frankfurt: true };
     var sourceCapN = singleSourceCities[city] ? 8 : 5;
     allArticles = capPerSource(allArticles, sourceCapN);
 
-    // Headline-must-mention-city filter (June 2026). Even though we fetch only
-    // {city}_local feeds, source papers like Tagesspiegel-Berlin and rbb24
-    // publish national/regional stories under their "Berlin section". The
-    // result: articles arrive tagged isCityLocal=true but the actual content
-    // is about Frankfurt/Cottbus/Switzerland. This filter requires the
-    // translated HEADLINE (not summary) to name a city entity. Summaries
-    // are too permissive — they often cross-reference the city even when
-    // the story is about elsewhere. Uses CITY_PLACE_PATTERNS.
     var afterCityFilter = allArticles.length;
     if (CITY_PLACE_PATTERNS[city]) {
         var placePat = CITY_PLACE_PATTERNS[city];
         var filtered = allArticles.filter(function(a) {
             return placePat.test(a.headline || '');
         });
-        // If the filter would leave too few articles to brief from, keep the
-        // unfiltered pool — better to ship a slightly noisy newsletter than
-        // a 1-story one. Threshold: at least 4 articles to keep filter.
         if (filtered.length >= 4) {
-            console.log('[newsletter] city=' + city + ' cityFilter kept=' + filtered.length + ' dropped=' + (allArticles.length - filtered.length));
+            console.log('[pool] city=' + city + ' cityFilter kept=' + filtered.length + ' dropped=' + (allArticles.length - filtered.length));
             allArticles = filtered;
             afterCityFilter = filtered.length;
         } else {
-            console.log('[newsletter] city=' + city + ' cityFilter would leave only ' + filtered.length + ', keeping unfiltered pool');
+            console.log('[pool] city=' + city + ' cityFilter would leave only ' + filtered.length + ', keeping unfiltered pool');
         }
     }
 
-    console.log('[newsletter] city=' + city + ' translatedCity=' + allArticles.length + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' afterCityFilter=' + afterCityFilter + ' poolAfterCap=' + allArticles.length);
+    console.log('[pool] city=' + city + ' translatedCity=' + allArticles.length + ' poolBeforeCap=' + beforeCap + ' afterDedup=' + afterDedup + ' sourceCap=' + sourceCapN + ' afterCityFilter=' + afterCityFilter + ' poolAfterCap=' + allArticles.length);
+    return allArticles;
+}
+
+async function generateFreshBriefing(supabase, city) {
+    // City-keyed pipeline (May 2026 city pivot).
+    // For Berlin: checks editor_queue first. If you (the editor) selected ≥5
+    // articles for today's pick_date, those become the stories. Backfill quick
+    // hits from the remaining pool. Skip the briefing.js call entirely.
+    // Else: fall back to automated briefing on the pool.
+    // For other cities (Frankfurt, Bonn): always automated.
+    city = city || 'berlin';
+
+    var BASE = 'https://verityn-backend-ten.vercel.app';
+    var allArticles = await buildCityPool(city);
 
     if (allArticles.length < 3) {
         console.log('[newsletter] city=' + city + ' pool too small (' + allArticles.length + ') — no send');
         return null;
     }
 
+    // ── Editor-loop check (Berlin only) ──
+    // Look for picks where pick_date = today (UTC). The picker emails are
+    // generated the evening before, so picks made between 22:00 Berlin yesterday
+    // and 04:00 Berlin today are valid for this morning's send.
+    if (city === 'berlin' && supabase) {
+        try {
+            var today = new Date().toISOString().slice(0, 10);
+            var picksResp = await supabase
+                .from('editor_queue')
+                .select('headline, summary, source, url, image')
+                .eq('city', 'berlin')
+                .eq('pick_date', today)
+                .eq('selected', true)
+                .order('sort_order', { ascending: true });
+
+            if (picksResp.data && picksResp.data.length >= 5) {
+                console.log('[newsletter] city=berlin editor-loop ACTIVE, ' + picksResp.data.length + ' picks');
+                var editorPicks = picksResp.data.map(function(p) {
+                    return {
+                        headline: p.headline,
+                        summary: p.summary || '',
+                        body: '',           // enrichStories writes this
+                        why: '',            // enrichStories writes this
+                        source: p.source,
+                        sourceUrl: p.url,
+                        image: p.image || null,
+                    };
+                });
+
+                // Backfill remaining slots (up to 7) with Quick Hits from
+                // unpicked pool articles, same logic as automated path.
+                var pickedSet = {};
+                editorPicks.forEach(function(s) {
+                    if (s.headline) pickedSet[s.headline.toLowerCase().trim()] = true;
+                });
+                var quickHitsNeeded = 7 - editorPicks.length;
+                if (quickHitsNeeded > 0) {
+                    var leftover = allArticles.filter(function(a) {
+                        var key = (a.headline || '').toLowerCase().trim();
+                        return key && !pickedSet[key];
+                    });
+                    var quickHits = leftover.slice(0, quickHitsNeeded).map(function(a) {
+                        return {
+                            headline: a.headline,
+                            summary: a.summary || a.description || '',
+                            body: a.summary || a.description || '',
+                            why: '',
+                            source: a.source,
+                            sourceUrl: a.url,
+                            image: a.image || null,
+                            isQuickHit: true,
+                        };
+                    });
+                    console.log('[newsletter] city=berlin editor-loop backfilled ' + quickHits.length + ' quick hits');
+                    return editorPicks.concat(quickHits);
+                }
+                return editorPicks;
+            } else {
+                console.log('[newsletter] city=berlin editor-loop INACTIVE (' + (picksResp.data ? picksResp.data.length : 0) + ' picks, need 5) — falling back to auto');
+            }
+        } catch (e) {
+            console.log('[newsletter] editor-loop check failed (non-fatal, falling back): ' + e.message);
+        }
+    }
+
+    // ── Automated fallback (or non-Berlin city) ──
     // Cross-day memory — pass recent headlines to briefing so it can deprioritise repeats.
     var memory = await getRecentMemory(supabase, city, 3);
 
-    // Single briefing call on the city-only pool. No buckets, no quota math —
-    // the pool is the city, briefing just picks the 7 best.
     try {
         var r2 = await fetch(BASE + '/api/briefing', {
             method: 'POST',
@@ -1134,6 +1250,228 @@ module.exports = async function handler(req, res) {
         // GET  /api/newsletter?action=admin&key=KEY                  → HTML page
         // POST /api/newsletter?action=admin&subaction=alerts&key=KEY → save alerts
         // POST /api/newsletter?action=admin&subaction=events&key=KEY → save events
+        // ── Editor loop: 50/7 picker workflow (Berlin only) ──
+        //
+        // editor-generate (key-gated, cron-triggered at 22:00 Berlin):
+        //   1. Build Berlin pool via buildCityPool
+        //   2. Save up to 50 headlines to editor_queue with pick_date = tomorrow
+        //   3. Email picker HTML to hello@verityn.news with checkboxes
+        //
+        // editor-select (key-gated, called by picker email form):
+        //   Update selected=true on the chosen rows.
+        //
+        // editor-status (key-gated, debug):
+        //   Return JSON of today/tomorrow's queue state.
+        //
+        // After cutoff (04:00 Berlin), morning send runs. generateFreshBriefing
+        // for Berlin checks editor_queue first: if ≥5 selected for today, use
+        // those. Else fall back to automated briefing.
+
+        if (action === 'editor-generate') {
+            var egKey = req.query.key || '';
+            var egExpected = process.env.ADMIN_KEY;
+            if (!egExpected || egKey !== egExpected) {
+                res.statusCode = 401;
+                return res.json({ ok: false, error: 'Unauthorized' });
+            }
+            if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+                return res.json({ ok: false, error: 'SMTP creds not set' });
+            }
+
+            try {
+                // Pick_date is tomorrow's date in Berlin local. Compute as
+                // (now + 1 day) in Berlin tz, formatted as YYYY-MM-DD.
+                // Generation runs 22:00 Berlin → pick_date should be the next
+                // calendar day (which the morning send will look up).
+                var nowBerlin = new Date(Date.now() + (60 * 60 * 1000)); // approx Berlin offset Jun = UTC+2; tighter math below
+                // Use a tz-aware computation: get today in Berlin, then add 1 day
+                var todayBerlin = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' }); // YYYY-MM-DD
+                var tomorrowDate = new Date(todayBerlin + 'T00:00:00Z');
+                tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
+                var pickDate = tomorrowDate.toISOString().slice(0, 10);
+
+                console.log('[editor-generate] pick_date=' + pickDate);
+
+                // Build Berlin pool — identical to what briefing would see
+                var pool = await buildCityPool('berlin');
+                if (!pool || pool.length < 5) {
+                    return res.json({ ok: false, error: 'Pool too small (' + (pool ? pool.length : 0) + '). Cannot generate picker.' });
+                }
+
+                // Clear any existing queue rows for this pick_date (idempotent — rerun safely)
+                await supabase
+                    .from('editor_queue')
+                    .delete()
+                    .eq('city', 'berlin')
+                    .eq('pick_date', pickDate);
+
+                // Insert up to 50 articles
+                var slice = pool.slice(0, 50);
+                var rows = slice.map(function(a, i) {
+                    return {
+                        pick_date: pickDate,
+                        city: 'berlin',
+                        headline: a.headline || '',
+                        summary: a.summary || '',
+                        source: a.source || '',
+                        url: a.url || '',
+                        image: a.image || null,
+                        selected: false,
+                        sort_order: i,
+                    };
+                }).filter(function(r) { return r.headline; });
+
+                var ins = await supabase.from('editor_queue').insert(rows).select('id, headline, source, sort_order');
+                if (ins.error) throw new Error(ins.error.message);
+
+                console.log('[editor-generate] saved ' + ins.data.length + ' rows');
+
+                // Build picker HTML email
+                var BASE = 'https://verityn-backend-ten.vercel.app';
+                var submitUrl = BASE + '/api/newsletter?action=editor-select&key=' + encodeURIComponent(egKey) + '&pick_date=' + pickDate;
+                var pickerHtml = buildPickerEmail(ins.data, submitUrl, pickDate);
+
+                // Send to hello@verityn.news
+                var pTransporter = getTransporter();
+                try {
+                    await pTransporter.sendMail({
+                        from: FROM_NAME + ' <' + FROM_EMAIL + '>',
+                        to: FROM_EMAIL,    // hello@verityn.news (you)
+                        subject: 'Picker: pick 7 for ' + pickDate,
+                        html: pickerHtml,
+                    });
+                    try { pTransporter.close(); } catch (e) {}
+                } catch (e) {
+                    try { pTransporter.close(); } catch (e2) {}
+                    console.log('[editor-generate] picker email send failed: ' + e.message);
+                    return res.json({ ok: false, error: 'Picker saved but email send failed: ' + e.message, savedRows: ins.data.length, pickDate: pickDate });
+                }
+
+                return res.json({ ok: true, savedRows: ins.data.length, pickDate: pickDate, emailedTo: FROM_EMAIL });
+            } catch (e) {
+                res.statusCode = 500;
+                return res.json({ ok: false, error: e.message });
+            }
+        }
+
+        if (action === 'editor-select') {
+            var esKey = req.query.key || '';
+            var esExpected = process.env.ADMIN_KEY;
+            if (!esExpected || esKey !== esExpected) {
+                res.statusCode = 401;
+                return res.json({ ok: false, error: 'Unauthorized' });
+            }
+
+            try {
+                var pickDateQ = req.query.pick_date || '';
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(pickDateQ)) {
+                    return res.json({ ok: false, error: 'Invalid pick_date' });
+                }
+
+                // Picker submits as form-urlencoded checkboxes. Vercel parses JSON
+                // automatically but NOT form bodies — we read+parse here.
+                var bodyP = req.body && typeof req.body === 'object' ? req.body : {};
+                var ids = [];
+
+                // Try JSON shape first
+                if (Array.isArray(bodyP.ids)) {
+                    ids = bodyP.ids.map(function(x) { return parseInt(x, 10); }).filter(function(x) { return !isNaN(x); });
+                } else if (typeof bodyP.ids === 'string') {
+                    ids = bodyP.ids.split(',').map(function(x) { return parseInt(x.trim(), 10); }).filter(function(x) { return !isNaN(x); });
+                } else if (Array.isArray(bodyP.pick)) {
+                    ids = bodyP.pick.map(function(x) { return parseInt(x, 10); }).filter(function(x) { return !isNaN(x); });
+                } else if (typeof bodyP.pick === 'string' || typeof bodyP.pick === 'number') {
+                    ids = [parseInt(bodyP.pick, 10)].filter(function(x) { return !isNaN(x); });
+                }
+
+                // Fall back to manual parse if Vercel didn't parse (form body as raw string)
+                if (ids.length === 0 && typeof req.body === 'string' && req.body.length > 0) {
+                    var rawPairs = req.body.split('&');
+                    rawPairs.forEach(function(pair) {
+                        var eq = pair.indexOf('=');
+                        if (eq < 0) return;
+                        var k = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' '));
+                        var v = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '));
+                        if (k === 'pick') {
+                            var n = parseInt(v, 10);
+                            if (!isNaN(n)) ids.push(n);
+                        }
+                    });
+                }
+
+                if (ids.length < 1) {
+                    return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#FBF5E8"><h2>No picks received</h2><p>Go back and tick at least 5 boxes, then resubmit.</p></body></html>');
+                }
+
+                // Reset all picks for this date first (allows re-submission to overwrite)
+                await supabase
+                    .from('editor_queue')
+                    .update({ selected: false })
+                    .eq('city', 'berlin')
+                    .eq('pick_date', pickDateQ);
+
+                // Mark the chosen ids as selected
+                var upd = await supabase
+                    .from('editor_queue')
+                    .update({ selected: true })
+                    .in('id', ids)
+                    .eq('pick_date', pickDateQ);
+
+                if (upd.error) throw new Error(upd.error.message);
+
+                console.log('[editor-select] pick_date=' + pickDateQ + ' picked=' + ids.length);
+
+                // Confirmation HTML page
+                var fallbackNote = ids.length < 5
+                    ? '<p style="color:#A03A20"><strong>Heads up:</strong> only ' + ids.length + ' picked. The morning send needs at least 5 picks, so it will fall back to automated.</p>'
+                    : '<p style="color:#3F6E3F"><strong>Picks locked.</strong> Tomorrow morning\'s briefing will use these ' + ids.length + ' stories.</p>';
+
+                return res.send(
+                    '<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#FBF5E8;color:#1F1810">'
+                    + '<h2 style="font-family:Georgia,serif;font-weight:400">Saved.</h2>'
+                    + fallbackNote
+                    + '<p style="color:#7A6A50;font-size:13px">pick_date: ' + pickDateQ + '</p>'
+                    + '</body></html>'
+                );
+            } catch (e) {
+                res.statusCode = 500;
+                return res.json({ ok: false, error: e.message });
+            }
+        }
+
+        if (action === 'editor-status') {
+            var stKey = req.query.key || '';
+            var stExpected = process.env.ADMIN_KEY;
+            if (!stExpected || stKey !== stExpected) {
+                res.statusCode = 401;
+                return res.json({ ok: false, error: 'Unauthorized' });
+            }
+            try {
+                var todayB = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+                var qResp = await supabase
+                    .from('editor_queue')
+                    .select('id, pick_date, headline, source, selected, sort_order')
+                    .eq('city', 'berlin')
+                    .gte('pick_date', todayB)
+                    .order('pick_date', { ascending: false })
+                    .order('sort_order', { ascending: true });
+
+                var byDate = {};
+                (qResp.data || []).forEach(function(r) {
+                    if (!byDate[r.pick_date]) byDate[r.pick_date] = { total: 0, selected: 0, headlines: [] };
+                    byDate[r.pick_date].total++;
+                    if (r.selected) byDate[r.pick_date].selected++;
+                    byDate[r.pick_date].headlines.push({
+                        id: r.id, sel: r.selected, head: (r.headline || '').slice(0, 80), src: r.source,
+                    });
+                });
+                return res.json({ ok: true, today: todayB, queue: byDate });
+            } catch (e) {
+                res.statusCode = 500;
+                return res.json({ ok: false, error: e.message });
+            }
+        }
+
         if (action === 'admin') {
             var adminKey = req.query.key || '';
             var expectedKey = process.env.ADMIN_KEY;
