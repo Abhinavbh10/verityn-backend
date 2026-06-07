@@ -1785,17 +1785,40 @@ module.exports = async function handler(req, res) {
                 });
                 citySelector += '</div>';
 
+                // Build clientside JSON of existing events for the structured form
+                var eventsArr = (eventsResp.data || []).map(function(e) {
+                    return {
+                        sort_date: e.sort_date || '',
+                        when_label: e.when_label || '',
+                        title: e.title || '',
+                        detail: e.detail || '',
+                    };
+                });
+                var eventsArrJson = JSON.stringify(eventsArr).replace(/</g, '\\u003c');
+
                 var pageHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verityn Admin</title>'
-                    + '<style>body{font-family:-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#1F1810;background:#FBF5E8}'
+                    + '<style>body{font-family:-apple-system,sans-serif;max-width:880px;margin:40px auto;padding:0 20px;color:#1F1810;background:#FBF5E8}'
                     + 'h1{font-family:Georgia,serif;font-size:28px;font-weight:400;border-bottom:3px solid #D14A28;padding-bottom:8px;margin-bottom:24px}'
                     + 'h2{font-family:Georgia,serif;font-size:20px;font-weight:400;color:#1F1810;margin-top:32px}'
                     + 'p{color:#5A4A30;font-size:14px;line-height:1.5}'
                     + 'textarea{width:100%;min-height:160px;padding:14px;border:1px solid #C9B98A;background:#fff;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.5}'
                     + 'button{background:#1F1810;color:#FBF5E8;border:none;padding:10px 24px;font-size:14px;font-weight:600;letter-spacing:0.5px;cursor:pointer;margin-top:12px}'
                     + 'button:hover{background:#D14A28}'
+                    + 'button.small{padding:6px 12px;font-size:12px;margin-top:0}'
+                    + 'button.add{background:#D14A28;margin-top:18px}'
+                    + 'button.remove{background:transparent;color:#A03A20;font-size:20px;padding:4px 10px;border:1px solid transparent}'
+                    + 'button.remove:hover{background:rgba(209,74,40,0.1);border-color:#D14A28}'
                     + '.status{margin-top:12px;padding:10px 14px;border-radius:4px;display:none}'
                     + '.status.ok{background:#E6F2E0;color:#3F6E3F;display:block}'
                     + '.status.err{background:#FBE0DC;color:#A03A20;display:block}'
+                    + '.event-row{display:grid;grid-template-columns:140px 200px 1fr 40px;gap:10px;padding:14px;margin-bottom:10px;background:#fff;border-radius:4px;border-left:3px solid #D14A28;align-items:start}'
+                    + '.event-row input{width:100%;padding:8px 10px;border:1px solid #C9B98A;background:#FBF5E8;font-size:13px;font-family:inherit;border-radius:2px}'
+                    + '.event-row input:focus{outline:none;border-color:#D14A28;background:#fff}'
+                    + '.event-row .full-row{grid-column:1 / span 3;margin-top:6px}'
+                    + '.event-row .full-row input{width:100%}'
+                    + '.event-label{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#7A6A50;margin-bottom:4px;display:block}'
+                    + '@media (max-width:680px){.event-row{grid-template-columns:1fr 40px}.event-row .full-row{grid-column:1 / span 1}}'
+                    + '.empty-events{padding:30px 20px;text-align:center;color:#9A7E50;font-style:italic;background:#F3E9D2;border-radius:4px}'
                     + '</style></head><body>'
                     + '<h1>Verityn Admin</h1>'
                     + citySelector
@@ -1805,15 +1828,73 @@ module.exports = async function handler(req, res) {
                     + '<textarea id="alerts" placeholder="One alert per line">' + escapeHtml(alertLines) + '</textarea>'
                     + '<div><button onclick="save(\'alerts\')">Save alerts for ' + adminCity + '</button></div>'
                     + '<div class="status" id="alerts-status"></div>'
+
                     + '<h2>Events <span style="font-size:13px;color:#7A6A50;font-weight:400">— ' + adminCity + '</span></h2>'
-                    + '<p>One event per line, pipe-separated: <code>YYYY-MM-DD | when_label | title | detail</code>. Past events auto-purged.</p>'
-                    + '<p><strong>Example:</strong><br><code>2026-06-07 | Sat 7 June &middot; 13:00 &middot; Kreuzberg | Karneval der Kulturen | Free entry.</code></p>'
-                    + '<textarea id="events" placeholder="YYYY-MM-DD | when_label | title | detail (one per line)">' + escapeHtml(eventLines) + '</textarea>'
-                    + '<div><button onclick="save(\'events\')">Save events for ' + adminCity + '</button></div>'
+                    + '<p>Add events with their actual date. Past events auto-purged. <strong>When label</strong> is what shows in the email (e.g. "Sat 7 June · 13:00 · Kreuzberg"). <strong>Detail</strong> is optional.</p>'
+                    + '<div id="events-container"></div>'
+                    + '<button class="add" type="button" onclick="addRow()">+ Add event</button>'
+                    + '<div style="margin-top:12px"><button onclick="saveEvents()">Save events for ' + adminCity + '</button></div>'
                     + '<div class="status" id="events-status"></div>'
+
                     + '<script>'
                     + 'var key=' + JSON.stringify(k) + ';'
                     + 'var city=' + JSON.stringify(adminCity) + ';'
+                    + 'var existingEvents=' + eventsArrJson + ';'
+
+                    + 'function escapeAttr(s){return String(s||"").replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c]})}'
+
+                    + 'function addRow(data){'
+                    + '  data=data||{sort_date:"",when_label:"",title:"",detail:""};'
+                    + '  var c=document.getElementById("events-container");'
+                    + '  var empty=document.getElementById("empty-msg");'
+                    + '  if(empty)empty.remove();'
+                    + '  var row=document.createElement("div");'
+                    + '  row.className="event-row";'
+                    + '  row.innerHTML='
+                    + '    "<div><span class=\\"event-label\\">Date</span>"'
+                    + '    +"<input type=\\"date\\" class=\\"f-date\\" value=\\""+escapeAttr(data.sort_date)+"\\"></div>"'
+                    + '    +"<div><span class=\\"event-label\\">When label</span>"'
+                    + '    +"<input type=\\"text\\" class=\\"f-when\\" placeholder=\\"Sat 7 June \\u00b7 13:00 \\u00b7 Kreuzberg\\" value=\\""+escapeAttr(data.when_label)+"\\"></div>"'
+                    + '    +"<div><span class=\\"event-label\\">Title</span>"'
+                    + '    +"<input type=\\"text\\" class=\\"f-title\\" placeholder=\\"Karneval der Kulturen\\" value=\\""+escapeAttr(data.title)+"\\"></div>"'
+                    + '    +"<div style=\\"padding-top:18px\\"><button type=\\"button\\" class=\\"remove\\" onclick=\\"this.closest(\'.event-row\').remove();maybeShowEmpty()\\">\u00d7</button></div>"'
+                    + '    +"<div class=\\"full-row\\"><span class=\\"event-label\\">Detail (optional)</span>"'
+                    + '    +"<input type=\\"text\\" class=\\"f-detail\\" placeholder=\\"Free entry. Family-friendly.\\" value=\\""+escapeAttr(data.detail)+"\\"></div>";'
+                    + '  c.appendChild(row);'
+                    + '}'
+
+                    + 'function maybeShowEmpty(){'
+                    + '  var c=document.getElementById("events-container");'
+                    + '  if(c.children.length===0){'
+                    + '    c.innerHTML="<div id=\\"empty-msg\\" class=\\"empty-events\\">No events yet. Click <strong>+ Add event</strong> below.</div>";'
+                    + '  }'
+                    + '}'
+
+                    + 'function collectEvents(){'
+                    + '  var rows=document.querySelectorAll(".event-row");'
+                    + '  var out=[];'
+                    + '  rows.forEach(function(row){'
+                    + '    var d=row.querySelector(".f-date").value.trim();'
+                    + '    var w=row.querySelector(".f-when").value.trim();'
+                    + '    var t=row.querySelector(".f-title").value.trim();'
+                    + '    var det=row.querySelector(".f-detail").value.trim();'
+                    + '    if(d&&w&&t){out.push({sort_date:d,when_label:w,title:t,detail:det})}'
+                    + '  });'
+                    + '  return out;'
+                    + '}'
+
+                    + 'async function saveEvents(){'
+                    + '  var st=document.getElementById("events-status");'
+                    + '  st.className="status";st.textContent="Saving\u2026";'
+                    + '  var events=collectEvents();'
+                    + '  try{'
+                    + '    var r=await fetch("/api/newsletter?action=admin&subaction=events&key="+encodeURIComponent(key)+"&city="+encodeURIComponent(city),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({events:events})});'
+                    + '    var d=await r.json();'
+                    + '    if(d.ok){st.className="status ok";st.textContent="Saved "+d.count+" events for "+city+".";}'
+                    + '    else{st.className="status err";st.textContent="Error: "+(d.error||"unknown");}'
+                    + '  }catch(e){st.className="status err";st.textContent="Error: "+e.message;}'
+                    + '}'
+
                     + 'async function save(kind){'
                     + '  var text=document.getElementById(kind).value;'
                     + '  var st=document.getElementById(kind+"-status");'
@@ -1825,6 +1906,9 @@ module.exports = async function handler(req, res) {
                     + '    else{st.className="status err";st.textContent="Error: "+(d.error||"unknown");}'
                     + '  }catch(e){st.className="status err";st.textContent="Error: "+e.message;}'
                     + '}'
+
+                    + 'if(existingEvents.length>0){existingEvents.forEach(addRow)}else{maybeShowEmpty()}'
+
                     + '</script></body></html>';
                 res.setHeader('Content-Type', 'text/html');
                 return res.send(pageHtml);
@@ -1866,20 +1950,38 @@ module.exports = async function handler(req, res) {
                     if (SUPPORTED_CITIES_E.indexOf(eventsCity) === -1) eventsCity = 'berlin';
 
                     var b2 = req.body && typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
-                    var text2 = (b2.text || '').trim();
-                    var lines2 = text2.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
-                    var parsed = lines2.map(function(line) {
-                        var parts = line.split('|').map(function(p) { return p.trim(); });
-                        if (parts.length < 3) return null;
-                        if (!/^\d{4}-\d{2}-\d{2}$/.test(parts[0])) return null;
-                        return {
-                            sort_date: parts[0],
-                            when_label: parts[1] || '',
-                            title: parts[2] || '',
-                            detail: parts[3] || '',
-                            city: eventsCity,
-                        };
-                    }).filter(Boolean);
+                    var parsed = [];
+
+                    // NEW: structured array form from event-row UI
+                    if (Array.isArray(b2.events)) {
+                        parsed = b2.events.map(function(ev) {
+                            if (!ev || !/^\d{4}-\d{2}-\d{2}$/.test(ev.sort_date || '')) return null;
+                            if (!ev.title || !ev.when_label) return null;
+                            return {
+                                sort_date: ev.sort_date,
+                                when_label: String(ev.when_label || '').trim(),
+                                title: String(ev.title || '').trim(),
+                                detail: String(ev.detail || '').trim(),
+                                city: eventsCity,
+                            };
+                        }).filter(Boolean);
+                    } else if (typeof b2.text === 'string') {
+                        // LEGACY: pipe-separated text format
+                        var text2 = b2.text.trim();
+                        var lines2 = text2.split('\n').map(function(l) { return l.trim(); }).filter(Boolean);
+                        parsed = lines2.map(function(line) {
+                            var parts = line.split('|').map(function(p) { return p.trim(); });
+                            if (parts.length < 3) return null;
+                            if (!/^\d{4}-\d{2}-\d{2}$/.test(parts[0])) return null;
+                            return {
+                                sort_date: parts[0],
+                                when_label: parts[1] || '',
+                                title: parts[2] || '',
+                                detail: parts[3] || '',
+                                city: eventsCity,
+                            };
+                        }).filter(Boolean);
+                    }
 
                     // Delete only THIS city's events. Other cities' events remain.
                     await supabase.from('events').delete().eq('city', eventsCity);
