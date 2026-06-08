@@ -639,12 +639,40 @@ One sentence on the single most important development:`;
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
-    const sendJson = await sendResp.json().catch(() => ({ ok: false, error: 'invalid JSON response' }));
+
+    // FIX #3: Read body as text first so we can surface real error content,
+    // not just "invalid JSON response". Then attempt JSON parse. If parse
+    // fails, log the actual body — typically a Vercel timeout HTML page or
+    // a 500 error string — instead of swallowing it.
+    const httpStatus = sendResp.status;
+    const respText = await sendResp.text();
+    let sendJson;
+    try {
+      sendJson = JSON.parse(respText);
+    } catch (parseErr) {
+      // Real failure path. Log the actual body so we can diagnose.
+      console.error('[cron] send response not JSON. status=' + httpStatus + ' body=' + respText.slice(0, 500));
+      sendJson = {
+        ok: false,
+        error: 'send endpoint returned non-JSON',
+        httpStatus: httpStatus,
+        bodyPreview: respText.slice(0, 300),
+      };
+      results.errors.push('newsletter-send: HTTP ' + httpStatus + ' returned non-JSON: ' + respText.slice(0, 200));
+    }
+
+    // Surface non-OK even on parseable JSON
+    if (sendJson && sendJson.ok === false && !sendJson.alreadySent) {
+      results.errors.push('newsletter-send: ' + (sendJson.error || sendJson.reason || 'unknown failure'));
+    }
+
     results.newsletterSend = sendJson;
-    console.log('[cron] newsletter send result:', JSON.stringify(sendJson).slice(0, 300));
+    console.log('[cron] newsletter send status=' + httpStatus + ' result:', JSON.stringify(sendJson).slice(0, 300));
   } catch (e) {
-    results.errors.push(`newsletter-send: ${e.message}`);
-    results.newsletterSend = { ok: false, error: e.message };
+    // Network-level error (fetch itself failed)
+    console.error('[cron] send fetch failed:', e.message);
+    results.errors.push('newsletter-send-fetch: ' + e.message);
+    results.newsletterSend = { ok: false, error: e.message, errorType: 'fetch-failure' };
   }
 
   return response.status(200).json({
