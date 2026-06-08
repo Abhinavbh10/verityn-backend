@@ -1,0 +1,78 @@
+name: Newsletter send + retries (Mon-Fri morning)
+
+# Triggers send at 05:00 UTC (07:00 Berlin summer / 06:00 winter), then every
+# 30 min until 11:00 UTC (13:00 Berlin summer / 12:00 winter). That's 13
+# attempts over 6 hours.
+#
+# Per-recipient idempotency (Fix #4) ensures no subscriber gets the email twice:
+# the send endpoint loads newsletter_recipients for today and excludes anyone
+# already marked 'sent'. So initial send goes to everyone, then retries only
+# touch the ones that failed previously.
+#
+# Behavior:
+# - If env disabled → send returns error, job runs but no email goes out
+# - If all subscribers already sent → send returns alreadyAllSent, job succeeds
+# - If some failed → send retries them, marks 'sent' on success
+# - If briefing fails (e.g. pool empty) → that city skipped, others continue
+
+on:
+  schedule:
+    # Every 30 min from 05:00 UTC to 11:00 UTC, Mon-Fri.
+    # 5:00, 5:30, 6:00, 6:30, ..., 11:00 = 13 attempts.
+    - cron: '0,30 5-10 * * 1,2,3,4,5'
+    - cron: '0 11 * * 1,2,3,4,5'
+  workflow_dispatch: {}  # manual override
+
+jobs:
+  send-or-retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8  # send can take 60s+ with full pipeline
+    steps:
+      - name: Health check first
+        id: health
+        env:
+          API_BASE: https://verityn-backend-ten.vercel.app
+        run: |
+          echo "Checking health..."
+          HEALTH=$(curl -s "${API_BASE}/api/newsletter?action=health")
+          echo "$HEALTH"
+          # Save key fields for next step
+          READY=$(echo "$HEALTH" | grep -o '"ready":[a-z]*' | cut -d':' -f2)
+          ALL_DONE=$(echo "$HEALTH" | grep -o '"allDone":[a-z]*' | cut -d':' -f2)
+          PENDING=$(echo "$HEALTH" | grep -o '"pending":[0-9]*' | cut -d':' -f2)
+          echo "ready=$READY" >> "$GITHUB_OUTPUT"
+          echo "all_done=$ALL_DONE" >> "$GITHUB_OUTPUT"
+          echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if all subscribers already sent
+        if: steps.health.outputs.all_done == 'true'
+        run: |
+          echo "All subscribers already received today's newsletter. No action."
+          exit 0
+
+      - name: Trigger send or retry
+        if: steps.health.outputs.all_done != 'true'
+        env:
+          API_BASE: https://verityn-backend-ten.vercel.app
+        run: |
+          # Detect if this is initial run or retry
+          # Initial: pending = total subscribers. Retry: pending < total.
+          # In practice we don't need to distinguish — send endpoint handles
+          # both via the recipient filter. But we pass retry=1 flag for logging
+          # clarity (subject prefix becomes [retry][berlin] in newsletter_log).
+          PENDING=${{ steps.health.outputs.pending }}
+          echo "Pending count: $PENDING"
+          # Use ?retry=1 if we're not the first run of the day
+          # Simpler: always pass ?retry=1 except on first cron of day.
+          # GitHub doesn't easily expose "is this the first run of the day"
+          # so we just let the send endpoint figure it out (it's idempotent).
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            "${API_BASE}/api/newsletter?action=send")
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+          echo "Status: $HTTP_STATUS"
+          echo "Response: $BODY"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Send failed with non-200 — flagging job as failed for visibility"
+            exit 1
+          fi
