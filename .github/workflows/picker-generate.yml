@@ -1,0 +1,39 @@
+name: Picker generation (nightly Sun-Thu)
+
+# Generates the next morning's picker queue at 20:00 UTC = 22:00 Berlin (summer)
+# / 21:00 Berlin (winter). Sun-Thu only — no Friday/Saturday picker since no
+# Saturday/Sunday newsletter.
+#
+# The editor-generate endpoint refuses to run if selections already exist for
+# the target pick_date (Fix #1). So if you've curated early, this cron is a
+# no-op. Safe to rerun.
+
+on:
+  schedule:
+    - cron: '0 20 * * 0,1,2,3,4'  # Sun, Mon, Tue, Wed, Thu at 20:00 UTC
+  workflow_dispatch: {}  # allow manual trigger from GitHub UI
+
+jobs:
+  generate-picker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger editor-generate
+        env:
+          API_BASE: https://verityn-backend-ten.vercel.app
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+        run: |
+          echo "Triggering picker generation..."
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            "${API_BASE}/api/newsletter?action=editor-generate&key=${ADMIN_KEY}")
+          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+          echo "Status: $HTTP_STATUS"
+          echo "Response: $BODY"
+          # Exit 0 even if refused (refused = expected behavior when picks locked)
+          if [ "$HTTP_STATUS" = "200" ]; then
+            exit 0
+          else
+            echo "Non-200 response, failing job"
+            exit 1
+          fi
