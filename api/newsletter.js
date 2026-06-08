@@ -434,11 +434,46 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         quickHitsHtml += '</td></tr>';
     }
 
-    // -- Events (This weekend) — renders only if events exist --
+    // -- Events — dynamic section header based on event dates --
     var eventsHtml = '';
     if (events.length > 0) {
+        // FIX #7: Replace hardcoded "This weekend" with logic that adapts.
+        // Look at the first (earliest) event's date relative to today.
+        // events come from generateExtras with sort_date in raw form sometimes.
+        // For safety, label is also defensive against missing dates.
+        var eventLabel = 'Coming up';
+        try {
+            var todayLocal = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+            // First event's underlying date — only available if generateExtras
+            // passes it through; otherwise we use a heuristic on event count + label
+            var firstEvent = events[0];
+            var firstDate = firstEvent && firstEvent.sort_date ? firstEvent.sort_date : null;
+
+            if (firstDate) {
+                var msPerDay = 86400000;
+                var todayD = new Date(todayLocal + 'T00:00:00');
+                var firstD = new Date(firstDate + 'T00:00:00');
+                var daysAhead = Math.round((firstD - todayD) / msPerDay);
+
+                if (daysAhead <= 0) eventLabel = 'Today';
+                else if (daysAhead === 1) eventLabel = 'Tomorrow';
+                else if (daysAhead <= 7) eventLabel = 'This week';
+                else eventLabel = 'Coming up';
+
+                // Special case: if all events fall on Sat/Sun and we're earlier in week, "This weekend"
+                var allWeekend = events.every(function(e) {
+                    if (!e.sort_date) return false;
+                    var d = new Date(e.sort_date + 'T00:00:00').getDay();
+                    return d === 0 || d === 6; // Sun=0, Sat=6
+                });
+                if (allWeekend && daysAhead >= 2 && daysAhead <= 7) eventLabel = 'This weekend';
+            }
+        } catch (e) {
+            // fall back to "Coming up" silently
+        }
+
         eventsHtml = '<tr><td style="background-color:#FBF5E8;padding:24px 36px 0">'
-            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">This weekend</span>'
+            + '<span style="font-family:Georgia,serif;font-size:24px;font-weight:400;color:#1F1810;border-bottom:3px solid #D14A28;padding-bottom:4px">' + escapeHtml(eventLabel) + '</span>'
             + '</td></tr>'
             + '<tr><td style="background-color:#FBF5E8;padding:8px 36px 28px">';
         for (var ei = 0; ei < events.length; ei++) {
@@ -802,7 +837,7 @@ async function generateExtras(stories, city, excludeFacts, supabase) {
                 .limit(5);
             if (eventsResp.data && eventsResp.data.length > 0) {
                 extras.events = eventsResp.data.map(function(e) {
-                    return { when: e.when_label, title: e.title, detail: e.detail };
+                    return { when: e.when_label, title: e.title, detail: e.detail, sort_date: e.sort_date };
                 });
             }
         } catch (e) {
@@ -1544,6 +1579,31 @@ module.exports = async function handler(req, res) {
 
                 console.log('[editor-generate] pick_date=' + pickDate);
 
+                // FIX #1: Refuse to regenerate if locked selections exist.
+                // Without this, the 22:00 picker cron destroys curation done earlier
+                // in the evening. Pass &force=1 to override (manual rebuild only).
+                var forceRegen = req.query.force === '1';
+                if (!forceRegen) {
+                    var existingPicks = await supabase
+                        .from('editor_queue')
+                        .select('id', { count: 'exact', head: true })
+                        .eq('city', 'berlin')
+                        .eq('pick_date', pickDate)
+                        .eq('selected', true);
+                    var existingCount = existingPicks.count || 0;
+                    if (existingCount > 0) {
+                        console.log('[editor-generate] REFUSING — ' + existingCount + ' selections already exist for ' + pickDate);
+                        return res.json({
+                            ok: false,
+                            refused: true,
+                            reason: 'Selections already locked for ' + pickDate + '. ' + existingCount + ' picks would be destroyed.',
+                            existingPicks: existingCount,
+                            pickDate: pickDate,
+                            hint: 'Pass &force=1 to override and rebuild the pool from scratch.',
+                        });
+                    }
+                }
+
                 // Build Berlin pool — LOOSE for picker (skip dedup + skip city-mention filter).
                 // You're the editor — you'll dedup and topic-filter mentally. Show more.
                 var pool = await buildCityPool('berlin', { skipFilter: true, skipDedup: true });
@@ -1552,6 +1612,8 @@ module.exports = async function handler(req, res) {
                 }
 
                 // Clear any existing queue rows for this pick_date (idempotent — rerun safely)
+                // Only runs after the guard above — so we're either rebuilding empty pool
+                // or have explicit force=1 override.
                 await supabase
                     .from('editor_queue')
                     .delete()
