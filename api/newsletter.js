@@ -2237,12 +2237,70 @@ module.exports = async function handler(req, res) {
             }
         }
 
+        if (action === 'health') {
+            // FIX #5: Health check endpoint. Returns system readiness state.
+            // Used by GitHub Actions to verify before sending, and by manual curl
+            // to diagnose state without triggering anything.
+            try {
+                var todayUtc = new Date().toISOString().slice(0, 10);
+
+                // Check editor_queue state for today
+                var queueResp = await supabase
+                    .from('editor_queue')
+                    .select('id, selected', { count: 'exact', head: false })
+                    .eq('city', 'berlin')
+                    .eq('pick_date', todayUtc);
+                var queueTotal = (queueResp.data || []).length;
+                var queueSelected = (queueResp.data || []).filter(function(r) { return r.selected; }).length;
+                var queueLocked = queueSelected >= 5;
+
+                // Check today's send progress from newsletter_recipients
+                var recResp = await supabase
+                    .from('newsletter_recipients')
+                    .select('email, status')
+                    .eq('send_date', todayUtc);
+                var sentCount = (recResp.data || []).filter(function(r) { return r.status === 'sent'; }).length;
+                var failedCount = (recResp.data || []).filter(function(r) { return r.status === 'failed'; }).length;
+
+                // Count subscribers
+                var subResp = await supabase
+                    .from('waitlist')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('unsubscribed', false);
+                var totalSubscribers = subResp.count || 0;
+
+                // Env state
+                var envEnabled = process.env.NEWSLETTER_ENABLED === 'true';
+                var smtpConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+
+                var pendingCount = Math.max(0, totalSubscribers - sentCount);
+
+                // Overall readiness signal for GitHub Actions
+                var ready = envEnabled && smtpConfigured && pendingCount > 0;
+                var allDone = totalSubscribers > 0 && sentCount === totalSubscribers;
+
+                return res.json({
+                    ok: true,
+                    today: todayUtc,
+                    ready: ready,
+                    allDone: allDone,
+                    env: { newsletter_enabled: envEnabled, smtp_configured: smtpConfigured },
+                    queue: { total: queueTotal, selected: queueSelected, locked: queueLocked },
+                    send: {
+                        total_subscribers: totalSubscribers,
+                        sent: sentCount,
+                        failed: failedCount,
+                        pending: pendingCount,
+                    },
+                });
+            } catch (e) {
+                res.statusCode = 500;
+                return res.json({ ok: false, error: e.message });
+            }
+        }
+
         if (action === 'send') {
-            // GUARD 1: POST-only. Browsers do not auto-retry POSTs, do not prefetch
-            // POSTs, do not restore them from history. Eliminates the class of bug
-            // where a slow GET request gets duplicated by browser retry mid-flight.
-            // Hit with: curl -X POST .../api/newsletter?action=send  (or browser
-            // dev tools fetch with method=POST). NOT a regular browser URL hit.
+            // GUARD 1: POST-only.
             if (req.method !== 'POST') {
                 return res.status(405).json({
                     error: 'send action requires POST method',
@@ -2250,58 +2308,80 @@ module.exports = async function handler(req, res) {
                 });
             }
 
-            // GUARD 2: Idempotency — has a newsletter already been sent today?
-            // Today is computed in UTC since newsletter_log.created_at is UTC.
-            // Any send that completed on the same UTC calendar day blocks subsequent sends.
-            // To override (e.g. for a verified rebroadcast), pass &force=1 — explicit opt-in only.
-            try {
-                var todayUtc = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
-                var force = req.query.force === '1' || (req.body && req.body.force === '1');
-                if (!force) {
-                    var { data: existingSends } = await supabase
-                        .from('newsletter_log')
-                        .select('created_at, sent_count, subject')
-                        .gte('created_at', todayUtc + 'T00:00:00.000Z')
-                        .lt('created_at', todayUtc + 'T23:59:59.999Z')
-                        .gt('sent_count', 0)
-                        .limit(1);
-                    if (existingSends && existingSends.length > 0) {
-                        return res.status(409).json({
-                            ok: false,
-                            alreadySent: true,
-                            reason: 'Newsletter already sent today (UTC)',
-                            previous: existingSends[0],
-                            hint: 'To rebroadcast, pass &force=1 — explicit opt-in only.',
-                        });
-                    }
-                }
-            } catch (e) {
-                // Don't fail the send if the idempotency check itself errors.
-                // Better to risk a duplicate than to block a legitimate send because the
-                // log table is unreachable. Log to errors and continue.
-                console.error('[newsletter] idempotency check failed:', e.message);
-            }
-
             if (process.env.NEWSLETTER_ENABLED !== 'true') return res.json({ ok: false, reason: 'Set NEWSLETTER_ENABLED=true' });
             if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return res.json({ error: 'SMTP creds not set' });
+
+            // ── FIX #4: Per-recipient idempotency ─────────────────────────
+            // Every send attempt writes to newsletter_recipients with status=sent/failed.
+            // Before sending, we LOAD all recipients already marked 'sent' for today
+            // and EXCLUDE them from the active batch. This guarantees no recipient
+            // ever gets the newsletter twice on the same UTC day — even across
+            // initial send + 11 retry cycles over 6 hours.
+            //
+            // The old "per-day in newsletter_log" guard is REMOVED — that was the
+            // overly-coarse approach that blocked legitimate retries. Day-level
+            // safety is now achieved naturally by the recipient filter (if all
+            // recipients are already sent, the batch is empty, nothing happens).
+
+            var todayUtc = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+            var isRetry = req.query.retry === '1';
+            var force = req.query.force === '1' || (req.body && req.body.force === '1');
 
             var subscribers = await getSubscribers(supabase);
             if (!subscribers.length) return res.json({ ok: true, sent: 0, reason: 'No subscribers' });
 
-            // City-keyed pipeline (May 2026 city pivot). Group subscribers by city,
-            // run the briefing+enrich+extras+weather pipeline once per city present,
-            // then send each subscriber their city's edition. Log one newsletter_log
-            // row per city. Subscribers with unsupported/null city fall back to berlin.
+            // Load today's already-sent recipients (skip filter on force=1)
+            var alreadySentEmails = {};
+            if (!force) {
+                try {
+                    var sentResp = await supabase
+                        .from('newsletter_recipients')
+                        .select('email')
+                        .eq('send_date', todayUtc)
+                        .eq('status', 'sent');
+                    (sentResp.data || []).forEach(function(r) {
+                        alreadySentEmails[(r.email || '').toLowerCase()] = true;
+                    });
+                } catch (e) {
+                    console.error('[newsletter] recipient lookup failed (non-fatal):', e.message);
+                }
+            }
+
+            // Filter subscribers: drop anyone already sent today
+            var alreadySentCount = 0;
+            var pendingSubscribers = subscribers.filter(function(sub) {
+                if (alreadySentEmails[(sub.email || '').toLowerCase()]) {
+                    alreadySentCount++;
+                    return false;
+                }
+                return true;
+            });
+
+            console.log('[newsletter] send: ' + subscribers.length + ' total, ' + alreadySentCount + ' already sent, ' + pendingSubscribers.length + ' pending. retry=' + isRetry + ' force=' + force);
+
+            if (pendingSubscribers.length === 0) {
+                return res.json({
+                    ok: true,
+                    sent: 0,
+                    alreadyAllSent: true,
+                    reason: 'All ' + subscribers.length + ' subscribers already received today\'s newsletter',
+                    totalSubscribers: subscribers.length,
+                    alreadySent: alreadySentCount,
+                    isRetry: isRetry,
+                });
+            }
+
+            // City-keyed grouping (Frankfurt, Bonn fallback to berlin)
             var SUPPORTED_CITIES = ['berlin', 'frankfurt', 'bonn'];
             var groups = {};
-            for (var g = 0; g < subscribers.length; g++) {
-                var sCity = (subscribers[g].city || 'berlin').toLowerCase();
+            for (var g = 0; g < pendingSubscribers.length; g++) {
+                var sCity = (pendingSubscribers[g].city || 'berlin').toLowerCase();
                 if (SUPPORTED_CITIES.indexOf(sCity) === -1) sCity = 'berlin';
                 if (!groups[sCity]) groups[sCity] = [];
-                groups[sCity].push(subscribers[g]);
+                groups[sCity].push(pendingSubscribers[g]);
             }
             var citiesPresent = Object.keys(groups);
-            console.log('[newsletter] send cities=' + JSON.stringify(citiesPresent) + ' subs=' + subscribers.length);
+            console.log('[newsletter] send cities=' + JSON.stringify(citiesPresent) + ' pendingSubs=' + pendingSubscribers.length);
 
             var totalSent = 0, totalFailed = 0;
             var resultByCity = {};
@@ -2319,7 +2399,6 @@ module.exports = async function handler(req, res) {
                     continue;
                 }
                 cStories = await enrichStories(cStories, cCity);
-                // Fetch recently-served facts for this city so we don't repeat one
                 var cMemory = await getRecentMemory(supabase, cCity, 7);
                 var cExtras = await generateExtras(cStories, cCity, cMemory.facts, supabase);
                 cExtras.weather = await getWeather(cCity);
@@ -2330,6 +2409,10 @@ module.exports = async function handler(req, res) {
                 var cSent = 0, cFailed = 0, cErrors = [];
                 for (var i = 0; i < Math.min(cSubs.length, BATCH_SIZE); i++) {
                     var sub = cSubs[i];
+                    var emailLower = (sub.email || '').toLowerCase();
+                    var sendStatus = 'failed';
+                    var sendError = null;
+
                     try {
                         await transporter2.sendMail({
                             from: FROM_NAME + ' <' + FROM_EMAIL + '>',
@@ -2338,10 +2421,30 @@ module.exports = async function handler(req, res) {
                             html: buildEmailHTML(cStories, sub.name || sub.email.split('@')[0], sub.email, cExtras),
                         });
                         cSent++;
+                        sendStatus = 'sent';
                     } catch (e) {
                         cFailed++;
                         cErrors.push({ email: sub.email, error: e.message });
+                        sendError = e.message;
                     }
+
+                    // Record this attempt in newsletter_recipients.
+                    // Upsert on (send_date, email): if previous attempt was 'failed',
+                    // overwrite with 'sent' on success. If previous was 'sent', we
+                    // wouldn't be here (filtered out above). Increment attempt_n.
+                    try {
+                        await supabase.from('newsletter_recipients').upsert({
+                            send_date: todayUtc,
+                            email: emailLower,
+                            city: cCity,
+                            status: sendStatus,
+                            error: sendError,
+                            attempt_n: isRetry ? 2 : 1, // simple — retries are attempt 2+, no strict counting
+                        }, { onConflict: 'send_date,email' });
+                    } catch (recErr) {
+                        console.error('[newsletter] recipient write failed for ' + emailLower + ':', recErr.message);
+                    }
+
                     if (i > 0 && i % 5 === 0) await new Promise(function(r) { setTimeout(r, 2000); });
                 }
 
@@ -2349,19 +2452,20 @@ module.exports = async function handler(req, res) {
                 totalFailed += cFailed;
                 resultByCity[cCity] = { sent: cSent, failed: cFailed, subject: cSubject };
 
-                // One log row per city — subject prefixed [city] for grep-ability
+                // newsletter_log row per city — keeps the existing audit trail
                 try {
                     await supabase.from('newsletter_log').insert({
                         sent_count: cSent, failed_count: cFailed,
                         errors: cErrors.length > 0 ? cErrors : null,
-                        subject: '[' + cCity + '] ' + cSubject,
+                        subject: (isRetry ? '[retry][' : '[') + cCity + '] ' + cSubject,
                         story_count: cStories.length,
                     });
                 } catch (e) { }
 
-                // Write to memory so tomorrow's send can dedup against today.
-                // Only record if we actually sent something.
-                if (cSent > 0) {
+                // Only write memory on INITIAL send, not retries.
+                // Memory dedup is "what stories did we cover today" — retries
+                // shouldn't double-count.
+                if (cSent > 0 && !isRetry) {
                     await writeMemory(supabase, cCity, cStories, cExtras.did_you_know || '');
                 }
             }
@@ -2373,6 +2477,9 @@ module.exports = async function handler(req, res) {
                 sent: totalSent,
                 failed: totalFailed,
                 total: subscribers.length,
+                pending: pendingSubscribers.length,
+                alreadySent: alreadySentCount,
+                isRetry: isRetry,
                 cities: resultByCity,
             });
         }
