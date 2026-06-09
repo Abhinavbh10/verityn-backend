@@ -17,10 +17,13 @@ name: Newsletter send + retries (Mon-Fri morning)
 
 on:
   schedule:
-    # Every 30 min from 05:00 UTC to 11:00 UTC, Mon-Fri.
-    # 5:00, 5:30, 6:00, 6:30, ..., 11:00 = 13 attempts.
-    - cron: '0,30 5-10 * * 1,2,3,4,5'
-    - cron: '0 11 * * 1,2,3,4,5'
+    # Send cron scheduled at 03:00 UTC to absorb GitHub Actions free-tier lag
+    # (observed ~2 hours of delay on Hobby-tier scheduled crons). Even with
+    # 2 hours of lag, lands by 05:00 UTC = 07:00 Berlin in summer.
+    # Retries every 30 min until 09:00 UTC = 13 attempts over 6 hours.
+    # If lag is minimal, send fires at 05:00 Berlin = a bit early but harmless.
+    - cron: '0,30 3-8 * * 1,2,3,4,5'
+    - cron: '0 9 * * 1,2,3,4,5'
   workflow_dispatch: {}  # manual override
 
 jobs:
