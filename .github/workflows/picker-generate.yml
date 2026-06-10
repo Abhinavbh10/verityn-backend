@@ -9,8 +9,7 @@ name: Picker generation (nightly Sun-Thu)
 # no-op. Safe to rerun.
 
 on:
-  schedule:
-    - cron: '0 20 * * 0,1,2,3,4'  # Sun, Mon, Tue, Wed, Thu at 20:00 UTC
+   
   workflow_dispatch: {}  # allow manual trigger from GitHub UI
 
 jobs:
