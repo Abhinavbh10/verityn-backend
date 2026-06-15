@@ -888,8 +888,23 @@ async function translateArticles(articles) {
             });
             var data = await r.json();
             var text = (data.content && data.content[0] && data.content[0].text) || '';
+
+            // Robust JSON extraction: find the outer [...] even if AI adds preamble.
+            // Strips backticks and any leading/trailing text outside the JSON array.
             var clean = text.replace(/```json|```/g, '').trim();
-            var translated = JSON.parse(clean);
+            var firstBracket = clean.indexOf('[');
+            var lastBracket = clean.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                clean = clean.slice(firstBracket, lastBracket + 1);
+            }
+
+            var translated;
+            try {
+                translated = JSON.parse(clean);
+            } catch (parseErr) {
+                console.log('[translate] chunk ' + chunkIdx + ' JSON parse failed: ' + parseErr.message + ' raw=' + text.slice(0, 200));
+                return chunk;
+            }
 
             if (Array.isArray(translated) && translated.length === chunk.length) {
                 return chunk.map(function(a, i) {
@@ -900,7 +915,7 @@ async function translateArticles(articles) {
                     });
                 });
             }
-            console.log('[translate] chunk ' + chunkIdx + ' size mismatch: got ' + (translated && translated.length) + ' expected ' + chunk.length);
+            console.log('[translate] chunk ' + chunkIdx + ' size mismatch: got ' + (translated && translated.length) + ' expected ' + chunk.length + ' raw=' + text.slice(0, 200));
             return chunk;     // fall through to raw German if mismatch
         } catch (e) {
             console.log('[translate] chunk ' + chunkIdx + ' failed: ' + e.message);
