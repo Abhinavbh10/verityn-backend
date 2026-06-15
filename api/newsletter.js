@@ -878,8 +878,8 @@ async function translateArticles(articles) {
                     'anthropic-version': '2023-06-01',
                 },
                 body: JSON.stringify({
-                    model: 'claude-sonnet-4-20250514',
-                    max_tokens: 3000,
+                    model: 'claude-haiku-4-5',
+                    max_tokens: 4000,
                     messages: [{
                         role: 'user',
                         content: 'Translate these German news headlines and summaries to English. Keep translations natural and news-style, not word-for-word. If a headline or summary is already in English, keep it as-is.\n\n' + toTranslate + '\n\nRespond with ONLY a JSON array of objects, each with "headline" and "summary" keys. Same order as input. No markdown, no backticks.',
@@ -1232,7 +1232,7 @@ async function enrichStories(stories, city) {
                 'anthropic-version': '2023-06-01',
             },
             body: JSON.stringify({
-                model: 'claude-sonnet-4-20250514',
+                model: 'claude-sonnet-4-6',
                 max_tokens: 4500,
                 messages: [{
                     role: 'user',
