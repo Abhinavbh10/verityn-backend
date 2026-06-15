@@ -889,6 +889,12 @@ async function translateArticles(articles) {
             var data = await r.json();
             var text = (data.content && data.content[0] && data.content[0].text) || '';
 
+            // Diagnostic: if text is empty, log the full response shape
+            if (!text) {
+                console.log('[translate] chunk ' + chunkIdx + ' EMPTY response. status=' + r.status + ' data=' + JSON.stringify(data).slice(0, 500));
+                return chunk;
+            }
+
             // Robust JSON extraction: find the outer [...] even if AI adds preamble.
             // Strips backticks and any leading/trailing text outside the JSON array.
             var clean = text.replace(/```json|```/g, '').trim();
