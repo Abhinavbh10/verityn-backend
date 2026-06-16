@@ -1115,7 +1115,7 @@ async function generateFreshBriefing(supabase, city) {
                             body: a.summary || a.description || '',
                             why: '',
                             source: a.source,
-                            sourceUrl: a.url,
+                            sourceUrl: a.sourceUrl || a.url,
                             image: a.image || null,
                             isQuickHit: true,
                         };
@@ -1182,7 +1182,7 @@ async function generateFreshBriefing(supabase, city) {
                         body: a.summary || a.description || '',  // truncated by buildQuickHit
                         why: '',                                     // intentionally empty for quick hits
                         source: a.source,
-                        sourceUrl: a.url,
+                        sourceUrl: a.sourceUrl || a.url,
                         image: a.image || null,
                         isQuickHit: true,
                     };
@@ -1650,7 +1650,7 @@ module.exports = async function handler(req, res) {
                         headline: a.headline || '',
                         summary: a.summary || '',
                         source: a.source || '',
-                        url: a.url || '',
+                        url: a.sourceUrl || a.url || '',
                         image: a.image || null,
                         selected: false,
                         sort_order: i,
