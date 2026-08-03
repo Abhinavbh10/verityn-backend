@@ -340,7 +340,7 @@ function buildSubjectLine(stories) {
     return hl;
 }
 
-function buildEmailHTML(stories, recipientName, email, extras) {
+function buildEmailHTML(stories, recipientName, email, extras, city) {
     var name = cleanName(recipientName);
     var today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     var dayNum = new Date().toLocaleDateString('en-GB', { day: '2-digit' });
@@ -348,6 +348,12 @@ function buildEmailHTML(stories, recipientName, email, extras) {
     var hour = new Date().getUTCHours() + 2;
     var greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     var unsubLink = 'https://verityn.news/unsubscribe?email=' + encodeURIComponent(email || '');
+
+    // FIX: city-aware display name. Was hardcoded "Berlin" in two places in this
+    // template (header tagline + alert banner), so Frankfurt/Bonn subscribers
+    // were shown "Berlin's daily" and "Today in Berlin" on their own edition.
+    var cityKey = (city || 'berlin').toLowerCase();
+    var cityDisplay = cityKey.charAt(0).toUpperCase() + cityKey.slice(1);
 
     var ext = extras || {};
     var weather = ext.weather || { line1: '', details: '' };
@@ -360,6 +366,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
     var holiday = ext.holiday || null;              // {name, daysUntil, dateLabel} or null
     var closer = ext.closer || 'You\'re caught up.';
 
+
     // ── Strike / disruption alert (top, red) — renders only if alerts present ──
     var alertHtml = '';
     if (alerts.length > 0) {
@@ -368,7 +375,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
             + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
             + '<td style="vertical-align:top;width:28px;font-family:Georgia,serif;font-size:22px;line-height:1;color:#FBF5E8">!</td>'
             + '<td style="padding-left:8px">'
-            + '<div style="font-size:9px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;margin-bottom:3px">Heads up — Today in Berlin</div>'
+            + '<div style="font-size:9px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;opacity:0.85;margin-bottom:3px">Heads up — Today in ' + escapeHtml(cityDisplay) + '</div>'
             + '<div style="font-size:13.5px;line-height:1.45">' + alertItems + '</div>'
             + '</td></tr></table></td></tr>';
     }
@@ -565,7 +572,7 @@ function buildEmailHTML(stories, recipientName, email, extras) {
         + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
         + '<td style="vertical-align:top">'
         + '<div style="font-family:Georgia,serif;font-size:42px;line-height:1;font-weight:400;color:#1F1810;margin-bottom:4px">Verityn<span style="color:#D14A28">.</span></div>'
-        + '<div style="font-size:12px;font-weight:500;letter-spacing:1px;color:#7A6A50;text-transform:uppercase">Berlin\'s daily for English speakers</div>'
+        + '<div style="font-size:12px;font-weight:500;letter-spacing:1px;color:#7A6A50;text-transform:uppercase">' + escapeHtml(cityDisplay) + '\'s daily for English speakers</div>'
         + '</td>'
         + '<td style="vertical-align:top;text-align:right;width:80px">'
         + '<div style="font-family:Georgia,serif;font-size:28px;line-height:1;color:#1F1810">' + dayNum + '</div>'
@@ -2165,7 +2172,7 @@ module.exports = async function handler(req, res) {
             var extras = await generateExtras(stories, previewCity, pvMemory.facts, supabase);
             extras.weather = await getWeather(previewCity);
             res.setHeader('Content-Type', 'text/html');
-            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras));
+            return res.send(buildEmailHTML(stories, 'Reader', 'preview@example.com', extras, previewCity));
         }
 
         if (action === 'test') {
@@ -2238,7 +2245,7 @@ module.exports = async function handler(req, res) {
                     from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                     to: testEmail,
                     subject: subject,
-                    html: buildEmailHTML(stories2, testName, testEmail, extras2),
+                    html: buildEmailHTML(stories2, testName, testEmail, extras2, testCity),
                 });
                 try { transporter.close(); } catch (e) { }
                 var localCount = stories2.filter(function(s) { return s.isLocal; }).length;
@@ -2439,7 +2446,7 @@ module.exports = async function handler(req, res) {
                             from: FROM_NAME + ' <' + FROM_EMAIL + '>',
                             to: sub.email,
                             subject: cSubject,
-                            html: buildEmailHTML(cStories, sub.name || sub.email.split('@')[0], sub.email, cExtras),
+                            html: buildEmailHTML(cStories, sub.name || sub.email.split('@')[0], sub.email, cExtras, cCity),
                         });
                         cSent++;
                         sendStatus = 'sent';
